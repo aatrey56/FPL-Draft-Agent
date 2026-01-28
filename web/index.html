@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>FPL MCP Reports</title>
+    <style>
+      :root {
+        --bg: #f4f3ee;
+        --panel: #ffffff;
+        --ink: #111;
+        --accent: #1b7f5c;
+        --muted: #666;
+      }
+      body {
+        margin: 0;
+        font-family: "Georgia", "Times New Roman", serif;
+        background: radial-gradient(1200px 600px at 20% 10%, #fdfbf7, #f4f3ee);
+        color: var(--ink);
+      }
+      header {
+        padding: 20px 28px;
+        border-bottom: 2px solid #e6e2d8;
+      }
+      .wrap {
+        display: grid;
+        grid-template-columns: 1fr 360px;
+        gap: 20px;
+        padding: 20px 28px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid #e5e1d6;
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.04);
+      }
+      .chat-log {
+        height: 60vh;
+        overflow: auto;
+        border: 1px solid #eee;
+        padding: 12px;
+        border-radius: 10px;
+        background: #faf9f5;
+      }
+      .msg { margin-bottom: 12px; }
+      .msg.user { color: #0b3d2e; }
+      .msg.bot { color: #1a1a1a; }
+      .tool {
+        font-size: 12px;
+        color: var(--muted);
+        background: #f0efe9;
+        padding: 6px 8px;
+        border-radius: 6px;
+        margin: 6px 0;
+      }
+      input, button, textarea {
+        font-family: inherit;
+        font-size: 14px;
+      }
+      textarea {
+        width: 100%;
+        height: 80px;
+        border-radius: 8px;
+        border: 1px solid #ddd;
+        padding: 8px;
+      }
+      button {
+        background: var(--accent);
+        color: #fff;
+        border: 0;
+        padding: 10px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .right h3 { margin-top: 0; }
+      .reports-list a { display:block; margin: 6px 0; color: var(--accent); }
+      @media (max-width: 980px) {
+        .wrap { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>FPL MCP Console</h1>
+      <div>Chat + tool visibility + reports</div>
+    </header>
+    <div class="wrap">
+      <div class="panel">
+        <div id="chatLog" class="chat-log"></div>
+        <textarea id="chatInput" placeholder="Ask a question or request a report..."></textarea>
+        <div style="margin-top:8px;">
+          <button id="sendBtn">Send</button>
+        </div>
+      </div>
+      <div class="panel right">
+        <h3>Reports</h3>
+        <div>
+          <button id="runWaivers">Run Waivers</button>
+          <button id="runLeague">Run League</button>
+          <button id="runXI">Run XI</button>
+        </div>
+        <div class="reports-list" id="reportLinks"></div>
+        <h3>Tool Calls</h3>
+        <div id="toolLog"></div>
+      </div>
+    </div>
+    <script>
+      const ws = new WebSocket(`ws://${location.host}/ws`);
+      const chatLog = document.getElementById("chatLog");
+      const toolLog = document.getElementById("toolLog");
+      const reportLinks = document.getElementById("reportLinks");
+
+      function addMsg(text, cls) {
+        const div = document.createElement("div");
+        div.className = `msg ${cls}`;
+        div.textContent = text;
+        chatLog.appendChild(div);
+        chatLog.scrollTop = chatLog.scrollHeight;
+      }
+      function addTool(text) {
+        const div = document.createElement("div");
+        div.className = "tool";
+        div.textContent = text;
+        toolLog.appendChild(div);
+      }
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "user") addMsg(msg.message, "user");
+        if (msg.type === "tool_call") addTool(`Calling ${msg.name}...`);
+        if (msg.type === "tool_result") addTool(`Result ${msg.name}`);
+        if (msg.type === "final") addMsg(msg.content, "bot");
+      };
+
+      document.getElementById("sendBtn").onclick = () => {
+        const input = document.getElementById("chatInput");
+        ws.send(input.value);
+        input.value = "";
+      };
+
+      async function runReport(type) {
+        const res = await fetch("/api/reports/run", {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({type, gw: 0})
+        });
+        const data = await res.json();
+        reportLinks.innerHTML = "";
+        if (data.error) {
+          const div = document.createElement("div");
+          div.className = "tool";
+          div.textContent = `Error: ${data.error}`;
+          reportLinks.appendChild(div);
+          return;
+        }
+        if (data.paths) {
+          for (const [k,v] of Object.entries(data.paths)) {
+            const a = document.createElement("a");
+            a.href = "/" + v;
+            a.textContent = `${type} (${k})`;
+            reportLinks.appendChild(a);
+          }
+        }
+      }
+      document.getElementById("runWaivers").onclick = () => runReport("waivers");
+      document.getElementById("runLeague").onclick = () => runReport("league_summary");
+      document.getElementById("runXI").onclick = () => runReport("starting_xi");
+    </script>
+  </body>
+</html>

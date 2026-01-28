@@ -1,0 +1,9 @@
+.DS_Store
+.venv/
+data/
+reports/
+opencode.json
+fpldraft-mcp-server
+*.log
+*.tmp
+*.swp
