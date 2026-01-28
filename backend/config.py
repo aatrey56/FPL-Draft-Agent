@@ -1,6 +1,10 @@
 import os
+from dotenv import load_dotenv
 from dataclasses import dataclass
 
+
+# Load .env from repo root if present
+load_dotenv()
 
 @dataclass
 class Settings:

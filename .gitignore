@@ -9,3 +9,4 @@ fpldraft-mcp-server
 *.log
 *.tmp
 *.swp
+.env
