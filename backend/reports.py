@@ -93,8 +93,8 @@ def render_waiver_md(report: Dict[str, Any], llm: LLMClient) -> str:
     if not llm.available():
         return _simple_waiver_md(report)
     prompt = (
-        "Create a concise waiver report in Markdown with top adds and drops. "
-        "Include one-line reasons per add. Use the JSON data below.\n\n"
+        "Create a concise waiver report in Markdown with top adds and drop candidates by position. "
+        "Include one-line reasons per add and surface any warnings. Use the JSON data below.\n\n"
         + json.dumps(report)
     )
     text = llm.generate("You are a precise fantasy football analyst.", prompt)
@@ -104,14 +104,33 @@ def render_waiver_md(report: Dict[str, Any], llm: LLMClient) -> str:
 def _simple_waiver_md(report: Dict[str, Any]) -> str:
     lines = [f"# Waiver Report GW{report.get('target_gw')}"]
     lines.append("")
+    warnings = report.get("warnings") or []
+    if warnings:
+        lines.append("## Warnings")
+        for w in warnings:
+            lines.append(f"- {w}")
+        lines.append("")
     lines.append("## Top Adds")
     for a in report.get("top_adds", []):
         reasons = "; ".join(a.get("reasons", []))
-        lines.append(f"- {a['name']} ({a['team']}): {reasons}")
+        prev = ""
+        if a.get("previous_owners"):
+            prev = f" | Prev owners: {', '.join(a['previous_owners'])}"
+        lines.append(f"- {a['name']} ({a['team']}): {reasons}{prev}")
     lines.append("")
     lines.append("## Drop Candidates")
-    for d in report.get("drop_candidates", []):
-        lines.append(f"- {d['name']} ({d['team']}): {d['reason']}")
+    drops_by_pos = report.get("drop_candidates_by_position") or {}
+    if drops_by_pos:
+        for pos in ["GK", "DEF", "MID", "FWD"]:
+            group = drops_by_pos.get(pos, [])
+            if not group:
+                continue
+            lines.append(f"### {pos}")
+            for d in group:
+                lines.append(f"- {d['name']} ({d['team']}): {d['reason']}")
+    else:
+        for d in report.get("drop_candidates", []):
+            lines.append(f"- {d['name']} ({d['team']}): {d['reason']}")
     lines.append("")
     return "\n".join(lines)
 
