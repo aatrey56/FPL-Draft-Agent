@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 
+	"fpl-draft-mcp/internal/model"
+	"fpl-draft-mcp/internal/reconcile"
+	"fpl-draft-mcp/internal/store"
 	"fpl-draft-mcp/internal/summary"
 )
 
@@ -24,6 +27,10 @@ type WaiverRecommendationsArgs struct {
 	WeightTotal    float64 `json:"weight_total_points" jsonschema:"Weight for total points (default 0.25)"`
 	WeightXG       float64 `json:"weight_xg" jsonschema:"Weight for expected goals (default 0.15)"`
 	Limit          int     `json:"limit" jsonschema:"How many add recommendations (default 5)"`
+	UndroppableIDs []int   `json:"undroppable_ids" jsonschema:"Element ids that should never be dropped"`
+	TargetPosition int     `json:"target_position" jsonschema:"Position to target (1=GK,2=DEF,3=MID,4=FWD)"`
+	TargetType     string  `json:"target_type" jsonschema:"overall|next_fixture|consistency (default overall)"`
+	ConsistencyK   float64 `json:"consistency_k" jsonschema:"Penalty factor for consistency score (default 0.63)"`
 }
 
 type WaiverRecommendationsReport struct {
@@ -36,28 +43,42 @@ type WaiverRecommendationsReport struct {
 	WeightForm     float64 `json:"weight_form"`
 	WeightTotal    float64 `json:"weight_total_points"`
 	WeightXG       float64 `json:"weight_xg"`
+	TargetPosition int     `json:"target_position,omitempty"`
+	TargetType     string  `json:"target_type,omitempty"`
+	ConsistencyK   float64 `json:"consistency_k"`
 	Filters        struct {
 		Minutes60Last3  int `json:"minutes_60_last3_required"`
 		Minutes60Season int `json:"minutes_60_season_required"`
 	} `json:"filters"`
-	Adds  []AddRecommendation  `json:"top_adds"`
-	Drops []DropRecommendation `json:"drop_candidates"`
-	Notes []string             `json:"notes"`
+	Adds            []AddRecommendation             `json:"top_adds"`
+	Drops           []DropRecommendation            `json:"drop_candidates"`
+	DropsByPosition map[string][]DropRecommendation `json:"drop_candidates_by_position,omitempty"`
+	Warnings        []string                        `json:"warnings,omitempty"`
+	Notes           []string                        `json:"notes"`
 }
 
 type ScoreComponents struct {
-	FixturesRaw   float64 `json:"fixtures_raw"`
-	FormRaw       float64 `json:"form_raw"`
-	TotalRaw      float64 `json:"total_raw"`
-	XGRaw         float64 `json:"xg_raw"`
-	FixturesNorm  float64 `json:"fixtures_norm"`
-	FormNorm      float64 `json:"form_norm"`
-	TotalNorm     float64 `json:"total_norm"`
-	XGNorm        float64 `json:"xg_norm"`
-	WeightedScore float64 `json:"weighted_score"`
+	FixturesRaw      float64 `json:"fixtures_raw"`
+	FixturesSeason   float64 `json:"fixtures_season"`
+	FixturesRecent   float64 `json:"fixtures_recent"`
+	FormRaw          float64 `json:"form_raw"`
+	TotalRaw         float64 `json:"total_raw"`
+	XGRaw            float64 `json:"xg_raw"`
+	AvgPoints        float64 `json:"avg_points"`
+	StdDevPoints     float64 `json:"stddev_points"`
+	ConsistencyScore float64 `json:"consistency_score"`
+	FixturesNorm     float64 `json:"fixtures_norm"`
+	FormNorm         float64 `json:"form_norm"`
+	TotalNorm        float64 `json:"total_norm"`
+	XGNorm           float64 `json:"xg_norm"`
+	WeightedScore    float64 `json:"weighted_score"`
 }
 
 type FixtureContext struct {
+	FixtureID     int    `json:"fixture_id,omitempty"`
+	Event         int    `json:"event,omitempty"`
+	TeamID        int    `json:"team_id,omitempty"`
+	TeamShort     string `json:"team_short,omitempty"`
 	OpponentID    int    `json:"opponent_id"`
 	OpponentShort string `json:"opponent_short"`
 	Venue         string `json:"venue"`
@@ -69,15 +90,17 @@ type AvailabilityInfo struct {
 }
 
 type AddRecommendation struct {
-	Element       int                 `json:"element"`
-	Name          string              `json:"name"`
-	Team          string              `json:"team"`
-	PositionType  int                 `json:"position_type"`
-	Fixture       FixtureContext      `json:"fixture"`
-	Availability  AvailabilityInfo    `json:"availability"`
-	Score         ScoreComponents     `json:"score"`
-	SuggestedDrop *DropRecommendation `json:"suggested_drop,omitempty"`
-	Reasons       []string            `json:"reasons"`
+	Element            int                 `json:"element"`
+	Name               string              `json:"name"`
+	Team               string              `json:"team"`
+	PositionType       int                 `json:"position_type"`
+	Fixture            FixtureContext      `json:"fixture"`
+	Availability       AvailabilityInfo    `json:"availability"`
+	Score              ScoreComponents     `json:"score"`
+	PreviousOwners     []string            `json:"previous_owners,omitempty"`
+	PreviousOwnerCount int                 `json:"previous_owner_count,omitempty"`
+	SuggestedDrop      *DropRecommendation `json:"suggested_drop,omitempty"`
+	Reasons            []string            `json:"reasons"`
 }
 
 type DropRecommendation struct {
@@ -106,6 +129,7 @@ type elementInfo struct {
 }
 
 type fixture struct {
+	ID    int
 	Event int
 	TeamH int
 	TeamA int
@@ -145,18 +169,29 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 	wTotal /= weightSum
 	wXG /= weightSum
 
-	currentGW, err := resolveGW(cfg, 0)
+	consistencyK := args.ConsistencyK
+	if consistencyK == 0 {
+		consistencyK = 0.63
+	}
+
+	targetType := strings.TrimSpace(strings.ToLower(args.TargetType))
+	if targetType == "" {
+		targetType = "overall"
+	}
+	if targetType != "overall" && targetType != "next_fixture" && targetType != "consistency" {
+		targetType = "overall"
+	}
+
+	targetPosition := args.TargetPosition
+	if targetPosition < 0 || targetPosition > 4 {
+		targetPosition = 0
+	}
+
+	asOfGW, nextGW, err := resolveAsOfAndNextGW(cfg, 0, args.GW)
 	if err != nil {
 		return nil, err
 	}
-	targetGW := args.GW
-	if targetGW <= 0 {
-		targetGW = currentGW + 1
-	}
-	asOfGW := targetGW - 1
-	if asOfGW < 1 {
-		asOfGW = 1
-	}
+	targetGW := nextGW
 
 	bootstrap, teamShort, fixturesByGW, err := loadBootstrapData(cfg.RawRoot)
 	if err != nil {
@@ -184,11 +219,33 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 		return nil, err
 	}
 
-	conceded := computePointsConcededByPosition(cfg.RawRoot, bootstrap, fixturesByGW, asOfGW, h)
+	avgPtsByElement, stddevPtsByElement, err := computeConsistencyStats(cfg.RawRoot, bootstrap, asOfGW, h)
+	if err != nil {
+		return nil, err
+	}
+
+	seasonWeight, recentWeight := horizonWeights(h)
+	concededSeason := computePointsConcededByPosition(cfg.RawRoot, bootstrap, fixturesByGW, asOfGW, asOfGW)
+	concededRecent := computePointsConcededByPosition(cfg.RawRoot, bootstrap, fixturesByGW, asOfGW, h)
+
+	everOwnersByElement, err := buildEverOwners(cfg, args.LeagueID)
+	if err != nil {
+		return nil, err
+	}
+
+	undroppable := make(map[int]bool, len(args.UndroppableIDs))
+	for _, id := range args.UndroppableIDs {
+		if id > 0 {
+			undroppable[id] = true
+		}
+	}
 
 	candidates := make([]scoredPlayer, 0)
 	for _, info := range bootstrap {
 		if info.PositionType == 0 {
+			continue
+		}
+		if targetPosition != 0 && info.PositionType != targetPosition {
 			continue
 		}
 		if info.Status != "a" {
@@ -206,9 +263,12 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 		if !ok {
 			continue
 		}
-		fixtureScore := fixtureDifficulty(conceded, fixtureCtx.OpponentID, fixtureCtx.Venue, info.PositionType)
+		seasonScore, recentScore, blended := blendedFixtureScore(concededSeason, concededRecent, fixtureCtx.OpponentID, fixtureCtx.Venue, info.PositionType, seasonWeight, recentWeight)
 		form := formByElement[info.ID]
 		xg := xgByElement[info.ID]
+		avgPts := avgPtsByElement[info.ID]
+		stddev := stddevPtsByElement[info.ID]
+		consistency := avgPts - consistencyK*stddev
 		candidates = append(candidates, scoredPlayer{
 			info:    info,
 			fixture: fixtureCtx,
@@ -217,10 +277,15 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 				Minutes60Season: season,
 			},
 			score: ScoreComponents{
-				FixturesRaw: fixtureScore,
-				FormRaw:     form.PointsPerGW,
-				TotalRaw:    float64(info.TotalPoints),
-				XGRaw:       xg,
+				FixturesRaw:      blended,
+				FixturesSeason:   seasonScore,
+				FixturesRecent:   recentScore,
+				FormRaw:          form.PointsPerGW,
+				TotalRaw:         float64(info.TotalPoints),
+				XGRaw:            xg,
+				AvgPoints:        avgPts,
+				StdDevPoints:     stddev,
+				ConsistencyScore: consistency,
 			},
 		})
 	}
@@ -234,14 +299,28 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 				wXG*candidates[i].score.XGNorm
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].score.WeightedScore > candidates[j].score.WeightedScore
+		switch targetType {
+		case "next_fixture":
+			if candidates[i].score.FixturesRaw != candidates[j].score.FixturesRaw {
+				return candidates[i].score.FixturesRaw > candidates[j].score.FixturesRaw
+			}
+			return candidates[i].score.WeightedScore > candidates[j].score.WeightedScore
+		case "consistency":
+			if candidates[i].score.ConsistencyScore != candidates[j].score.ConsistencyScore {
+				return candidates[i].score.ConsistencyScore > candidates[j].score.ConsistencyScore
+			}
+			return candidates[i].score.WeightedScore > candidates[j].score.WeightedScore
+		default:
+			return candidates[i].score.WeightedScore > candidates[j].score.WeightedScore
+		}
 	})
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
 	}
 
-	rosterScored := scoreRoster(bootstrap, teamShort, formByElement, xgByElement, fixtureByTeam, roster, conceded, minmax, wFix, wForm, wTotal, wXG)
-	dropCandidates := pickDropCandidates(rosterScored)
+	rosterScored := scoreRoster(bootstrap, teamShort, formByElement, xgByElement, fixtureByTeam, roster, concededSeason, concededRecent, seasonWeight, recentWeight, minmax, wFix, wForm, wTotal, wXG)
+	dropsByPos, warnings := pickDropCandidatesByPosition(rosterScored, undroppable, candidates, targetPosition)
+	dropCandidates := flattenDrops(dropsByPos)
 
 	adds := make([]AddRecommendation, 0, len(candidates))
 	for _, c := range candidates {
@@ -251,42 +330,50 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 			fmt.Sprintf("season points %.0f", c.score.TotalRaw),
 			fmt.Sprintf("xG %.2f", c.score.XGRaw),
 		}
+		prevOwners := everOwnersByElement[c.info.ID]
 		add := AddRecommendation{
-			Element:      c.info.ID,
-			Name:         c.info.Name,
-			Team:         teamShort[c.info.TeamID],
-			PositionType: c.info.PositionType,
-			Fixture:      c.fixture,
-			Availability: c.availability,
-			Score:        c.score,
-			Reasons:      reasons,
+			Element:            c.info.ID,
+			Name:               c.info.Name,
+			Team:               teamShort[c.info.TeamID],
+			PositionType:       c.info.PositionType,
+			Fixture:            c.fixture,
+			Availability:       c.availability,
+			Score:              c.score,
+			PreviousOwners:     prevOwners,
+			PreviousOwnerCount: len(prevOwners),
+			Reasons:            reasons,
 		}
-		if drop := bestDropForPosition(rosterScored, c.info.PositionType); drop != nil {
+		if drop := bestDropForPosition(dropsByPos, c.info.PositionType, c.score.WeightedScore); drop != nil {
 			add.SuggestedDrop = drop
 		}
 		adds = append(adds, add)
 	}
 
 	report := WaiverRecommendationsReport{
-		LeagueID:       args.LeagueID,
-		EntryID:        args.EntryID,
-		AsOfGW:         asOfGW,
-		TargetGW:       targetGW,
-		Horizon:        h,
-		WeightFixtures: wFix,
-		WeightForm:     wForm,
-		WeightTotal:    wTotal,
-		WeightXG:       wXG,
-		Adds:           adds,
-		Drops:          dropCandidates,
+		LeagueID:        args.LeagueID,
+		EntryID:         args.EntryID,
+		AsOfGW:          asOfGW,
+		TargetGW:        targetGW,
+		Horizon:         h,
+		WeightFixtures:  wFix,
+		WeightForm:      wForm,
+		WeightTotal:     wTotal,
+		WeightXG:        wXG,
+		Adds:            adds,
+		Drops:           dropCandidates,
+		DropsByPosition: dropsByPos,
+		Warnings:        warnings,
 		Notes: []string{
 			"Uses unrostered pool only, status=available (status 'a').",
 			"Eligibility: 60+ mins in each of last 3 GWs OR 60+ mins in at least 10 GWs this season.",
-			"Fixture score uses opponent points conceded by position, split home/away, over recent horizon.",
+			"Fixture score uses opponent points conceded by position, split home/away, blended season and recent horizon.",
 		},
 	}
 	report.Filters.Minutes60Last3 = 3
 	report.Filters.Minutes60Season = 10
+	report.TargetPosition = targetPosition
+	report.TargetType = targetType
+	report.ConsistencyK = consistencyK
 
 	return json.MarshalIndent(report, "", "  ")
 }
@@ -331,6 +418,99 @@ func buildOwnershipAndRoster(summaryData summary.LeagueWeekSummary, entryID int)
 	return owned, roster
 }
 
+func buildEverOwners(cfg ServerConfig, leagueID int) (map[int][]string, error) {
+	st := store.NewJSONStore(cfg.RawRoot)
+	ld, _, err := loadLeagueDetails(st, leagueID)
+	if err != nil {
+		return nil, err
+	}
+	entryNameByID := make(map[int]string, len(ld.LeagueEntries))
+	for _, e := range ld.LeagueEntries {
+		entryNameByID[e.EntryID] = e.EntryName
+	}
+
+	if err := ensureLedger(st, cfg.DerivedRoot, leagueID); err != nil {
+		return nil, err
+	}
+	ledgerPath := filepath.Join(cfg.DerivedRoot, fmt.Sprintf("ledger/%d/event_0.json", leagueID))
+	raw, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		return nil, err
+	}
+	var ledgerOut model.DraftLedger
+	if err := json.Unmarshal(raw, &ledgerOut); err != nil {
+		return nil, err
+	}
+
+	transactions, err := loadTransactionsRaw(st, leagueID)
+	if err != nil {
+		return nil, err
+	}
+	trades, err := loadTradesRaw(st, leagueID)
+	if err != nil {
+		return nil, err
+	}
+
+	ever := make(map[int]map[int]bool)
+	addOwner := func(elementID int, entryID int) {
+		if elementID == 0 || entryID == 0 {
+			return
+		}
+		if _, ok := ever[elementID]; !ok {
+			ever[elementID] = make(map[int]bool)
+		}
+		ever[elementID][entryID] = true
+	}
+
+	for _, squad := range ledgerOut.Squads {
+		for _, pid := range squad.PlayerIDs {
+			addOwner(pid, squad.EntryID)
+		}
+	}
+
+	for _, tx := range transactions {
+		if tx.Result != "a" {
+			continue
+		}
+		if tx.ElementIn != 0 {
+			addOwner(tx.ElementIn, tx.Entry)
+		}
+		if tx.ElementOut != 0 {
+			addOwner(tx.ElementOut, tx.Entry)
+		}
+	}
+
+	for _, tr := range trades {
+		if tr.State != "p" {
+			continue
+		}
+		for _, item := range tr.TradeItems {
+			if item.ElementOut != 0 {
+				addOwner(item.ElementOut, tr.OfferedEntry)
+				addOwner(item.ElementOut, tr.ReceivedEntry)
+			}
+			if item.ElementIn != 0 {
+				addOwner(item.ElementIn, tr.ReceivedEntry)
+				addOwner(item.ElementIn, tr.OfferedEntry)
+			}
+		}
+	}
+
+	out := make(map[int][]string, len(ever))
+	for elementID, owners := range ever {
+		names := make([]string, 0, len(owners))
+		for entryID := range owners {
+			if name, ok := entryNameByID[entryID]; ok && name != "" {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		out[elementID] = names
+	}
+
+	return out, nil
+}
+
 func loadBootstrapData(rawRoot string) ([]elementInfo, map[int]string, map[int][]fixture, error) {
 	path := filepath.Join(rawRoot, "bootstrap", "bootstrap-static.json")
 	raw, err := os.ReadFile(path)
@@ -351,6 +531,7 @@ func loadBootstrapData(rawRoot string) ([]elementInfo, map[int]string, map[int][
 			ShortName string `json:"short_name"`
 		} `json:"teams"`
 		Fixtures map[string][]struct {
+			ID    int `json:"id"`
 			Event int `json:"event"`
 			TeamH int `json:"team_h"`
 			TeamA int `json:"team_a"`
@@ -385,6 +566,7 @@ func loadBootstrapData(rawRoot string) ([]elementInfo, map[int]string, map[int][
 		}
 		for _, f := range list {
 			fixtures[gw] = append(fixtures[gw], fixture{
+				ID:    f.ID,
 				Event: gw,
 				TeamH: f.TeamH,
 				TeamA: f.TeamA,
@@ -394,15 +576,47 @@ func loadBootstrapData(rawRoot string) ([]elementInfo, map[int]string, map[int][
 	return elements, teams, fixtures, nil
 }
 
+func loadTransactionsRaw(st *store.JSONStore, leagueID int) ([]reconcile.Transaction, error) {
+	raw, err := st.ReadRaw(fmt.Sprintf("league/%d/transactions.json", leagueID))
+	if err != nil {
+		return nil, err
+	}
+	var resp reconcile.TransactionsResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Transactions, nil
+}
+
+func loadTradesRaw(st *store.JSONStore, leagueID int) ([]reconcile.Trade, error) {
+	raw, err := st.ReadRaw(fmt.Sprintf("league/%d/trades.json", leagueID))
+	if err != nil {
+		return nil, err
+	}
+	var resp reconcile.TradesResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Trades, nil
+}
+
 func buildFixtureIndex(fixtures []fixture, teamShort map[int]string) map[int]FixtureContext {
 	out := make(map[int]FixtureContext)
 	for _, f := range fixtures {
 		out[f.TeamH] = FixtureContext{
+			FixtureID:     f.ID,
+			Event:         f.Event,
+			TeamID:        f.TeamH,
+			TeamShort:     teamShort[f.TeamH],
 			OpponentID:    f.TeamA,
 			OpponentShort: teamShort[f.TeamA],
 			Venue:         "HOME",
 		}
 		out[f.TeamA] = FixtureContext{
+			FixtureID:     f.ID,
+			Event:         f.Event,
+			TeamID:        f.TeamA,
+			TeamShort:     teamShort[f.TeamA],
 			OpponentID:    f.TeamH,
 			OpponentShort: teamShort[f.TeamH],
 			Venue:         "AWAY",
@@ -445,6 +659,61 @@ func computeAvailabilityAndXG(rawRoot string, elements []elementInfo, asOfGW int
 		}
 	}
 	return season60, last3, xg, nil
+}
+
+func computeConsistencyStats(rawRoot string, elements []elementInfo, asOfGW int, horizon int) (map[int]float64, map[int]float64, error) {
+	if asOfGW < 1 {
+		return map[int]float64{}, map[int]float64{}, nil
+	}
+	start := asOfGW - horizon + 1
+	if start < 1 {
+		start = 1
+	}
+
+	type agg struct {
+		sum   float64
+		sumSq float64
+		count float64
+	}
+
+	stats := make(map[int]*agg, len(elements))
+	for _, e := range elements {
+		stats[e.ID] = &agg{}
+	}
+
+	for gw := start; gw <= asOfGW; gw++ {
+		live, err := loadLiveStats(rawRoot, gw)
+		if err != nil {
+			continue
+		}
+		for _, e := range elements {
+			points := 0.0
+			if s, ok := live[e.ID]; ok {
+				points = float64(s.TotalPoints)
+			}
+			cur := stats[e.ID]
+			cur.sum += points
+			cur.sumSq += points * points
+			cur.count++
+		}
+	}
+
+	avg := make(map[int]float64, len(elements))
+	stddev := make(map[int]float64, len(elements))
+	for _, e := range elements {
+		cur := stats[e.ID]
+		if cur.count == 0 {
+			continue
+		}
+		mean := cur.sum / cur.count
+		variance := (cur.sumSq / cur.count) - (mean * mean)
+		if variance < 0 {
+			variance = 0
+		}
+		avg[e.ID] = mean
+		stddev[e.ID] = math.Sqrt(variance)
+	}
+	return avg, stddev, nil
 }
 
 func loadLiveStats(rawRoot string, gw int) (map[int]liveStats, error) {
@@ -626,7 +895,7 @@ func minMax(v, min, max float64) float64 {
 	return (v - min) / (max - min)
 }
 
-func scoreRoster(elements []elementInfo, teamShort map[int]string, form map[int]summary.PlayerForm, xg map[int]float64, fixtures map[int]FixtureContext, roster []summary.RosterPlayer, conceded map[int]map[string]map[int]avgStat, minmax scoreMinMax, wFix, wForm, wTotal, wXG float64) []DropRecommendation {
+func scoreRoster(elements []elementInfo, teamShort map[int]string, form map[int]summary.PlayerForm, xg map[int]float64, fixtures map[int]FixtureContext, roster []summary.RosterPlayer, concededSeason map[int]map[string]map[int]avgStat, concededRecent map[int]map[string]map[int]avgStat, seasonWeight float64, recentWeight float64, minmax scoreMinMax, wFix, wForm, wTotal, wXG float64) []DropRecommendation {
 	elementByID := make(map[int]elementInfo, len(elements))
 	for _, e := range elements {
 		elementByID[e.ID] = e
@@ -641,11 +910,11 @@ func scoreRoster(elements []elementInfo, teamShort map[int]string, form map[int]
 		if !ok {
 			continue
 		}
-		fixtureScore := fixtureDifficulty(conceded, fx.OpponentID, fx.Venue, info.PositionType)
+		_, _, blended := blendedFixtureScore(concededSeason, concededRecent, fx.OpponentID, fx.Venue, info.PositionType, seasonWeight, recentWeight)
 		formScore := form[info.ID].PointsPerGW
 		totalScore := float64(info.TotalPoints)
 		xgScore := xg[info.ID]
-		weighted := wFix*minMax(fixtureScore, minmax.FixMin, minmax.FixMax) +
+		weighted := wFix*minMax(blended, minmax.FixMin, minmax.FixMax) +
 			wForm*minMax(formScore, minmax.FormMin, minmax.FormMax) +
 			wTotal*minMax(totalScore, minmax.TotalMin, minmax.TotalMax) +
 			wXG*minMax(xgScore, minmax.XGMin, minmax.XGMax)
@@ -663,27 +932,87 @@ func scoreRoster(elements []elementInfo, teamShort map[int]string, form map[int]
 	return drops
 }
 
-func pickDropCandidates(drops []DropRecommendation) []DropRecommendation {
-	n := 3
-	if len(drops) < n {
-		n = len(drops)
+func pickDropCandidatesByPosition(drops []DropRecommendation, undroppable map[int]bool, adds []scoredPlayer, targetPos int) (map[string][]DropRecommendation, []string) {
+	bestAddByPos := make(map[int]float64)
+	for _, a := range adds {
+		if a.score.WeightedScore > bestAddByPos[a.info.PositionType] {
+			bestAddByPos[a.info.PositionType] = a.score.WeightedScore
+		}
 	}
-	out := make([]DropRecommendation, 0, n)
-	for i := 0; i < n; i++ {
-		d := drops[i]
-		d.Reason = "Lowest weighted score on roster"
-		out = append(out, d)
+
+	byPos := make(map[string][]DropRecommendation)
+	warnings := make([]string, 0)
+	totalDroppable := 0
+
+	for pos := 1; pos <= 4; pos++ {
+		posLabel := positionLabel(pos)
+		posDrops := make([]DropRecommendation, 0)
+		for _, d := range drops {
+			if d.PositionType != pos {
+				continue
+			}
+			if undroppable[d.Element] {
+				continue
+			}
+			posDrops = append(posDrops, d)
+		}
+
+		if len(posDrops) == 0 {
+			if targetPos == 0 || targetPos == pos {
+				warnings = append(warnings, fmt.Sprintf("All %s are undroppable. Make someone droppable if you want recommendations for this position.", posLabel))
+			}
+			continue
+		}
+
+		sort.Slice(posDrops, func(i, j int) bool {
+			return posDrops[i].Score < posDrops[j].Score
+		})
+		totalDroppable += len(posDrops)
+
+		pick := posDrops[0]
+		if pos == 1 {
+			bestAdd := bestAddByPos[pos]
+			if bestAdd <= pick.Score {
+				if targetPos == 0 || targetPos == pos {
+					warnings = append(warnings, "No better GK add available; GK drops omitted.")
+				}
+				continue
+			}
+		}
+
+		pick.Reason = "Lowest weighted score at position"
+		byPos[posLabel] = []DropRecommendation{pick}
+	}
+
+	if totalDroppable == 0 {
+		warnings = append(warnings, "All players are undroppable. Make someone droppable if you want recommendations.")
+	}
+
+	return byPos, warnings
+}
+
+func flattenDrops(byPos map[string][]DropRecommendation) []DropRecommendation {
+	order := []string{"GK", "DEF", "MID", "FWD"}
+	out := make([]DropRecommendation, 0)
+	for _, pos := range order {
+		if list, ok := byPos[pos]; ok {
+			out = append(out, list...)
+		}
 	}
 	return out
 }
 
-func bestDropForPosition(drops []DropRecommendation, pos int) *DropRecommendation {
-	for _, d := range drops {
-		if d.PositionType == pos {
-			out := d
-			out.Reason = "Lowest weighted score at position"
-			return &out
-		}
+func bestDropForPosition(dropsByPos map[string][]DropRecommendation, pos int, addScore float64) *DropRecommendation {
+	label := positionLabel(pos)
+	list := dropsByPos[label]
+	if len(list) == 0 {
+		return nil
 	}
-	return nil
+	d := list[0]
+	if addScore <= d.Score {
+		return nil
+	}
+	out := d
+	out.Reason = "Lowest weighted score at position"
+	return &out
 }

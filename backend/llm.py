@@ -33,12 +33,23 @@ class LLMClient:
     def generate(self, system: str, user: str) -> str:
         if not self.client:
             return ""
-        resp = self.client.responses.create(
+        # Support both new Responses API and older Chat Completions.
+        if hasattr(self.client, "responses"):
+            resp = self.client.responses.create(
+                model=SETTINGS.openai_model,
+                instructions=system,
+                input=user,
+            )
+            return _extract_text(resp)
+
+        resp = self.client.chat.completions.create(
             model=SETTINGS.openai_model,
-            instructions=system,
-            input=user,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
         )
-        return _extract_text(resp)
+        return resp.choices[0].message.content or ""
 
 
 def try_parse_json(text: str) -> Tuple[Dict[str, Any], bool]:

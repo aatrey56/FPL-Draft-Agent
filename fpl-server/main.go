@@ -285,6 +285,18 @@ func main() {
 	})
 
 	addTool(server, &registry, &mcp.Tool{
+		Name:        "fixture_difficulty",
+		Description: "Rank next-gameweek fixtures by opponent points conceded per position (home/away), with season/recent blend",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args FixtureDifficultyArgs) (*mcp.CallToolResult, any, error) {
+		out, err := buildFixtureDifficulty(cfg, args)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		return toolJSONBytes(b), nil, nil
+	})
+
+	addTool(server, &registry, &mcp.Tool{
 		Name:        "player_lookup",
 		Description: "Lookup a player by element id",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args PlayerLookupArgs) (*mcp.CallToolResult, any, error) {
