@@ -78,6 +78,24 @@ class Agent:
 
     def _apply_defaults(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         out = dict(args or {})
+        if name in ("manager_schedule", "league_entries"):
+            first = out.get("first")
+            last = out.get("last")
+            if first or last:
+                entry_name = " ".join([p for p in [str(first or "").strip(), str(last or "").strip()] if p])
+                if entry_name and not out.get("entry_name"):
+                    out["entry_name"] = entry_name
+                out.pop("first", None)
+                out.pop("last", None)
+            if isinstance(out.get("entry_name"), dict):
+                name_dict = out.get("entry_name") or {}
+                first = name_dict.get("first")
+                last = name_dict.get("last")
+                entry_name = " ".join([p for p in [str(first or "").strip(), str(last or "").strip()] if p])
+                if entry_name:
+                    out["entry_name"] = entry_name
+                else:
+                    out.pop("entry_name", None)
         league_id = int(out.get("league_id", 0)) if out.get("league_id") is not None else 0
         if league_id == 0:
             league_id = 14204
@@ -89,8 +107,21 @@ class Agent:
             out.setdefault("league_id", league_id)
         if name == "fixtures":
             out.setdefault("league_id", league_id)
+            if "gw" in out and "as_of_gw" not in out:
+                out["as_of_gw"] = out.pop("gw")
             out.setdefault("as_of_gw", 0)
             out.setdefault("horizon", 1)
+            allowed = {"league_id", "as_of_gw", "horizon"}
+            out = {k: v for k, v in out.items() if k in allowed}
+        if name == "manager_schedule":
+            out.setdefault("league_id", league_id)
+            out.setdefault("horizon", 1)
+            allowed = {"league_id", "entry_id", "entry_name", "gw", "horizon"}
+            out = {k: v for k, v in out.items() if k in allowed}
+        if name == "league_entries":
+            out.setdefault("league_id", league_id)
+            allowed = {"league_id"}
+            out = {k: v for k, v in out.items() if k in allowed}
         if name == "player_form":
             out.setdefault("league_id", league_id)
             out.setdefault("horizon", 5)
