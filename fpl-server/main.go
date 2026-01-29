@@ -339,6 +339,18 @@ func main() {
 		return toolJSONBytes(b), nil, nil
 	})
 
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "league_entries",
+		Description: "List league teams (entry id/name) from league details",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args LeagueEntriesArgs) (*mcp.CallToolResult, any, error) {
+		out, err := buildLeagueEntries(cfg, args.LeagueID)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		return toolJSONBytes(b), nil, nil
+	})
+
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
 	}, &mcp.StreamableHTTPOptions{JSONResponse: true})

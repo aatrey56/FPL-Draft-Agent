@@ -12,6 +12,13 @@ Return ONLY a JSON object in one of these forms:
 2) {"action":"final","content":"..."}
 If you need more data, choose action=tool. Do not guess.
 
+Important tool-routing guidance:
+- For questions like "who does X play", "schedule", or "matchup", use manager_schedule (NOT league_summary).
+- For "list all teams in my league" or to resolve a team name to entry_id, use league_entries.
+- For roster/player lists for a team, use league_summary with league_id and gw.
+- If required arguments are missing or ambiguous (e.g., team name), ask a follow-up using action=final.
+- Never pass null values in arguments. Omit missing fields instead.
+
 Example tool call:
 {"action":"tool","name":"league_summary","arguments":{"league_id":14204,"gw":0}}
 """
@@ -78,6 +85,8 @@ class Agent:
                     "strength_of_schedule", "ownership_scarcity"):
             out.setdefault("league_id", league_id)
             out.setdefault("gw", 0)
+        if name in ("league_entries", "manager_schedule"):
+            out.setdefault("league_id", league_id)
         if name == "fixtures":
             out.setdefault("league_id", league_id)
             out.setdefault("as_of_gw", 0)

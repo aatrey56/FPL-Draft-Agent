@@ -9,11 +9,11 @@ import (
 )
 
 type ManagerScheduleArgs struct {
-	LeagueID  int    `json:"league_id" jsonschema:"Draft league id (required)"`
-	EntryID   int    `json:"entry_id" jsonschema:"Entry id"`
-	EntryName string `json:"entry_name" jsonschema:"Entry name (if entry_id not provided)"`
-	GW        int    `json:"gw" jsonschema:"Gameweek to query (0 = all)"`
-	Horizon   int    `json:"horizon" jsonschema:"Number of future GWs to include when gw is set (default 1)"`
+	LeagueID  int     `json:"league_id" jsonschema:"Draft league id (required)"`
+	EntryID   *int    `json:"entry_id,omitempty" jsonschema:"Entry id"`
+	EntryName *string `json:"entry_name,omitempty" jsonschema:"Entry name (if entry_id not provided)"`
+	GW        *int    `json:"gw,omitempty" jsonschema:"Gameweek to query (0 = auto)"`
+	Horizon   *int    `json:"horizon,omitempty" jsonschema:"Number of future GWs to include when gw is set (default 1)"`
 }
 
 type ManagerScheduleEntry struct {
@@ -68,7 +68,10 @@ func buildManagerSchedule(cfg ServerConfig, args ManagerScheduleArgs) (ManagerSc
 		return ManagerScheduleOutput{}, err
 	}
 
-	entryID := args.EntryID
+	entryID := 0
+	if args.EntryID != nil {
+		entryID = *args.EntryID
+	}
 	entryName := ""
 	leagueEntryID := 0
 
@@ -83,7 +86,10 @@ func buildManagerSchedule(cfg ServerConfig, args ManagerScheduleArgs) (ManagerSc
 	}
 
 	if entryID == 0 {
-		name := strings.TrimSpace(args.EntryName)
+		name := ""
+		if args.EntryName != nil {
+			name = strings.TrimSpace(*args.EntryName)
+		}
 		if name == "" {
 			return ManagerScheduleOutput{}, fmt.Errorf("entry_id or entry_name is required")
 		}
@@ -110,13 +116,28 @@ func buildManagerSchedule(cfg ServerConfig, args ManagerScheduleArgs) (ManagerSc
 
 	minGW := 1
 	maxGW := 38
-	if args.GW > 0 {
-		minGW = args.GW
-		h := args.Horizon
-		if h <= 0 {
-			h = 1
+	gw := 0
+	if args.GW != nil {
+		gw = *args.GW
+	}
+	if gw <= 0 {
+		meta, err := loadGameMeta(cfg)
+		if err == nil {
+			if meta.CurrentEventFinished && meta.NextEvent > 0 {
+				gw = meta.NextEvent
+			} else if meta.CurrentEvent > 0 {
+				gw = meta.CurrentEvent
+			}
 		}
-		maxGW = args.GW + h - 1
+	}
+
+	if gw > 0 {
+		minGW = gw
+		h := 1
+		if args.Horizon != nil && *args.Horizon > 0 {
+			h = *args.Horizon
+		}
+		maxGW = gw + h - 1
 	}
 
 	matches := make([]ManagerScheduleEntry, 0)
