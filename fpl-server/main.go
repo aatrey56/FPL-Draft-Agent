@@ -327,6 +327,18 @@ func main() {
 		return toolJSONBytes(out), nil, nil
 	})
 
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "manager_schedule",
+		Description: "Manager schedule from league details (no entry snapshots required)",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args ManagerScheduleArgs) (*mcp.CallToolResult, any, error) {
+		out, err := buildManagerSchedule(cfg, args)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		return toolJSONBytes(b), nil, nil
+	})
+
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
 	}, &mcp.StreamableHTTPOptions{JSONResponse: true})
