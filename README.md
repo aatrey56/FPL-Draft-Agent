@@ -105,6 +105,12 @@ PYTHONPATH=apps/backend python -m backend.cli --type trades --gw 0
 
 `--gw 0` auto-resolves to current GW (waivers/starting XI use current+1).
 
+**CI Checks**
+- Go: `gofmt` check, `go vet`, `go test`, and `go mod tidy` (diff check).
+- Python: byte-compile, `ruff check`, and `pytest`.
+
+Ruff check runs the Ruff linter on your Python codebase. It flags common bugs (unused imports, undefined names), style issues, and many “lint” rules (similar to flake8/isort/etc.). It can also auto-fix certain issues if you run it with `--fix`. The rules come from your `.ruff.toml`.
+
 **Config**
 - Copy `.env.example` to `.env` and fill in API keys.
 - Set `REPO_ROOT` if you run commands outside the repo root.
