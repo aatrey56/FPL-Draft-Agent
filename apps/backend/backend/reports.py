@@ -318,9 +318,9 @@ def render_standings_md(standings: Dict[str, Any]) -> str:
     for row in standings.get("rows", []):
         w = row.get("wins", 0)
         d = row.get("draws", 0)
-        l = row.get("losses", 0)
+        losses = row.get("losses", 0)
         lines.append(
-            f"| {row.get('rank', '')} | {row.get('entry_name', '')} | {w}-{d}-{l} | "
+            f"| {row.get('rank', '')} | {row.get('entry_name', '')} | {w}-{d}-{losses} | "
             f"{row.get('match_points', '')} | {row.get('points_for', '')} | {row.get('points_against', '')} |"
         )
     lines.append("")
