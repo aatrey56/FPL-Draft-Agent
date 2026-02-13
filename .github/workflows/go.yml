@@ -1,0 +1,38 @@
+name: Go CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/mcp-server/go.mod
+      - name: gofmt (check)
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt required on:"
+            echo "$unformatted"
+            exit 1
+          fi
+        working-directory: apps/mcp-server
+      - name: Go vet
+        run: go vet ./...
+        working-directory: apps/mcp-server
+      - name: Go test
+        run: go test ./...
+        working-directory: apps/mcp-server
+      - name: Go mod tidy (check)
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+        working-directory: apps/mcp-server
