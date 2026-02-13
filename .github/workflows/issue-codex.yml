@@ -13,7 +13,11 @@ jobs:
   codex-issue:
     if: >-
       github.event.issue.pull_request == null &&
-      contains(toLower(github.event.comment.body), 'codex') &&
+      (
+        contains(github.event.comment.body, 'codex') ||
+        contains(github.event.comment.body, 'Codex') ||
+        contains(github.event.comment.body, 'CODEX')
+      ) &&
       github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
