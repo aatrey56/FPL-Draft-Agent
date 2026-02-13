@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>FPL MCP Reports</title>
+    <style>
+      :root {
+        --bg: #0c0f12;
+        --panel: #151a1f;
+        --ink: #e8edf2;
+        --accent: #3bd18a;
+        --muted: #9aa4ad;
+        --border: #222a33;
+      }
+      body {
+        margin: 0;
+        font-family: "Georgia", "Times New Roman", serif;
+        background: radial-gradient(1200px 600px at 20% 10%, #1b2530, #0c0f12);
+        color: var(--ink);
+      }
+      header {
+        padding: 20px 28px;
+        border-bottom: 2px solid var(--border);
+      }
+      .league-bar {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 28px 0;
+      }
+      .league-bar .panel {
+        width: min(780px, 92vw);
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 10px;
+        align-items: center;
+      }
+      .league-status {
+        text-align: center;
+        font-size: 12px;
+        color: var(--muted);
+        padding: 6px 28px 0;
+      }
+      .wrap {
+        display: grid;
+        grid-template-columns: 1fr 360px;
+        gap: 20px;
+        padding: 20px 28px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+      }
+      .chat-log {
+        height: 60vh;
+        overflow: auto;
+        border: 1px solid var(--border);
+        padding: 12px;
+        border-radius: 10px;
+        background: #11161c;
+      }
+      .msg { margin-bottom: 12px; white-space: pre-wrap; }
+      .msg.user { color: #8ee5c3; }
+      .msg.bot { color: #e8edf2; }
+      .msg.bot h3 {
+        margin: 10px 0 6px;
+        font-size: 18px;
+      }
+      .msg.bot p {
+        margin: 6px 0;
+        line-height: 1.4;
+      }
+      .msg.bot table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 10px 0;
+        font-size: 14px;
+      }
+      .msg.bot th, .msg.bot td {
+        border: 1px solid var(--border);
+        padding: 8px 10px;
+        text-align: left;
+      }
+      .msg.bot th {
+        background: #0f141a;
+        color: var(--accent);
+      }
+      .msg.bot tr:nth-child(even) td {
+        background: #0e1217;
+      }
+      .tool {
+        font-size: 12px;
+        color: var(--muted);
+        background: #0f1318;
+        padding: 6px 8px;
+        border-radius: 6px;
+        margin: 6px 0;
+        border: 1px solid var(--border);
+      }
+      input, button, textarea {
+        font-family: inherit;
+        font-size: 14px;
+      }
+      input {
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        padding: 8px;
+        background: #0f1318;
+        color: var(--ink);
+      }
+      input::placeholder { color: #6d7882; }
+      input[type="number"]::-webkit-outer-spin-button,
+      input[type="number"]::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+      input[type="number"] {
+        -moz-appearance: textfield;
+        appearance: textfield;
+      }
+      textarea {
+        width: 100%;
+        height: 80px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        padding: 8px;
+        background: #0f1318;
+        color: var(--ink);
+      }
+      textarea::placeholder { color: #6d7882; }
+      button {
+        background: var(--accent);
+        color: #0b1116;
+        border: 0;
+        padding: 10px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .right h3 { margin-top: 0; }
+      .reports-list a { display:block; margin: 6px 0; color: #7fd8ff; }
+      .weights {
+        margin-top: 12px;
+        border-top: 1px solid var(--border);
+        padding-top: 12px;
+      }
+      .weight-row {
+        display: grid;
+        grid-template-columns: 90px 1fr 48px;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .weight-row input[type="range"] {
+        width: 100%;
+      }
+      .weight-title {
+        font-weight: 600;
+        color: var(--ink);
+        margin: 8px 0 6px;
+      }
+      @media (max-width: 980px) {
+        .wrap { grid-template-columns: 1fr; }
+        .league-bar .panel { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>FPL MCP Console</h1>
+      <div>Chat + tool visibility + reports</div>
+    </header>
+    <div class="league-bar">
+      <div class="panel">
+        <input id="leagueIdInput" type="number" placeholder="League ID" />
+        <input id="entryInput" type="text" placeholder="Entry ID or Team Name" />
+        <button id="setLeagueBtn">Set League</button>
+      </div>
+    </div>
+    <div id="leagueStatus" class="league-status">League not set</div>
+    <div class="wrap">
+      <div class="panel">
+        <div id="chatLog" class="chat-log"></div>
+        <textarea id="chatInput" placeholder="Ask a question or request a report... (⌘/Ctrl + Enter to send)"></textarea>
+        <div style="margin-top:8px;">
+          <button id="sendBtn">Send</button>
+        </div>
+      </div>
+      <div class="panel right">
+        <h3>Reports</h3>
+        <div class="weights" id="waiverWeights">
+          <div class="weight-title">Waivers Weights</div>
+          <div class="weight-row">
+            <span>Fixtures</span>
+            <input type="range" id="waiverFix" min="0" max="1" step="0.01" value="0.35" />
+            <span id="waiverFixVal">0.35</span>
+          </div>
+          <div class="weight-row">
+            <span>Form</span>
+            <input type="range" id="waiverForm" min="0" max="1" step="0.01" value="0.25" />
+            <span id="waiverFormVal">0.25</span>
+          </div>
+          <div class="weight-row">
+            <span>Total</span>
+            <input type="range" id="waiverTotal" min="0" max="1" step="0.01" value="0.25" />
+            <span id="waiverTotalVal">0.25</span>
+          </div>
+          <div class="weight-row">
+            <span>xG</span>
+            <input type="range" id="waiverXG" min="0" max="1" step="0.01" value="0.15" />
+            <span id="waiverXGVal">0.15</span>
+          </div>
+        </div>
+        <div class="weights" id="xiWeights">
+          <div class="weight-title">Starting XI Weights</div>
+          <div class="weight-row">
+            <span>Fixtures</span>
+            <input type="range" id="xiFix" min="0" max="1" step="0.01" value="0.35" />
+            <span id="xiFixVal">0.35</span>
+          </div>
+          <div class="weight-row">
+            <span>Form</span>
+            <input type="range" id="xiForm" min="0" max="1" step="0.01" value="0.30" />
+            <span id="xiFormVal">0.30</span>
+          </div>
+          <div class="weight-row">
+            <span>xGI</span>
+            <input type="range" id="xiXGI" min="0" max="1" step="0.01" value="0.25" />
+            <span id="xiXGIVal">0.25</span>
+          </div>
+          <div class="weight-row">
+            <span>Minutes</span>
+            <input type="range" id="xiMin" min="0" max="1" step="0.01" value="0.10" />
+            <span id="xiMinVal">0.10</span>
+          </div>
+        </div>
+        <div>
+          <button id="runWaivers">Run Waivers</button>
+          <button id="runLeague">Run League</button>
+          <button id="runXI">Run XI</button>
+        </div>
+        <div style="margin-top:12px;">
+          <button id="showCaps">Show Capabilities</button>
+        </div>
+        <pre id="capabilities" class="tool" style="display:none; white-space:pre-wrap;"></pre>
+        <div class="reports-list" id="reportLinks"></div>
+        <h3>Tool Calls</h3>
+        <div id="toolLog"></div>
+      </div>
+    </div>
+    <script>
+      const ws = new WebSocket(`ws://${location.host}/ws`);
+      const chatLog = document.getElementById("chatLog");
+      const toolLog = document.getElementById("toolLog");
+      const reportLinks = document.getElementById("reportLinks");
+      const capsBox = document.getElementById("capabilities");
+      const leagueStatus = document.getElementById("leagueStatus");
+
+      let leagueContext = { leagueId: "", entryValue: "" };
+
+      function escapeHtml(text) {
+        return text
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function renderMarkdown(text) {
+        const lines = text.split("\n");
+        const html = [];
+        let i = 0;
+
+        const flushParagraph = (buffer) => {
+          if (!buffer.length) return;
+          html.push(`<p>${escapeHtml(buffer.join(" ")).replace(/\\s+/g, " ").trim()}</p>`);
+          buffer.length = 0;
+        };
+
+        while (i < lines.length) {
+          const line = lines[i].trimEnd();
+          if (line.startsWith("# ")) {
+            html.push(`<h3>${escapeHtml(line.slice(2).trim())}</h3>`);
+            i += 1;
+            continue;
+          }
+
+          if (line.includes("|") && i + 1 < lines.length) {
+            const next = lines[i + 1];
+            const sep = next.replace(/[\s|]/g, "");
+            if (/^[-:]+$/.test(sep)) {
+              const tableLines = [];
+              while (i < lines.length && lines[i].includes("|")) {
+                tableLines.push(lines[i]);
+                i += 1;
+              }
+              const rows = tableLines.map((row) =>
+                row
+                  .split("|")
+                  .map((cell) => cell.trim())
+                  .filter((cell) => cell.length > 0)
+              );
+              if (rows.length >= 2) {
+                const headers = rows[0];
+                const bodyRows = rows.slice(2);
+                html.push("<table><thead><tr>");
+                headers.forEach((h) => html.push(`<th>${escapeHtml(h)}</th>`));
+                html.push("</tr></thead><tbody>");
+                bodyRows.forEach((r) => {
+                  html.push("<tr>");
+                  headers.forEach((_, idx) => {
+                    html.push(`<td>${escapeHtml(r[idx] || "")}</td>`);
+                  });
+                  html.push("</tr>");
+                });
+                html.push("</tbody></table>");
+                continue;
+              }
+            }
+          }
+
+          const paragraph = [];
+          while (i < lines.length && lines[i].trim() !== "") {
+            paragraph.push(lines[i].trim());
+            i += 1;
+          }
+          flushParagraph(paragraph);
+          while (i < lines.length && lines[i].trim() === "") {
+            i += 1;
+          }
+        }
+
+        return html.join("");
+      }
+
+      function addMsg(text, cls) {
+        const div = document.createElement("div");
+        div.className = `msg ${cls}`;
+        if (cls === "bot") {
+          div.innerHTML = renderMarkdown(text);
+        } else {
+          div.textContent = text;
+        }
+        chatLog.appendChild(div);
+        chatLog.scrollTop = chatLog.scrollHeight;
+      }
+      function addTool(text) {
+        const div = document.createElement("div");
+        div.className = "tool";
+        div.textContent = text;
+        toolLog.appendChild(div);
+      }
+
+      function bindSlider(id, outId) {
+        const el = document.getElementById(id);
+        const out = document.getElementById(outId);
+        const sync = () => { out.textContent = Number(el.value).toFixed(2); };
+        el.addEventListener("input", sync);
+        sync();
+      }
+
+      bindSlider("waiverFix", "waiverFixVal");
+      bindSlider("waiverForm", "waiverFormVal");
+      bindSlider("waiverTotal", "waiverTotalVal");
+      bindSlider("waiverXG", "waiverXGVal");
+      bindSlider("xiFix", "xiFixVal");
+      bindSlider("xiForm", "xiFormVal");
+      bindSlider("xiXGI", "xiXGIVal");
+      bindSlider("xiMin", "xiMinVal");
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "user") addMsg(msg.message, "user");
+        if (msg.type === "tool_call") addTool(`Calling ${msg.name}...`);
+        if (msg.type === "tool_result") addTool(`Result ${msg.name}`);
+        if (msg.type === "final") addMsg(msg.content, "bot");
+      };
+
+      function applyLeagueContext() {
+        const leagueId = document.getElementById("leagueIdInput").value.trim();
+        const entryValue = document.getElementById("entryInput").value.trim();
+        leagueContext = { leagueId, entryValue };
+        if (!leagueId) {
+          leagueStatus.textContent = "League not set";
+          return;
+        }
+        if (entryValue) {
+          leagueStatus.textContent = `League ${leagueId} • Entry ${entryValue}`;
+        } else {
+          leagueStatus.textContent = `League ${leagueId} • Entry not set`;
+        }
+      }
+
+      document.getElementById("setLeagueBtn").onclick = () => {
+        applyLeagueContext();
+        addTool("League context updated.");
+      };
+
+      function sendChat() {
+        const input = document.getElementById("chatInput");
+        if (!input.value.trim()) return;
+        const { leagueId, entryValue } = leagueContext;
+        const payload = { message: input.value.trim() };
+        if (leagueId) {
+          payload.league_id = Number(leagueId);
+        }
+        if (entryValue) {
+          if (/^[0-9]+$/.test(entryValue)) {
+            payload.entry_id = Number(entryValue);
+          } else {
+            payload.entry_name = entryValue;
+          }
+        }
+        ws.send(JSON.stringify(payload));
+        input.value = "";
+      }
+      document.getElementById("sendBtn").onclick = sendChat;
+      document.getElementById("chatInput").addEventListener("keydown", (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+          event.preventDefault();
+          sendChat();
+        }
+      });
+
+      async function runReport(type) {
+        const leagueId = leagueContext.leagueId || document.getElementById("leagueIdInput").value.trim();
+        const entryValue = leagueContext.entryValue || document.getElementById("entryInput").value.trim();
+        if (!leagueId) {
+          addTool("Error: league_id is required.");
+          return;
+        }
+        const entryId = entryValue && /^[0-9]+$/.test(entryValue) ? Number(entryValue) : undefined;
+        const entryName = entryValue && !/^[0-9]+$/.test(entryValue) ? entryValue : undefined;
+        const waiverWeights = {
+          fixtures: Number(document.getElementById("waiverFix").value),
+          form: Number(document.getElementById("waiverForm").value),
+          total: Number(document.getElementById("waiverTotal").value),
+          xg: Number(document.getElementById("waiverXG").value)
+        };
+        const xiWeights = {
+          fixtures: Number(document.getElementById("xiFix").value),
+          form: Number(document.getElementById("xiForm").value),
+          xgi: Number(document.getElementById("xiXGI").value),
+          minutes: Number(document.getElementById("xiMin").value)
+        };
+        const res = await fetch("/api/reports/run", {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({
+            type,
+            gw: 0,
+            league_id: leagueId ? Number(leagueId) : undefined,
+            entry_id: entryId,
+            entry_name: entryName,
+            waiver_weights: waiverWeights,
+            xi_weights: xiWeights
+          })
+        });
+        const data = await res.json();
+        reportLinks.innerHTML = "";
+        if (data.error) {
+          const div = document.createElement("div");
+          div.className = "tool";
+          div.textContent = `Error: ${data.error}`;
+          reportLinks.appendChild(div);
+          return;
+        }
+        if (data.paths) {
+          for (const [k,v] of Object.entries(data.paths)) {
+            const a = document.createElement("a");
+            a.href = "/reports/" + v;
+            a.textContent = `${type} (${k})`;
+            reportLinks.appendChild(a);
+          }
+        }
+      }
+      document.getElementById("runWaivers").onclick = () => runReport("waivers");
+      document.getElementById("runLeague").onclick = () => runReport("league_summary");
+      document.getElementById("runXI").onclick = () => runReport("starting_xi");
+      document.getElementById("showCaps").onclick = async () => {
+        const res = await fetch("/capabilities");
+        const data = await res.json();
+        capsBox.style.display = "block";
+        capsBox.textContent = JSON.stringify(data, null, 2);
+      };
+
+      applyLeagueContext();
+    </script>
+  </body>
+</html>

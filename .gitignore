@@ -6,6 +6,7 @@ data/
 reports/
 opencode.json
 fpldraft-mcp-server
+apps/mcp-server/fpldraft-mcp-server
 *.log
 *.tmp
 *.swp
