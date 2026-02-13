@@ -10,13 +10,13 @@ import (
 )
 
 type Client struct {
-	HTTP        *http.Client
-	Store       *store.JSONStore
-	BaseURL     string
-	UserAgent   string
-	Sleep       time.Duration
-	PrettyWrite bool
-	UseCache    bool
+	HTTP         *http.Client
+	Store        *store.JSONStore
+	BaseURL      string
+	UserAgent    string
+	Sleep        time.Duration
+	PrettyWrite  bool
+	UseCache     bool
 	DisableWrite bool
 }
 

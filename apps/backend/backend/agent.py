@@ -1002,8 +1002,6 @@ class Agent:
             waiver_out = entry.get("waiver_out") or []
             free_out = entry.get("free_out") or []
             trade_out = entry.get("trade_out") or []
-            add_ids = list(waiver_in) + list(free_in) + list(trade_in)
-            out_ids = list(waiver_out) + list(free_out) + list(trade_out)
             lines.append(f"- {entry_name}:")
             if waiver_in or waiver_out:
                 lines.append("  Waivers:")

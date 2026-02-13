@@ -12,10 +12,10 @@ type DraftPick struct {
 }
 
 type DraftLedger struct {
-	LeagueID       int        `json:"league_id"`
-	Event          int        `json:"event"`
-	GeneratedAtUTC string     `json:"generated_at_utc"`
-	Managers       []Manager  `json:"managers"`
-	Squads         []Squad    `json:"squads"`
+	LeagueID       int         `json:"league_id"`
+	Event          int         `json:"event"`
+	GeneratedAtUTC string      `json:"generated_at_utc"`
+	Managers       []Manager   `json:"managers"`
+	Squads         []Squad     `json:"squads"`
 	Picks          []DraftPick `json:"picks"`
 }
