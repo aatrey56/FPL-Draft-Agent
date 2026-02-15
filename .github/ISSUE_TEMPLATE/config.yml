@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and usage help
+    url: https://github.com/aatrey56/FPL-Draft-Agent/discussions
+    about: Please use Discussions for questions and support.

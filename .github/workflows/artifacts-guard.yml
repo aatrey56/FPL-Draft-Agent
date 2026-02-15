@@ -16,13 +16,18 @@ jobs:
       - name: Block data/ and reports/ changes
         run: |
           set -euo pipefail
+          BEFORE="${{ github.event.before }}"
           if [ -n "${{ github.base_ref }}" ]; then
             git fetch origin "${{ github.base_ref }}" --depth=1
             git diff --name-only "origin/${{ github.base_ref }}"...HEAD > /tmp/changed.txt
-          elif [ -n "${{ github.event.before }}" ]; then
-            git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" > /tmp/changed.txt
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            if git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              git diff --name-only "$BEFORE" "${{ github.sha }}" > /tmp/changed.txt
+            else
+              git diff --name-only --root "${{ github.sha }}" > /tmp/changed.txt
+            fi
           else
-            git diff --name-only HEAD~1 HEAD > /tmp/changed.txt
+            git diff --name-only --root "${{ github.sha }}" > /tmp/changed.txt
           fi
           if grep -E '^(data|reports)/' /tmp/changed.txt; then
             echo "Changes detected in data/ or reports/. Remove them from the PR."
