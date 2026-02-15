@@ -255,7 +255,8 @@
       </div>
     </div>
     <script>
-      const ws = new WebSocket(`ws://${location.host}/ws`);
+      const wsProto = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${wsProto}://${location.host}/ws`);
       const chatLog = document.getElementById("chatLog");
       const toolLog = document.getElementById("toolLog");
       const reportLinks = document.getElementById("reportLinks");
