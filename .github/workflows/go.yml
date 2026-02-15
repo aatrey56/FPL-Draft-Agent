@@ -2,6 +2,7 @@ name: Go CI
 
 on:
   workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
