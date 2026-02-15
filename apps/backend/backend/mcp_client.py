@@ -105,8 +105,8 @@ def ensure_go_server() -> None:
         cmd,
         env=env,
         cwd=SETTINGS.repo_root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=None,
+        stderr=None,
     )
     # wait for health
     for _ in range(20):
