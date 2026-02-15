@@ -147,17 +147,6 @@ type liveStats struct {
 	XG          float64
 }
 
-func resolveRosterGW(asOfGW int, targetGW int) int {
-	rosterGW := asOfGW
-	if targetGW > 1 && targetGW-1 > rosterGW {
-		rosterGW = targetGW - 1
-	}
-	if rosterGW < 1 {
-		rosterGW = 1
-	}
-	return rosterGW
-}
-
 func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs) ([]byte, error) {
 	if args.LeagueID == 0 {
 		return nil, fmt.Errorf("league_id is required")
@@ -279,7 +268,6 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 		return nil, err
 	}
 	targetGW := nextGW
-	rosterGW := resolveRosterGW(asOfGW, targetGW)
 
 	bootstrap, teamShort, fixturesByGW, err := loadBootstrapData(cfg.RawRoot)
 	if err != nil {
@@ -287,14 +275,10 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 	}
 	fixtureByTeam := buildFixtureIndex(fixturesByGW[targetGW], teamShort)
 
-	leagueSummary, err := loadLeagueSummary(cfg, args.LeagueID, rosterGW)
-	if err != nil && rosterGW != asOfGW {
-		leagueSummary, err = loadLeagueSummary(cfg, args.LeagueID, asOfGW)
-	}
+	owned, roster, err := buildOwnershipAndRoster(cfg, args.LeagueID, entryID, asOfGW, bootstrap, teamShort)
 	if err != nil {
 		return nil, err
 	}
-	owned, roster := buildOwnershipAndRoster(leagueSummary, entryID)
 
 	formSummary, err := loadPlayerFormSummary(cfg, args.LeagueID, asOfGW, h)
 	if err != nil {
@@ -500,18 +484,66 @@ func loadPlayerFormSummary(cfg ServerConfig, leagueID int, gw int, horizon int) 
 	return out, nil
 }
 
-func buildOwnershipAndRoster(summaryData summary.LeagueWeekSummary, entryID int) (map[int]bool, []summary.RosterPlayer) {
+func buildOwnershipAndRoster(cfg ServerConfig, leagueID int, entryID int, asOfGW int, elements []elementInfo, teamShort map[int]string) (map[int]bool, []summary.RosterPlayer, error) {
+	st := store.NewJSONStore(cfg.RawRoot)
+	if err := ensureLedger(st, cfg.DerivedRoot, leagueID); err != nil {
+		return nil, nil, err
+	}
+	ledgerPath := filepath.Join(cfg.DerivedRoot, fmt.Sprintf("ledger/%d/event_0.json", leagueID))
+	raw, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	var ledgerOut model.DraftLedger
+	if err := json.Unmarshal(raw, &ledgerOut); err != nil {
+		return nil, nil, err
+	}
+	transactions, err := loadTransactionsRaw(st, leagueID)
+	if err != nil {
+		return nil, nil, err
+	}
+	trades, err := loadTradesRaw(st, leagueID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ownership := reconcile.BuildOwnershipMapAtGW(&ledgerOut, transactions, trades, asOfGW)
 	owned := make(map[int]bool)
-	var roster []summary.RosterPlayer
-	for _, entry := range summaryData.Entries {
-		for _, r := range entry.Roster {
-			owned[r.Element] = true
-		}
-		if entry.EntryID == entryID {
-			roster = entry.Roster
+	for _, roster := range ownership {
+		for elementID := range roster {
+			owned[elementID] = true
 		}
 	}
-	return owned, roster
+
+	elementByID := make(map[int]elementInfo, len(elements))
+	for _, e := range elements {
+		elementByID[e.ID] = e
+	}
+
+	entryRoster := ownership[entryID]
+	roster := make([]summary.RosterPlayer, 0, len(entryRoster))
+	for elementID := range entryRoster {
+		info := elementByID[elementID]
+		if info.ID == 0 {
+			continue
+		}
+		roster = append(roster, summary.RosterPlayer{
+			Element:      info.ID,
+			Name:         info.Name,
+			Team:         teamShort[info.TeamID],
+			PositionType: info.PositionType,
+		})
+	}
+	sort.Slice(roster, func(i, j int) bool {
+		if roster[i].PositionType != roster[j].PositionType {
+			return roster[i].PositionType < roster[j].PositionType
+		}
+		if roster[i].Team != roster[j].Team {
+			return roster[i].Team < roster[j].Team
+		}
+		return roster[i].Name < roster[j].Name
+	})
+	return owned, roster, nil
 }
 
 func buildEverOwners(cfg ServerConfig, leagueID int) (map[int][]string, error) {
