@@ -147,17 +147,6 @@ type liveStats struct {
 	XG          float64
 }
 
-func resolveRosterGW(asOfGW int, targetGW int) int {
-	rosterGW := asOfGW
-	if targetGW > 1 && targetGW-1 > rosterGW {
-		rosterGW = targetGW - 1
-	}
-	if rosterGW < 1 {
-		rosterGW = 1
-	}
-	return rosterGW
-}
-
 func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs) ([]byte, error) {
 	if args.LeagueID == 0 {
 		return nil, fmt.Errorf("league_id is required")
@@ -279,7 +268,6 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 		return nil, err
 	}
 	targetGW := nextGW
-	rosterGW := resolveRosterGW(asOfGW, targetGW)
 
 	bootstrap, teamShort, fixturesByGW, err := loadBootstrapData(cfg.RawRoot)
 	if err != nil {
@@ -287,10 +275,7 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 	}
 	fixtureByTeam := buildFixtureIndex(fixturesByGW[targetGW], teamShort)
 
-	leagueSummary, err := loadLeagueSummary(cfg, args.LeagueID, rosterGW)
-	if err != nil && rosterGW != asOfGW {
-		leagueSummary, err = loadLeagueSummary(cfg, args.LeagueID, asOfGW)
-	}
+	leagueSummary, err := loadLeagueSummary(cfg, args.LeagueID, asOfGW)
 	if err != nil {
 		return nil, err
 	}
