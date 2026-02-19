@@ -3,6 +3,8 @@ name: Codex Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    # Restrict to the two gated branch transitions; feature-branch PRs are excluded.
+    branches: [stage, main]
   workflow_dispatch:
 
 permissions:
@@ -12,6 +14,11 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    # Only run on the two branch transitions we care about (dev→stage, stage→main).
+    if: |
+      (github.base_ref == 'stage' && github.head_ref == 'dev') ||
+      (github.base_ref == 'main'  && github.head_ref == 'stage') ||
+      github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v5
