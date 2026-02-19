@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set
 
 from .config import SETTINGS
+from .constants import GW_PATTERN
 
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 
@@ -101,7 +102,7 @@ class RAGIndex:
         self._last_refresh = now
 
     def _extract_gw(self, text: str) -> Optional[int]:
-        match = re.search(r"(?:gw|gameweek|game\\s*week|week)\\s*[:=#]?\\s*(\\d{1,2})", text, re.IGNORECASE)
+        match = GW_PATTERN.search(text)
         if match:
             return int(match.group(1))
         return None

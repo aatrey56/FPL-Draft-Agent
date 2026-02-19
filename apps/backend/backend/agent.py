@@ -6,7 +6,7 @@ from pathlib import Path
 from .llm import LLMClient, try_parse_json
 from .mcp_client import MCPClient
 from .config import SETTINGS
-from .constants import POSITION_TYPE_LABELS
+from .constants import GW_PATTERN, POSITION_TYPE_LABELS
 from .reports import render_league_summary_md, render_standings_md, render_matchup_md, render_lineup_efficiency_md
 from .rag import get_rag_index, format_rag_docs
 
@@ -591,7 +591,7 @@ class Agent:
         return None
 
     def _extract_gw(self, text: str) -> Optional[int]:
-        match = re.search(r"(?:gw|gameweek|game\s*week|week)\s*[:=#]?\s*(\d{1,2})", text, re.IGNORECASE)
+        match = GW_PATTERN.search(text)
         if match:
             return int(match.group(1))
         return None
