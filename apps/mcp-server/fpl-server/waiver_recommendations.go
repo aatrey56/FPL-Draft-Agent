@@ -40,6 +40,7 @@ type WaiverRecommendationsReport struct {
 	LeagueID            int     `json:"league_id"`
 	EntryID             int     `json:"entry_id"`
 	AsOfGW              int     `json:"as_of_gw"`
+	RosterGW            int     `json:"roster_gw"` // GW used for ownership snapshot; may differ from AsOfGW at waiver boundaries
 	TargetGW            int     `json:"target_gw"`
 	Horizon             int     `json:"horizon"`
 	WeightFixtures      float64 `json:"weight_fixtures"`
@@ -269,13 +270,19 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 	}
 	targetGW := nextGW
 
+	// rosterGW is the gameweek used to read each entry's current squad. It
+	// must be target-1 (not asOfGW) so that waivers processed at the GW
+	// boundary — which carry Event=targetGW — are included even when asOfGW
+	// hasn't yet advanced past targetGW-1.
+	rosterGW := resolveRosterGW(asOfGW, targetGW)
+
 	bootstrap, teamShort, fixturesByGW, err := loadBootstrapData(cfg.RawRoot)
 	if err != nil {
 		return nil, err
 	}
 	fixtureByTeam := buildFixtureIndex(fixturesByGW[targetGW], teamShort)
 
-	owned, roster, err := buildOwnershipAndRoster(cfg, args.LeagueID, entryID, asOfGW, bootstrap, teamShort)
+	owned, roster, err := buildOwnershipAndRoster(cfg, args.LeagueID, entryID, rosterGW, bootstrap, teamShort)
 	if err != nil {
 		return nil, err
 	}
@@ -430,6 +437,7 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 		LeagueID:            args.LeagueID,
 		EntryID:             entryID,
 		AsOfGW:              asOfGW,
+		RosterGW:            rosterGW,
 		TargetGW:            targetGW,
 		Horizon:             h,
 		WeightFixtures:      wFix,
@@ -482,6 +490,29 @@ func loadPlayerFormSummary(cfg ServerConfig, leagueID int, gw int, horizon int) 
 		return summary.PlayerFormSummary{}, err
 	}
 	return out, nil
+}
+
+// resolveRosterGW returns the gameweek to use when loading an entry's roster
+// for waiver recommendations targeting targetGW.
+//
+// In FPL Draft, waivers for GW N are processed after GW N-1 finishes (before
+// GW N kicks off). Those transactions carry Event=N. When asOfGW is still N-1
+// (because GW N hasn't finished yet), BuildOwnershipMapAtGW(N-1) would miss
+// them — causing dropped players to appear still-owned and be re-recommended
+// as drop candidates.
+//
+// The correct roster GW is target-1. We cap it at asOf+1 to avoid requesting
+// data that hasn't been fetched yet when there is a larger gap between asOf
+// and target.
+func resolveRosterGW(asOf, target int) int {
+	rosterGW := target - 1
+	if asOf+1 < rosterGW {
+		rosterGW = asOf + 1
+	}
+	if rosterGW < 1 {
+		rosterGW = 1
+	}
+	return rosterGW
 }
 
 func buildOwnershipAndRoster(cfg ServerConfig, leagueID int, entryID int, asOfGW int, elements []elementInfo, teamShort map[int]string) (map[int]bool, []summary.RosterPlayer, error) {

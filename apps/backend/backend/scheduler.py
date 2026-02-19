@@ -17,7 +17,7 @@ from .reports import (
 
 
 def _current_gw(client: MCPClient) -> int:
-    summary = client.call_tool("league_summary", {"league_id": 14204, "gw": 0})
+    summary = client.call_tool("league_summary", {"league_id": SETTINGS.league_id, "gw": 0})
     if isinstance(summary, dict):
         return int(summary.get("gameweek", 0) or 0)
     return 0
@@ -26,8 +26,8 @@ def _current_gw(client: MCPClient) -> int:
 def run_tuesday_reports() -> None:
     client = MCPClient(SETTINGS.mcp_url, SETTINGS.mcp_api_key)
     llm = LLMClient()
-    league_id = 14204
-    entry_id = 286192
+    league_id = SETTINGS.league_id
+    entry_id = SETTINGS.entry_id
     gw = _current_gw(client) + 1
     save_report(gw, "league_summary", generate_league_summary(client, llm, league_id, gw))
     save_report(gw, "waiver_recommendations", generate_waiver_report(client, llm, league_id, entry_id, gw))
@@ -37,8 +37,8 @@ def run_tuesday_reports() -> None:
 def run_friday_reports() -> None:
     client = MCPClient(SETTINGS.mcp_url, SETTINGS.mcp_api_key)
     llm = LLMClient()
-    league_id = 14204
-    entry_id = 286192
+    league_id = SETTINGS.league_id
+    entry_id = SETTINGS.entry_id
     gw = _current_gw(client) + 1
     save_report(gw, "waiver_recommendations", generate_waiver_report(client, llm, league_id, entry_id, gw))
     save_report(gw, "starting_xi", generate_starting_xi_report(client, llm, league_id, entry_id, gw))
