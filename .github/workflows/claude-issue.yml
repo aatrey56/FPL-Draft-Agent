@@ -1,0 +1,308 @@
+name: Claude Issue Agent
+
+# Autonomous issue resolution using Claude Code.
+#
+# Trigger (label):      Apply the "claude" label to any GitHub issue.
+# Trigger (manual):     workflow_dispatch with an issue_number input.
+#
+# What it does:
+#   1. Checks out `dev` and creates a branch  claude/issue-<number>-<run_id>
+#   2. Sets up Go + Python environments and installs all dependencies.
+#   3. Builds a task prompt from the issue body and runs Claude Code.
+#   4. Claude edits files directly in the working directory.
+#   5. Runs scripts/preflight.sh (ruff, pytest, go vet, go test).
+#   6. On success: commits, pushes the branch, and opens a draft PR → dev.
+#   7. On failure: posts a preflight log comment on the issue; no PR is opened.
+#
+# Required secret: ANTHROPIC_API_KEY
+# Set it at: Settings → Secrets and variables → Actions → New repository secret
+#
+# Required label: create a "claude" label in your repo at:
+# github.com/<owner>/<repo>/issues/labels
+#
+# Note: PRs opened by GITHUB_TOKEN will not automatically trigger other
+# GitHub Actions workflows (GitHub security policy). If you need CI to run
+# on Claude's PRs, replace GITHUB_TOKEN with a Personal Access Token (PAT)
+# stored as a separate secret (e.g. GH_PAT).
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to resolve"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  resolve:
+    name: Resolve Issue
+    runs-on: ubuntu-latest
+
+    # For label events: only fire when the applied label is "claude".
+    # For manual dispatch: always run (issue_number is required input).
+    if: |
+      github.event.label.name == 'claude' ||
+      github.event_name == 'workflow_dispatch'
+
+    steps:
+      # ── API key guard ──────────────────────────────────────────────────────
+      - name: Check Anthropic API key
+        id: keycheck
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY is not set."
+            exit 1
+          fi
+
+      - name: Comment when API key is missing
+        if: steps.keycheck.outcome != 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNum = context.payload.issue?.number
+              ?? parseInt("${{ github.event.inputs.issue_number || '0' }}", 10);
+            if (issueNum) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                issue_number: issueNum,
+                body: [
+                  "⚠️ **Claude agent skipped** — `ANTHROPIC_API_KEY` is not configured.",
+                  "",
+                  "Add it at **Settings → Secrets and variables → Actions → New repository secret**.",
+                ].join("\n"),
+              });
+            }
+
+      - name: Fail when API key is missing
+        if: steps.keycheck.outcome != 'success'
+        run: exit 1
+
+      # ── Resolve issue number (label event or manual dispatch) ──────────────
+      - name: Resolve issue number
+        id: issue
+        env:
+          EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          INPUT_ISSUE_NUMBER: ${{ github.event.inputs.issue_number }}
+        run: |
+          if [ -n "$EVENT_ISSUE_NUMBER" ]; then
+            echo "number=$EVENT_ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=$INPUT_ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Checkout + branch ──────────────────────────────────────────────────
+      - name: Checkout dev
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Create work branch
+        run: |
+          BRANCH="claude/issue-${{ steps.issue.outputs.number }}-${{ github.run_id }}"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          git checkout -b "$BRANCH"
+
+      # ── Environment setup ──────────────────────────────────────────────────
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/mcp-server/go.mod
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/backend/requirements.txt
+          pip install ruff pytest
+          (cd apps/mcp-server && go mod download)
+
+      # ── Fetch full issue details via API ───────────────────────────────────
+      - name: Fetch issue details
+        id: fetch_issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: issue } = await github.rest.issues.get({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: ${{ steps.issue.outputs.number }},
+            });
+            core.setOutput("title", issue.title);
+            core.setOutput("body",  issue.body ?? "");
+
+      # ── Build Claude prompt ────────────────────────────────────────────────
+      - name: Build Claude prompt
+        env:
+          ISSUE_TITLE:  ${{ steps.fetch_issue.outputs.title }}
+          ISSUE_BODY:   ${{ steps.fetch_issue.outputs.body }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          base   = Path(".github/claude/prompts/issue.md").read_text()
+          title  = os.environ.get("ISSUE_TITLE",  "")
+          body   = os.environ.get("ISSUE_BODY",   "")
+          number = os.environ.get("ISSUE_NUMBER", "")
+
+          prompt = "\n".join([
+              base,
+              "",
+              "---",
+              "",
+              f"Issue #{number}: {title}",
+              "",
+              body,
+          ])
+
+          github_env = os.environ.get("GITHUB_ENV", "")
+          if github_env:
+              with open(github_env, "a") as f:
+                  f.write("CLAUDE_ISSUE_PROMPT<<HEREDOC_SENTINEL\n")
+                  f.write(prompt)
+                  f.write("\nHEREDOC_SENTINEL\n")
+          PY
+
+      # ── Run Claude Code ────────────────────────────────────────────────────
+      - name: Run Claude agent
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token:      ${{ secrets.GITHUB_TOKEN }}
+          # Full tool access: Claude reads, edits, and runs validation commands.
+          allowed_tools:     "Bash,Read,Write,Edit,Glob,Grep"
+          direct_prompt:     ${{ env.CLAUDE_ISSUE_PROMPT }}
+          # Allow enough turns for plan → implement → validate cycles.
+          max_turns:         "20"
+
+      # ── Post-agent checks ──────────────────────────────────────────────────
+      - name: Check for file changes
+        id: changes
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment when no changes were made
+        if: steps.changes.outputs.has_changes == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: ${{ steps.issue.outputs.number }},
+              body: "🤖 Claude ran but found no file changes to make for this issue.",
+            });
+
+      - name: Run preflight checks
+        if: steps.changes.outputs.has_changes == 'true'
+        id: preflight
+        continue-on-error: true
+        run: scripts/preflight.sh 2>&1 | tee /tmp/claude-preflight.log
+
+      - name: Comment on preflight failure
+        if: steps.changes.outputs.has_changes == 'true' && steps.preflight.outcome != 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs  = require("fs");
+            const log = fs.readFileSync("/tmp/claude-preflight.log", "utf8");
+            const truncated = log.length > 6000
+              ? `${log.slice(0, 6000)}\n... (truncated)`
+              : log;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: ${{ steps.issue.outputs.number }},
+              body: [
+                "🤖 Claude made changes, but **preflight checks failed**. No PR was opened.",
+                "",
+                "```",
+                truncated,
+                "```",
+              ].join("\n"),
+            });
+
+      - name: Fail on preflight failure
+        if: steps.changes.outputs.has_changes == 'true' && steps.preflight.outcome != 'success'
+        run: exit 1
+
+      # ── Commit, push, open PR ──────────────────────────────────────────────
+      - name: Commit changes
+        if: steps.changes.outputs.has_changes == 'true' && steps.preflight.outcome == 'success'
+        run: |
+          git config user.name  "claude-bot"
+          git config user.email "claude-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "claude: resolve issue #${{ steps.issue.outputs.number }}"
+          git push origin "$BRANCH"
+
+      - name: Open draft PR
+        if: steps.changes.outputs.has_changes == 'true' && steps.preflight.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require("child_process");
+
+            const issueNumber = ${{ steps.issue.outputs.number }};
+            const issueTitle  = "${{ steps.fetch_issue.outputs.title }}";
+            const branch      = process.env.BRANCH;
+
+            // List files changed relative to dev.
+            const files = execSync("git diff --name-only origin/dev...HEAD")
+              .toString().trim();
+            const fileLines = files
+              ? files.split("\n").map(f => `- \`${f}\``).join("\n")
+              : "- (no file list available)";
+
+            const body = [
+              "## Summary",
+              `Resolves #${issueNumber}: ${issueTitle}`,
+              "",
+              "**Files changed:**",
+              fileLines,
+              "",
+              "## Tests",
+              "- `scripts/preflight.sh` passed (ruff, pytest, go vet, go test)",
+              "",
+              "---",
+              "> 🤖 Opened automatically by [Claude Code](https://claude.ai/claude-code)",
+            ].join("\n");
+
+            const pr = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              title: `Claude: ${issueTitle} (#${issueNumber})`,
+              head:  branch,
+              base:  "dev",
+              body,
+              draft: true,
+            });
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: issueNumber,
+              body: `🤖 Draft PR opened: ${pr.data.html_url}`,
+            });

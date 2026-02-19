@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(go *)",
+      "Bash(gofmt *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pip *)",
+      "Bash(ruff *)",
+      "Bash(pytest *)",
+      "Bash(gh *)",
+      "Bash(scripts/preflight.sh*)"
+    ],
+    "deny": []
+  }
+}
