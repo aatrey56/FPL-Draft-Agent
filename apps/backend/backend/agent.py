@@ -764,6 +764,7 @@ class Agent:
     # ---- Intent detectors (existing) ----
 
 
+
     def _looks_like_team_name_only(self, text: str, league_id: int, tool_events: List[Dict[str, Any]]) -> bool:
         if len(text.split()) > 6:
             return False
