@@ -44,6 +44,23 @@ def generate_waiver_report(
     gw: int,
     weights: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """Generate a waiver recommendation report for a given manager and gameweek.
+
+    Calls the ``waiver_recommendations`` MCP tool and renders the result to
+    Markdown using the LLM (or a plain-text fallback when no LLM is available).
+
+    Args:
+        mcp:       MCP client used to call the Go server.
+        llm:       LLM client used to narrate the report.
+        league_id: FPL Draft league identifier.
+        entry_id:  The manager's entry (team) identifier.
+        gw:        Target gameweek for waiver recommendations.
+        weights:   Optional scoring weight overrides for
+                   ``fixtures``, ``form``, ``total``, and ``xg``.
+
+    Returns:
+        Dict with ``"json"`` (raw tool response) and ``"md"`` (Markdown text).
+    """
     weights = weights or {}
     w_fix = float(weights.get("fixtures", 0.35) or 0.35)
     w_form = float(weights.get("form", 0.25) or 0.25)
@@ -68,6 +85,17 @@ def generate_waiver_report(
 
 
 def generate_league_summary(mcp: MCPClient, llm: LLMClient, league_id: int, gw: int) -> Dict[str, Any]:
+    """Fetch and narrate the league summary for a given gameweek.
+
+    Args:
+        mcp:       MCP client.
+        llm:       LLM client for Markdown narration.
+        league_id: FPL Draft league identifier.
+        gw:        Target gameweek (0 = current).
+
+    Returns:
+        Dict with ``"json"`` (raw tool response) and ``"md"`` (Markdown text).
+    """
     summary = mcp.call_tool("league_summary", {"league_id": league_id, "gw": gw})
     if not isinstance(summary, dict):
         return {"json": {"error": str(summary)}, "md": f"# League Summary Error\n\n{summary}\n"}
@@ -76,6 +104,17 @@ def generate_league_summary(mcp: MCPClient, llm: LLMClient, league_id: int, gw: 
 
 
 def generate_trades_report(mcp: MCPClient, llm: LLMClient, league_id: int, gw: int) -> Dict[str, Any]:
+    """Fetch and narrate the league-wide transaction (trades/waivers) summary.
+
+    Args:
+        mcp:       MCP client.
+        llm:       LLM client for Markdown narration.
+        league_id: FPL Draft league identifier.
+        gw:        Target gameweek (0 = current).
+
+    Returns:
+        Dict with ``"json"`` (raw tool response) and ``"md"`` (Markdown text).
+    """
     tx = mcp.call_tool("transactions", {"league_id": league_id, "gw": gw})
     if not isinstance(tx, dict):
         return {"json": {"error": str(tx)}, "md": f"# Transactions Error\n\n{tx}\n"}
@@ -91,6 +130,24 @@ def generate_starting_xi_report(
     gw: int,
     weights: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """Generate a recommended starting XI for the upcoming gameweek.
+
+    Aggregates data from the ``league_summary``, ``player_form``, and
+    ``fixture_difficulty`` tools, then calls the LLM to produce a narrated
+    starting-lineup recommendation.
+
+    Args:
+        mcp:       MCP client.
+        llm:       LLM client for Markdown narration.
+        league_id: FPL Draft league identifier.
+        entry_id:  The manager's entry (team) identifier.
+        gw:        Current gameweek (the report targets GW+1).
+        weights:   Optional scoring weight overrides passed through to the
+                   starting-XI renderer.
+
+    Returns:
+        Dict with ``"json"`` (structured output) and ``"md"`` (Markdown text).
+    """
     summary = mcp.call_tool("league_summary", {"league_id": league_id, "gw": gw})
 
     try:
@@ -133,6 +190,19 @@ def generate_starting_xi_report(
 
 
 def save_report(gw: int, name: str, content: Dict[str, Any]) -> Dict[str, str]:
+    """Persist a report to disk as both JSON and Markdown files.
+
+    Files are written to ``SETTINGS.reports_dir/gw_{gw}/{name}.{md,json}``.
+
+    Args:
+        gw:      Gameweek number, used to build the output directory name.
+        name:    Report slug (e.g. ``"waiver_recommendations"``).
+        content: Dict with ``"json"`` (serialisable data) and ``"md"`` (text).
+
+    Returns:
+        Dict with ``"md"`` and ``"json"`` keys containing the relative paths
+        of the files that were written.
+    """
     md_path, json_path = _report_paths(gw, name)
     payload = {
         "generated_at": _now_local(),
@@ -146,6 +216,18 @@ def save_report(gw: int, name: str, content: Dict[str, Any]) -> Dict[str, str]:
 
 
 def render_waiver_md(report: Dict[str, Any], llm: LLMClient) -> str:
+    """Render waiver recommendations as a Markdown string.
+
+    Uses the LLM to write a narrative summary; falls back to a simple
+    plain-text table if the LLM is unavailable.
+
+    Args:
+        report: Raw dict returned by the ``waiver_recommendations`` MCP tool.
+        llm:    LLM client.
+
+    Returns:
+        Markdown-formatted string.
+    """
     if not llm.available():
         return _simple_waiver_md(report)
     prompt = (
@@ -204,6 +286,15 @@ def _simple_waiver_md(report: Dict[str, Any]) -> str:
 
 
 def render_league_summary_md(summary: Dict[str, Any], llm: LLMClient) -> str:
+    """Render a league summary dict as Markdown.
+
+    Args:
+        summary: Raw dict from the ``league_summary`` MCP tool.
+        llm:     LLM client (currently unused; placeholder for future narration).
+
+    Returns:
+        Markdown-formatted string.
+    """
     return _simple_league_md(summary)
 
 
@@ -291,6 +382,15 @@ def _simple_league_md(summary: Dict[str, Any]) -> str:
 
 
 def render_trades_md(tx: Dict[str, Any], llm: LLMClient) -> str:
+    """Render a transaction summary as Markdown using the LLM.
+
+    Args:
+        tx:  Raw dict from the ``transactions`` MCP tool.
+        llm: LLM client; falls back to plain text if unavailable.
+
+    Returns:
+        Markdown-formatted string.
+    """
     if not llm.available():
         return _simple_trades_md(tx)
     prompt = "Summarize recent trades/waivers in Markdown, note implications.\n\n" + json.dumps(tx)
@@ -311,6 +411,14 @@ def _simple_trades_md(tx: Dict[str, Any]) -> str:
 
 
 def render_standings_md(standings: Dict[str, Any]) -> str:
+    """Render league standings as a Markdown table.
+
+    Args:
+        standings: Raw dict from the ``standings`` MCP tool.
+
+    Returns:
+        Markdown-formatted table string.
+    """
     lines = [f"# Standings GW{standings.get('gameweek')}"]
     lines.append("")
     lines.append("| Rank | Team | W-D-L | MPts | PF | PA |")
@@ -328,6 +436,15 @@ def render_standings_md(standings: Dict[str, Any]) -> str:
 
 
 def render_lineup_efficiency_md(summary: Dict[str, Any], entry_id: int = 0) -> str:
+    """Render lineup efficiency data as a Markdown table.
+
+    Args:
+        summary:  Raw dict from the ``lineup_efficiency`` MCP tool.
+        entry_id: If non-zero, filter the output to a single manager.
+
+    Returns:
+        Markdown-formatted table string.
+    """
     gw = summary.get("gameweek")
     lines = [f"# Lineup Efficiency GW{gw}"]
     lines.append("")
@@ -347,6 +464,16 @@ def render_lineup_efficiency_md(summary: Dict[str, Any], entry_id: int = 0) -> s
 
 
 def render_matchup_md(summary: Dict[str, Any], entry_a: Dict[str, Any], entry_b: Dict[str, Any]) -> str:
+    """Render a head-to-head matchup summary as a Markdown table.
+
+    Args:
+        summary: League summary dict providing league_id and gameweek context.
+        entry_a: Entry dict for the first manager (must include ``entry_id``).
+        entry_b: Entry dict for the second manager.
+
+    Returns:
+        Markdown-formatted matchup summary string.
+    """
     league_id = int(summary.get("league_id", 0) or 0)
     gw = int(summary.get("gameweek", 0) or 0)
     points_a = _load_points_map(league_id, entry_a.get("entry_id", 0), gw)

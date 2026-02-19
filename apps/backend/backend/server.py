@@ -131,22 +131,39 @@ def _shutdown() -> None:
 
 @app.get("/health")
 def health() -> Dict[str, str]:
+    """Liveness probe endpoint.  Returns ``{"status": "ok"}`` when the server is up."""
     return {"status": "ok"}
 
 
 @app.get("/")
 def root() -> Dict[str, str]:
+    """Root endpoint — returns links to the UI and reports API."""
     return {"ui": "/ui", "reports": "/reports"}
 
 
 @app.get("/tools")
 def tools() -> Dict[str, Any]:
+    """List all MCP tools exposed by the Go server.
+
+    Returns:
+        Dict with a ``"tools"`` list where each item is the serialised
+        representation of an MCP tool (name, description, input schema).
+    """
     client = _mcp()
     return {"tools": [t.__dict__ for t in client.list_tools()]}
 
 
 @app.get("/capabilities")
 def capabilities() -> Dict[str, Any]:
+    """Return server capabilities metadata.
+
+    Describes what tools are available, which scheduled reports are generated,
+    and whether real-time data access is supported.
+
+    Returns:
+        Dict with ``"realtime"``, ``"data_source"``, ``"tools"``, ``"reports"``,
+        and ``"note"`` keys.
+    """
     client = _mcp()
     tools = [t.__dict__ for t in client.list_tools()]
     return {
@@ -165,6 +182,23 @@ def capabilities() -> Dict[str, Any]:
 
 @app.post("/chat")
 def chat(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Main chat endpoint.
+
+    Accepts a JSON payload with ``"message"`` (required) and an optional
+    ``"session_id"`` to continue an existing conversation.  Maintains one
+    :class:`Agent` instance per session so context is preserved across turns.
+
+    Args (in JSON body):
+        message:    The user's natural-language query.
+        session_id: Optional session identifier.  A new UUID is created if
+                    omitted or unknown.
+        *rest*:     Any additional keys are forwarded as session context to
+                    ``Agent.run`` (e.g. ``league_id``, ``entry_id``, ``gw``).
+
+    Returns:
+        Dict with ``"content"`` (reply text), ``"tool_events"`` (call log),
+        and ``"session_id"`` (the session identifier for subsequent requests).
+    """
     user_message = payload.get("message", "")
     session_id = str(payload.get("session_id") or "").strip()
     agent = _CHAT_SESSIONS.get(session_id) if session_id else None
@@ -181,6 +215,12 @@ def chat(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
+    """WebSocket chat endpoint.
+
+    Accepts a WebSocket connection at ``/ws``.  Each received JSON message
+    should have the same shape as the ``/chat`` POST body.  Replies are sent
+    back as JSON objects with the same structure as the ``/chat`` response.
+    """
     await ws.accept()
     client = _mcp()
     llm = LLMClient()
