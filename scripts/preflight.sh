@@ -37,6 +37,7 @@ PY
 ensure_module "ruff"
 ensure_module "pytest"
 
-"$PYTHON_BIN" -m compileall apps/backend/backend
+find apps/backend/backend -name "*.py" -not -path "*/.venv/*" -print0 \
+  | xargs -0 "$PYTHON_BIN" -m py_compile
 "$PYTHON_BIN" -m ruff check apps/backend
 PYTHONPATH=apps/backend "$PYTHON_BIN" -m pytest apps/backend/tests
