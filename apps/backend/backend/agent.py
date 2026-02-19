@@ -6,6 +6,7 @@ from pathlib import Path
 from .llm import LLMClient, try_parse_json
 from .mcp_client import MCPClient
 from .config import SETTINGS
+from .constants import POSITION_TYPE_LABELS
 from .reports import render_league_summary_md, render_standings_md, render_matchup_md, render_lineup_efficiency_md
 from .rag import get_rag_index, format_rag_docs
 
@@ -826,12 +827,11 @@ class Agent:
         lines = [f"**{team_label}** — GW{gw_val} squad:"]
         starters = result.get("starters", [])
         bench = result.get("bench", [])
-        pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
         lines.append("Starting XI:")
         for p in starters:
             name = p.get("name") or "Unknown"
             team = p.get("team") or ""
-            pos = pos_label.get(p.get("position_type"), "?")
+            pos = POSITION_TYPE_LABELS.get(p.get("position_type"), "?")
             cap = " ©" if p.get("is_captain") else (" (vc)" if p.get("is_vice_captain") else "")
             lines.append(f"  {p.get('position_slot', '')}) {name} ({team}, {pos}){cap}")
         if bench:
@@ -839,7 +839,7 @@ class Agent:
             for p in bench:
                 name = p.get("name") or "Unknown"
                 team = p.get("team") or ""
-                pos = pos_label.get(p.get("position_type"), "?")
+                pos = POSITION_TYPE_LABELS.get(p.get("position_type"), "?")
                 lines.append(f"  {p.get('position_slot', '')}) {name} ({team}, {pos})")
         return "\n".join(lines)
 
@@ -865,12 +865,11 @@ class Agent:
         filtered_by = result.get("filtered_by") or ""
         header = f"Draft picks for **{filtered_by}**:" if filtered_by else "Draft picks (all teams):"
         lines = [header]
-        pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
         for p in picks[:30]:
             manager = p.get("entry_name") or "Unknown"
             player = p.get("player_name") or "Unknown"
             team = p.get("team") or ""
-            pos = pos_label.get(p.get("position_type"), "?")
+            pos = POSITION_TYPE_LABELS.get(p.get("position_type"), "?")
             auto = " (auto)" if p.get("was_auto") else ""
             lines.append(f"  Rd{p.get('round')}, Pick{p.get('pick')}: {manager} → {player} ({team}, {pos}){auto}")
         if len(picks) > 30:
@@ -1006,8 +1005,7 @@ class Agent:
 
         name = result.get("player_name") or "Unknown player"
         team = result.get("team") or ""
-        pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
-        pos = pos_label.get(result.get("position_type"), "?")
+        pos = POSITION_TYPE_LABELS.get(result.get("position_type"), "?")
         total = result.get("total_points", 0)
         avg = result.get("avg_points", 0.0)
         gws = result.get("gameweeks", [])
@@ -1238,7 +1236,7 @@ class Agent:
             name = add.get("name") or "Unknown player"
             team = add.get("team") or ""
             pos = add.get("position_type")
-            pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}.get(pos, "UNK")
+            pos_label = POSITION_TYPE_LABELS.get(pos, "UNK")
             line = f"{i}. {name}"
             if team:
                 line += f" ({team}, {pos_label})"
