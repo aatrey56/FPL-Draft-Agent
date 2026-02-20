@@ -152,6 +152,13 @@ class Agent:
         return False
 
     def __init__(self, mcp: MCPClient, llm: LLMClient) -> None:
+        """Initialise the agent with an MCP tool client and an LLM client.
+
+        Args:
+            mcp: Client used to list and call tools exposed by the Go MCP server.
+            llm: Client used to call the OpenAI chat completions API when the
+                 fast-path keyword router cannot handle a query directly.
+        """
         self.mcp = mcp
         self.llm = llm
         self._element_name_cache: Optional[Dict[int, str]] = None
@@ -176,6 +183,25 @@ class Agent:
         max_steps: int = 6,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """Process a user message and return the agent's response.
+
+        The agent first tries a fast-path keyword router (_try_route).  If no
+        route matches, it falls back to an LLM-guided tool-call loop that runs
+        for up to *max_steps* iterations.
+
+        Args:
+            user_message: The raw text sent by the user.
+            max_steps:    Maximum number of LLM → tool → LLM cycles before
+                          giving up (default 6).
+            context:      Optional dict carrying caller-supplied session hints
+                          such as ``league_id``, ``entry_id``, ``entry_name``,
+                          and ``gw``.
+
+        Returns:
+            A dict with at least:
+              - ``"content"`` (str): the final text reply for the user.
+              - ``"tool_events"`` (list): ordered log of every tool call made.
+        """
         user_message = (user_message or "").strip()
         context = context or {}
         self._update_session_from_context(context)
@@ -274,6 +300,25 @@ class Agent:
         return {"content": content, "tool_events": tool_events}
 
     def _apply_defaults(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Inject session context into LLM-chosen tool arguments.
+
+        When the LLM picks a tool but omits ``league_id``, ``entry_id``, or
+        ``gw``, this method fills them in from the current session state so
+        that callers never have to repeat the values in every turn.
+
+        It also normalises a few tool-specific quirks:
+        - ``manager_schedule`` / ``league_entries``: flattens ``first``/``last``
+          name fields into a single ``entry_name`` string.
+        - All tools: skips injection of ``None`` values so that optional
+          arguments are never accidentally set to null.
+
+        Args:
+            name: The tool name chosen by the LLM.
+            args: The raw argument dict from the LLM response.
+
+        Returns:
+            A new dict with defaults merged in.
+        """
         out = dict(args or {})
         if name in ("manager_schedule", "league_entries"):
             first = out.get("first")
