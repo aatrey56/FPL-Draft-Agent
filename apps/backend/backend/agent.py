@@ -10,24 +10,65 @@ from .reports import render_league_summary_md, render_standings_md, render_match
 from .rag import get_rag_index, format_rag_docs
 
 
-SYSTEM_PROMPT = """You are a data-accurate assistant. You MUST call tools for any factual data.
+SYSTEM_PROMPT = """You are a data-accurate FPL Draft assistant. You MUST call tools for any factual data.
 Return ONLY a JSON object in one of these forms:
 1) {"action":"tool","name":"tool_name","arguments":{...}}
 2) {"action":"final","content":"..."}
 If you need more data, choose action=tool. Do not guess.
 If a section labeled "Memory (cached data)" is provided, you may use it as factual context without another tool call.
 
-Important tool-routing guidance:
-- For questions like "who does X play", "schedule", or "matchup", use manager_schedule (NOT league_summary).
-- For "list all teams in my league" or to resolve a team name to entry_id, use league_entries.
-- For win streak questions (e.g., "how many games in a row did X win"), use manager_streak.
-- For roster/player lists for a team, use league_summary with league_id and gw.
-- Never output element IDs. Always use player names. If only IDs are available, call player_lookup or map from bootstrap.
-- If required arguments are missing or ambiguous (e.g., team name), ask a follow-up using action=final.
+Available tools and when to use them:
+- league_summary: League weekly summary (roster, points, bench, record, opponent per manager).
+- matchup_breakdown: Points by position for each matchup (why you won/lost) in a GW.
+- standings: League standings table for a gameweek.
+- transactions: Per-manager waiver/free-agent/trade digest for a GW.
+- lineup_efficiency: Bench points and zero-minute starters per manager.
+- strength_of_schedule: Past/future opponent difficulty per manager.
+- ownership_scarcity: Ownership counts by position, who owns scarce players.
+- fixtures: Upcoming PL fixtures for all teams.
+- fixture_difficulty: Rank fixtures by how easy/hard they are for each position.
+- player_form: Rolling points/minutes/ownership for rostered players.
+- waiver_targets: Ranked unrostered players for waiver adds (league-wide).
+- waiver_recommendations: Personalised add/drop suggestions for a specific manager.
+- manager_schedule: Upcoming or historical H2H matches for a manager.
+- manager_streak: Win-streak stats for a manager.
+- player_lookup: Look up a player by element id.
+- manager_lookup: Look up a manager by entry id.
+- league_entries: List all teams in the league.
+- current_roster: Show a manager's squad (starters + bench) with names, teams, positions.
+  Use for: "show my team", "my roster", "who's on my bench", "my current lineup", "squad", "my players".
+- draft_picks: Full draft history — who drafted whom, in which round.
+  Use for: "draft picks", "who drafted X", "draft order", "round N picks", "who did I draft".
+- manager_season: GW-by-GW scores, W/D/L record, highest/lowest scoring week for a manager.
+  Use for: "season stats", "season history", "how have I done", "my record", "weekly scores", "season breakdown".
+- transaction_analysis: League-wide analysis of a GW's transactions: top added/dropped players, positions targeted.
+  Use for: "who added", "most targeted position", "transaction analysis", "what positions did people target", "popular adds", "popular drops".
+- player_gw_stats: Per-gameweek stats (points, minutes, goals, xG, xA) for a specific player.
+  Use for: "Salah stats", "how many points has X scored each week", "player stats", "X points per gameweek", "weekly breakdown for X".
+- head_to_head: H2H record and match history between two managers.
+  Use for: "head to head", "h2h", "record against", "how many times have I beaten X".
+
+Important routing guidance:
+- For "who does X play" / "schedule" / "upcoming match" → manager_schedule.
+- For "list all teams" or resolving a team name → league_entries.
+- For "win streak" / "how many games in a row" → manager_streak.
+- For "my roster" / "my squad" / "who's on my team" → current_roster.
+- For "season record" / "season stats" / "how have I done overall" → manager_season.
+- For "draft picks" / "who drafted X" → draft_picks.
+- For "what positions/players did people add/drop this week" → transaction_analysis.
+- For "how has player X done each week" / "player X stats by gameweek" → player_gw_stats.
+- For "head to head" / "h2h" / "record against" → head_to_head.
+- Never output element IDs. Always use player names.
+- If required arguments are missing or ambiguous, ask a follow-up using action=final.
 - Never pass null values in arguments. Omit missing fields instead.
 
-Example tool call:
-{"action":"tool","name":"league_summary","arguments":{"league_id":14204,"gw":0}}
+Example tool calls:
+{"action":"tool","name":"current_roster","arguments":{"league_id":14204,"entry_id":286192}}
+{"action":"tool","name":"draft_picks","arguments":{"league_id":14204,"entry_id":286192}}
+{"action":"tool","name":"manager_season","arguments":{"league_id":14204,"entry_id":286192}}
+{"action":"tool","name":"transaction_analysis","arguments":{"league_id":14204,"gw":0}}
+{"action":"tool","name":"player_gw_stats","arguments":{"player_name":"Salah"}}
+{"action":"tool","name":"head_to_head","arguments":{"league_id":14204,"entry_name_a":"Team A","entry_name_b":"Team B"}}
 """
 
 
@@ -54,7 +95,7 @@ class Agent:
     def run(
         self,
         user_message: str,
-        max_steps: int = 4,
+        max_steps: int = 6,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         user_message = (user_message or "").strip()
@@ -177,7 +218,8 @@ class Agent:
         league_id = int(out.get("league_id", 0)) if out.get("league_id") is not None else 0
         if league_id == 0:
             league_id = self._default_league_id()
-        if name in ("waiver_recommendations", "manager_schedule", "manager_streak"):
+        if name in ("waiver_recommendations", "manager_schedule", "manager_streak",
+                    "current_roster", "manager_season", "head_to_head"):
             if not out.get("entry_id") and self._default_entry_id():
                 out["entry_id"] = self._default_entry_id()
             if not out.get("entry_name") and self._default_entry_name():
@@ -190,12 +232,15 @@ class Agent:
             "lineup_efficiency",
             "strength_of_schedule",
             "ownership_scarcity",
+            "transaction_analysis",
         ):
             out.setdefault("league_id", league_id)
             if "gw" not in out and self._default_gw() is not None:
                 out["gw"] = self._default_gw()
             out.setdefault("gw", 0)
-        if name in ("league_entries", "manager_schedule", "manager_streak"):
+        if name in ("league_entries", "manager_schedule", "manager_streak",
+                    "current_roster", "draft_picks", "manager_season",
+                    "head_to_head", "transaction_analysis"):
             out.setdefault("league_id", league_id)
         if name == "fixtures":
             out.setdefault("league_id", league_id)
@@ -240,6 +285,34 @@ class Agent:
             out.setdefault("as_of_gw", 0)
             allowed = {"league_id", "as_of_gw", "horizon"}
             out = {k: v for k, v in out.items() if k in allowed}
+        if name == "current_roster":
+            out.setdefault("league_id", league_id)
+            if "gw" not in out and self._default_gw() is not None:
+                out["gw"] = self._default_gw()
+            allowed = {"league_id", "entry_id", "entry_name", "gw"}
+            out = {k: v for k, v in out.items() if k in allowed}
+        if name == "draft_picks":
+            out.setdefault("league_id", league_id)
+            allowed = {"league_id", "entry_id", "entry_name"}
+            out = {k: v for k, v in out.items() if k in allowed}
+        if name == "manager_season":
+            out.setdefault("league_id", league_id)
+            allowed = {"league_id", "entry_id", "entry_name"}
+            out = {k: v for k, v in out.items() if k in allowed}
+        if name == "transaction_analysis":
+            out.setdefault("league_id", league_id)
+            out.setdefault("gw", 0)
+            allowed = {"league_id", "gw"}
+            out = {k: v for k, v in out.items() if k in allowed}
+        if name == "player_gw_stats":
+            if "gw" in out and "start_gw" not in out:
+                out["start_gw"] = out.pop("gw")
+            allowed = {"element_id", "player_name", "start_gw", "end_gw"}
+            out = {k: v for k, v in out.items() if k in allowed}
+        if name == "head_to_head":
+            out.setdefault("league_id", league_id)
+            allowed = {"league_id", "entry_id_a", "entry_name_a", "entry_id_b", "entry_name_b"}
+            out = {k: v for k, v in out.items() if k in allowed}
         return out
 
     def _default_league_id(self) -> int:
@@ -248,8 +321,11 @@ class Agent:
             try:
                 return int(league_id)
             except Exception:
-                return 14204
-        return 14204
+                pass
+        try:
+            return int(SETTINGS.league_id)
+        except Exception:
+            return 0
 
     def _default_entry_id(self) -> Optional[int]:
         entry_id = self._session.get("entry_id")
@@ -400,6 +476,21 @@ class Agent:
             return pending
         lower = text.lower()
 
+        # ---- New tools (higher priority — check before broad existing patterns) ----
+        if self._looks_like_draft_picks(lower):
+            return self._handle_draft_picks(text, tool_events)
+        if self._looks_like_player_gw_stats(lower):
+            return self._handle_player_gw_stats(text, tool_events)
+        if self._looks_like_transaction_analysis(lower):
+            return self._handle_transaction_analysis(text, tool_events)
+        if self._looks_like_head_to_head(lower):
+            return self._handle_head_to_head(text, tool_events)
+        if self._looks_like_manager_season(lower):
+            return self._handle_manager_season(text, tool_events)
+        if self._looks_like_current_roster(lower):
+            return self._handle_current_roster(text, tool_events)
+
+        # ---- Existing fast-path routes ----
         if self._looks_like_waiver(lower):
             return self._handle_waiver(text, tool_events)
         if self._looks_like_streak(lower):
@@ -434,7 +525,7 @@ class Agent:
             team_name = text.strip()
             return (
                 f"What would you like to know about {team_name}? "
-                "Examples: waivers, schedule, win streaks, fixtures."
+                "Examples: waivers, schedule, roster, season stats, win streaks, fixtures, head-to-head."
             )
 
         return None
@@ -476,6 +567,10 @@ class Agent:
             return self._handle_streak(original_text, tool_events, entry_id_override=entry_id, team_name_override=entry_name)
         if intent == "wins":
             return self._handle_wins_list(original_text, tool_events, entry_id_override=entry_id, team_name_override=entry_name)
+        if intent == "roster":
+            return self._handle_current_roster(original_text, tool_events, entry_id_override=entry_id, team_name_override=entry_name)
+        if intent == "season":
+            return self._handle_manager_season(original_text, tool_events, entry_id_override=entry_id, team_name_override=entry_name)
         return None
 
     def _set_pending(self, intent: str, league_id: int, candidates: List[str], original_text: str) -> None:
@@ -588,6 +683,8 @@ class Agent:
                 return cand
         return None
 
+    # ---- Intent detectors (existing) ----
+
     def _looks_like_waiver(self, text: str) -> bool:
         return "waiver" in text or "waivers" in text or "waiver rec" in text
 
@@ -615,7 +712,7 @@ class Agent:
         return "league summary" in text or ("summary" in text and "league" in text)
 
     def _looks_like_transactions(self, text: str) -> bool:
-        return "transactions" in text or "waivers" in text and "summary" in text or "trades" in text
+        return ("transactions" in text) or ("waivers" in text and "summary" in text) or ("trades" in text)
 
     def _looks_like_lineup(self, text: str) -> bool:
         return "lineup efficiency" in text or "bench points" in text or "bench" in text
@@ -644,11 +741,376 @@ class Agent:
             "ownership",
             "trade",
             "wins",
+            "roster",
+            "squad",
+            "draft",
+            "season",
+            "h2h",
         )
         if any(k in lowered for k in keywords):
             return False
         entry_id, _ = self._resolve_team_exact(league_id, text, tool_events)
         return entry_id is not None
+
+    # ---- Intent detectors (new tools) ----
+
+    def _looks_like_current_roster(self, text: str) -> bool:
+        roster_words = ("my team", "my roster", "my squad", "current lineup", "current roster",
+                        "who's on my team", "show my team", "show my squad", "my players",
+                        "who do i have", "my starting", "my bench")
+        return any(w in text for w in roster_words)
+
+    def _looks_like_draft_picks(self, text: str) -> bool:
+        return ("draft" in text and any(w in text for w in ("pick", "picks", "order", "history", "round", "drafted", "who did")))
+
+    def _looks_like_manager_season(self, text: str) -> bool:
+        season_phrases = ("season stats", "season history", "season record", "how have i done",
+                          "how have you done", "overall record", "weekly scores", "week by week",
+                          "all season", "season breakdown", "full season", "season summary",
+                          "my record", "this season")
+        return any(p in text for p in season_phrases)
+
+    def _looks_like_transaction_analysis(self, text: str) -> bool:
+        return (
+            ("transaction" in text and "analysis" in text)
+            or "most targeted" in text
+            or "who added" in text
+            or "who dropped" in text
+            or ("position" in text and ("targeted" in text or "popular" in text))
+            or "popular adds" in text
+            or "popular drops" in text
+        )
+
+    def _looks_like_player_gw_stats(self, text: str) -> bool:
+        gw_stat_phrases = ("stats each week", "stats per week", "weekly stats", "points each week",
+                           "points per gameweek", "gw points", "gameweek points", "weekly breakdown",
+                           "each gameweek", "per gw")
+        return any(p in text for p in gw_stat_phrases)
+
+    def _looks_like_head_to_head(self, text: str) -> bool:
+        return "head to head" in text or " h2h " in text or "record against" in text
+
+    # ---- Handlers (new tools) ----
+
+    def _handle_current_roster(
+        self,
+        text: str,
+        tool_events: List[Dict[str, Any]],
+        entry_id_override: Optional[int] = None,
+        team_name_override: Optional[str] = None,
+    ) -> str:
+        league_id = self._extract_league_id(text) or self._default_league_id()
+        gw = self._extract_gw(text)
+        if gw is None:
+            gw = self._default_gw()
+        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
+        team_name = team_name_override or self._default_entry_name()
+
+        if not entry_id:
+            entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
+            if multiple:
+                self._set_pending("roster", league_id, multiple, text)
+                return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+        if not entry_id:
+            return "Which team's roster would you like? Please provide a team name or entry ID."
+
+        args: Dict[str, Any] = {"league_id": league_id, "entry_id": entry_id}
+        if gw is not None:
+            args["gw"] = gw
+        result = self._call_tool(tool_events, "current_roster", args)
+        if not isinstance(result, dict):
+            return "Roster data is unavailable right now."
+
+        team_label = team_name or result.get("entry_name") or "your team"
+        gw_val = result.get("gameweek", "")
+        lines = [f"**{team_label}** — GW{gw_val} squad:"]
+        starters = result.get("starters", [])
+        bench = result.get("bench", [])
+        pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
+        lines.append("Starting XI:")
+        for p in starters:
+            name = p.get("name") or "Unknown"
+            team = p.get("team") or ""
+            pos = pos_label.get(p.get("position_type"), "?")
+            cap = " ©" if p.get("is_captain") else (" (vc)" if p.get("is_vice_captain") else "")
+            lines.append(f"  {p.get('position_slot', '')}) {name} ({team}, {pos}){cap}")
+        if bench:
+            lines.append("Bench:")
+            for p in bench:
+                name = p.get("name") or "Unknown"
+                team = p.get("team") or ""
+                pos = pos_label.get(p.get("position_type"), "?")
+                lines.append(f"  {p.get('position_slot', '')}) {name} ({team}, {pos})")
+        return "\n".join(lines)
+
+    def _handle_draft_picks(self, text: str, tool_events: List[Dict[str, Any]]) -> Optional[str]:
+        league_id = self._extract_league_id(text) or self._default_league_id()
+        entry_id = self._extract_entry_id(text) or self._default_entry_id()
+        team_name = self._default_entry_name()
+
+        if not entry_id:
+            entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
+            if multiple:
+                # Can't set pending for draft since it's not in pending handler — fall through to LLM.
+                return None
+
+        args: Dict[str, Any] = {"league_id": league_id}
+        if entry_id:
+            args["entry_id"] = entry_id
+        result = self._call_tool(tool_events, "draft_picks", args)
+        if not isinstance(result, dict):
+            return "Draft history is unavailable right now."
+
+        picks = result.get("picks", [])
+        filtered_by = result.get("filtered_by") or ""
+        header = f"Draft picks for **{filtered_by}**:" if filtered_by else "Draft picks (all teams):"
+        lines = [header]
+        pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
+        for p in picks[:30]:
+            manager = p.get("entry_name") or "Unknown"
+            player = p.get("player_name") or "Unknown"
+            team = p.get("team") or ""
+            pos = pos_label.get(p.get("position_type"), "?")
+            auto = " (auto)" if p.get("was_auto") else ""
+            lines.append(f"  Rd{p.get('round')}, Pick{p.get('pick')}: {manager} → {player} ({team}, {pos}){auto}")
+        if len(picks) > 30:
+            lines.append(f"  ... and {len(picks) - 30} more picks.")
+        return "\n".join(lines)
+
+    def _handle_manager_season(
+        self,
+        text: str,
+        tool_events: List[Dict[str, Any]],
+        entry_id_override: Optional[int] = None,
+        team_name_override: Optional[str] = None,
+    ) -> str:
+        league_id = self._extract_league_id(text) or self._default_league_id()
+        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
+        team_name = team_name_override or self._default_entry_name()
+
+        if not entry_id:
+            entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
+            if multiple:
+                self._set_pending("season", league_id, multiple, text)
+                return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+        if not entry_id:
+            return "Which team's season history would you like? Please provide a team name or entry ID."
+
+        args: Dict[str, Any] = {"league_id": league_id, "entry_id": entry_id}
+        result = self._call_tool(tool_events, "manager_season", args)
+        if not isinstance(result, dict):
+            return "Season data is unavailable right now."
+
+        team_label = team_name or result.get("entry_name") or "your team"
+        rec = result.get("record", {})
+        wins = rec.get("wins", 0)
+        draws = rec.get("draws", 0)
+        losses = rec.get("losses", 0)
+        total = result.get("total_points", 0)
+        avg = result.get("avg_score", 0.0)
+        hi_gw = result.get("highest_scoring_gw", "?")
+        hi_pts = result.get("highest_score", 0)
+        lo_gw = result.get("lowest_scoring_gw", "?")
+        lo_pts = result.get("lowest_score", 0)
+
+        lines = [
+            f"**{team_label}** season summary:",
+            f"Record: {wins}W / {draws}D / {losses}L",
+            f"Total points: {total} | Avg/week: {avg:.1f}",
+            f"Highest: GW{hi_gw} ({hi_pts} pts) | Lowest: GW{lo_gw} ({lo_pts} pts)",
+            "",
+            "Week-by-week results:",
+        ]
+        for gw in result.get("gameweeks", []):
+            if not gw.get("finished"):
+                continue
+            opp = gw.get("opponent_name") or "?"
+            res = gw.get("result", "")
+            score = gw.get("score", 0)
+            opp_score = gw.get("opponent_score", 0)
+            lines.append(f"  GW{gw.get('gameweek')}: {score}-{opp_score} vs {opp} ({res})")
+        return "\n".join(lines)
+
+    def _handle_transaction_analysis(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+        league_id = self._extract_league_id(text) or self._default_league_id()
+        gw = self._extract_gw(text)
+        if gw is None:
+            gw = self._default_gw()
+        args: Dict[str, Any] = {"league_id": league_id, "gw": gw if gw is not None else 0}
+        result = self._call_tool(tool_events, "transaction_analysis", args)
+        if not isinstance(result, dict):
+            return "Transaction analysis is unavailable right now."
+
+        gw_val = result.get("gameweek", "?")
+        total = result.get("total_transactions", 0)
+        lines = [f"**Transaction analysis — GW{gw_val}** ({total} total):"]
+
+        pos_bd = result.get("position_breakdown", {})
+        if pos_bd:
+            lines.append("\nPositions targeted:")
+            for pos in ("GK", "DEF", "MID", "FWD"):
+                bd = pos_bd.get(pos, {})
+                added = bd.get("added", 0)
+                dropped = bd.get("dropped", 0)
+                if added or dropped:
+                    lines.append(f"  {pos}: +{added} added, -{dropped} dropped")
+
+        top_added = result.get("top_added", [])
+        if top_added:
+            lines.append("\nMost added players:")
+            for p in top_added[:5]:
+                name = p.get("player_name") or "Unknown"
+                team = p.get("team") or ""
+                count = p.get("count", 0)
+                times = "time" if count == 1 else "times"
+                lines.append(f"  {name} ({team}) — {count} {times}")
+
+        top_dropped = result.get("top_dropped", [])
+        if top_dropped:
+            lines.append("\nMost dropped players:")
+            for p in top_dropped[:5]:
+                name = p.get("player_name") or "Unknown"
+                team = p.get("team") or ""
+                count = p.get("count", 0)
+                times = "time" if count == 1 else "times"
+                lines.append(f"  {name} ({team}) — {count} {times}")
+
+        return "\n".join(lines)
+
+    def _handle_player_gw_stats(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+        gw_start = self._extract_gw(text)
+        args: Dict[str, Any] = {}
+
+        # Try to extract player name from text — remove common trigger phrases.
+        player_text = text
+        for phrase in ("stats each week", "stats per week", "weekly stats", "points each week",
+                       "points per gameweek", "gw points", "gameweek points", "weekly breakdown",
+                       "each gameweek", "per gw", "stats for", "points for", "how many points has",
+                       "how has", "done each", "scored each"):
+            player_text = re.sub(phrase, "", player_text, flags=re.IGNORECASE).strip()
+
+        # Extract potential player name (2-3 word chunk that's not a keyword).
+        words = player_text.split()
+        candidate_name = " ".join([w for w in words if not re.match(r"^\d+$", w) and len(w) > 2])[:40].strip()
+        if candidate_name:
+            args["player_name"] = candidate_name
+        if gw_start:
+            args["start_gw"] = gw_start
+
+        result = self._call_tool(tool_events, "player_gw_stats", args)
+        if not isinstance(result, dict) or result.get("error"):
+            err = result.get("error") if isinstance(result, dict) else None
+            if err and "player not found" in err:
+                return f"I couldn't find a player matching '{candidate_name}'. Try a more specific name."
+            return "Player stats are unavailable right now."
+
+        name = result.get("player_name") or "Unknown player"
+        team = result.get("team") or ""
+        pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
+        pos = pos_label.get(result.get("position_type"), "?")
+        total = result.get("total_points", 0)
+        avg = result.get("avg_points", 0.0)
+        gws = result.get("gameweeks", [])
+
+        lines = [
+            f"**{name}** ({team}, {pos}) — GW stats:",
+            f"Total: {total} pts | Avg: {avg:.1f} pts/GW",
+            "",
+        ]
+        for g in gws:
+            mins = g.get("minutes", 0)
+            pts = g.get("points", 0)
+            goals = g.get("goals_scored", 0)
+            assists = g.get("assists", 0)
+            xg = g.get("expected_goals", 0.0)
+            xa = g.get("expected_assists", 0.0)
+            extras = []
+            if goals:
+                extras.append(f"{goals}G")
+            if assists:
+                extras.append(f"{assists}A")
+            extras_str = ", ".join(extras)
+            lines.append(
+                f"  GW{g.get('gameweek')}: {pts}pts ({mins}min)"
+                + (f" [{extras_str}]" if extras_str else "")
+                + (f" xG:{xg:.2f} xA:{xa:.2f}" if xg or xa else "")
+            )
+        if not gws:
+            lines.append("  No data found for the requested GW range.")
+        return "\n".join(lines)
+
+    def _handle_head_to_head(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+        league_id = self._extract_league_id(text) or self._default_league_id()
+
+        # Try to extract two team names around "vs", "vs.", "h2h", "against", "record against".
+        team_a_name: Optional[str] = None
+        team_b_name: Optional[str] = None
+        m = re.search(r"(.+?)\s+(?:vs\.?|against|h2h)\s+(.+)", text, re.IGNORECASE)
+        if m:
+            team_a_name = m.group(1).strip()
+            team_b_name = m.group(2).strip()
+            # Strip common lead-in phrases from team_a.
+            for phrase in ("head to head", "h2h", "record", "what is", "what's", "show me"):
+                team_a_name = re.sub(rf"^{phrase}\s*", "", team_a_name, flags=re.IGNORECASE).strip()
+
+        if not team_a_name:
+            entry_id = self._default_entry_id()
+            entry_name = self._default_entry_name()
+            if not entry_id and not entry_name:
+                return "Please specify two team names for head-to-head (e.g. 'Team A vs Team B')."
+            team_a_name = entry_name or str(entry_id)
+
+        entry_id_a: Optional[int] = None
+        entry_name_a: Optional[str] = None
+        if team_a_name:
+            entry_id_a, entry_name_a = self._resolve_team_exact(league_id, team_a_name, tool_events)
+            if not entry_id_a:
+                entry_id_a, entry_name_a, _ = self._resolve_team(league_id, team_a_name, tool_events)
+
+        entry_id_b: Optional[int] = None
+        entry_name_b: Optional[str] = None
+        if team_b_name:
+            entry_id_b, entry_name_b = self._resolve_team_exact(league_id, team_b_name, tool_events)
+            if not entry_id_b:
+                entry_id_b, entry_name_b, _ = self._resolve_team(league_id, team_b_name, tool_events)
+
+        if not entry_id_a or not entry_id_b:
+            return "Couldn't resolve both teams. Please use exact team names (e.g. 'Team A vs Team B')."
+
+        args: Dict[str, Any] = {
+            "league_id": league_id,
+            "entry_id_a": entry_id_a,
+            "entry_id_b": entry_id_b,
+        }
+        result = self._call_tool(tool_events, "head_to_head", args)
+        if not isinstance(result, dict):
+            return "Head-to-head data is unavailable right now."
+
+        team_a = result.get("team_a", {})
+        team_b = result.get("team_b", {})
+        name_a = team_a.get("entry_name") or entry_name_a or "Team A"
+        name_b = team_b.get("entry_name") or entry_name_b or "Team B"
+        wa, da, la = team_a.get("wins", 0), team_a.get("draws", 0), team_a.get("losses", 0)
+        wb, db, lb = team_b.get("wins", 0), team_b.get("draws", 0), team_b.get("losses", 0)
+        lines = [
+            f"**Head-to-head: {name_a} vs {name_b}**",
+            f"{name_a}: {wa}W / {da}D / {la}L",
+            f"{name_b}: {wb}W / {db}D / {lb}L",
+            "",
+            "Matches:",
+        ]
+        for m_item in result.get("matches", []):
+            if not m_item.get("finished"):
+                continue
+            sa = m_item.get("score_a", 0)
+            sb = m_item.get("score_b", 0)
+            res = m_item.get("result_a", "")
+            lines.append(f"  GW{m_item.get('gameweek')}: {name_a} {sa} – {sb} {name_b} ({res})")
+        if not result.get("matches"):
+            lines.append("  No completed matches found.")
+        return "\n".join(lines)
+
+    # ---- Handlers (existing) ----
 
     def _handle_league_summary(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
         league_id = self._extract_league_id(text) or self._default_league_id()
@@ -688,15 +1150,15 @@ class Agent:
             return "Which gameweek? Please include GW (e.g., GW25)."
 
         # Extract team names around "vs"
-        match = re.search(r"(.+?)\\s+vs\\.?\\s+(.+)", text, re.IGNORECASE)
+        match = re.search(r"(.+?)\s+vs\.?\s+(.+)", text, re.IGNORECASE)
         if not match:
             return "Please provide two team names (e.g., Glock Tua vs Luckier Than You)."
 
         left = match.group(1)
         right = match.group(2)
         for token in ("summary", "recap", "gameweek", "gw", "week"):
-            left = re.sub(rf"\\b{token}\\b.*", "", left, flags=re.IGNORECASE).strip()
-            right = re.sub(rf"\\b{token}\\b.*", "", right, flags=re.IGNORECASE).strip()
+            left = re.sub(rf"\b{token}\b.*", "", left, flags=re.IGNORECASE).strip()
+            right = re.sub(rf"\b{token}\b.*", "", right, flags=re.IGNORECASE).strip()
 
         entry_a_id, entry_a_name = self._resolve_team_exact(league_id, left, tool_events)
         if not entry_a_id:
@@ -725,7 +1187,6 @@ class Agent:
 
         # Ensure entry_a is the row containing opponent info
         if entry_a.get("opponent_entry_id") != entry_b_id:
-            # Swap if necessary
             if entry_b.get("opponent_entry_id") == entry_a_id:
                 entry_a, entry_b = entry_b, entry_a
             else:

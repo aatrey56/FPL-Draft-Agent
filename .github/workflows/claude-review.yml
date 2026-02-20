@@ -9,8 +9,8 @@ name: Claude Review
 # Feature-branch PRs are intentionally excluded to keep token usage low.
 # Manual runs (workflow_dispatch) bypass the branch filter for testing.
 #
-# Required secret: ANTHROPIC_API_KEY
-# Set it at: Settings → Secrets and variables → Actions → New repository secret
+# Required secret: CLAUDE_CODE_OAUTH_TOKEN (added automatically by the Claude GitHub App)
+# Install the app at: github.com/apps/claude  — or use ANTHROPIC_API_KEY as a fallback.
 
 on:
   pull_request:
@@ -44,18 +44,20 @@ jobs:
           fetch-depth: 0
 
       # ── API key guard ──────────────────────────────────────────────────────
-      - name: Check Anthropic API key
+      - name: Check Claude auth secret
         id: keycheck
         continue-on-error: true
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY:       ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ -z "$ANTHROPIC_API_KEY" ]; then
-            echo "ANTHROPIC_API_KEY is not set."
+          # Accept either the GitHub App OAuth token or a direct API key.
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set."
             exit 1
           fi
 
-      - name: Comment when API key is missing
+      - name: Comment when auth secret is missing
         if: steps.keycheck.outcome != 'success'
         uses: actions/github-script@v7
         with:
@@ -65,13 +67,14 @@ jobs:
               repo:  context.repo.repo,
               issue_number: context.issue.number,
               body: [
-                "⚠️ **Claude review skipped** — `ANTHROPIC_API_KEY` is not configured.",
+                "⚠️ **Claude review skipped** — no auth secret is configured.",
                 "",
-                "Add it at **Settings → Secrets and variables → Actions → New repository secret**.",
+                "Install the [Claude GitHub App](https://github.com/apps/claude) to get `CLAUDE_CODE_OAUTH_TOKEN`,",
+                "or add `ANTHROPIC_API_KEY` manually at **Settings → Secrets and variables → Actions**.",
               ].join("\n"),
             });
 
-      - name: Fail when API key is missing
+      - name: Fail when auth secret is missing
         if: steps.keycheck.outcome != 'success'
         run: exit 1
 
@@ -119,8 +122,10 @@ jobs:
         if: steps.keycheck.outcome == 'success'
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token:      ${{ secrets.GITHUB_TOKEN }}
+          # GitHub App OAuth token takes priority; falls back to direct API key.
+          anthropic_api_key:       ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token:            ${{ secrets.GITHUB_TOKEN }}
           # Read-only tools: Claude inspects code but does not modify files.
-          allowed_tools:     "Read,Glob,Grep"
-          direct_prompt:     ${{ env.CLAUDE_REVIEW_PROMPT }}
+          allowed_tools:           "Read,Glob,Grep"
+          direct_prompt:           ${{ env.CLAUDE_REVIEW_PROMPT }}

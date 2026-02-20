@@ -373,6 +373,78 @@ func main() {
 		return toolJSONBytes(b), nil, nil
 	})
 
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "current_roster",
+		Description: "Show a manager's current squad (starters + bench) with player names, teams, and positions",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args CurrentRosterArgs) (*mcp.CallToolResult, any, error) {
+		out, err := buildCurrentRoster(cfg, args)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		return toolJSONBytes(b), nil, nil
+	})
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "draft_picks",
+		Description: "Full draft history for the league or a specific team: round, pick, player, team, position",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args DraftPicksArgs) (*mcp.CallToolResult, any, error) {
+		out, err := buildDraftPicks(cfg, args)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		return toolJSONBytes(b), nil, nil
+	})
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "manager_season",
+		Description: "Season-long results for a manager: GW-by-GW scores, W/D/L record, highest/lowest scoring week",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args ManagerSeasonArgs) (*mcp.CallToolResult, any, error) {
+		out, err := buildManagerSeason(cfg, args)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		return toolJSONBytes(b), nil, nil
+	})
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "transaction_analysis",
+		Description: "League-wide transaction analysis for a gameweek: most targeted positions, top added/dropped players, per-manager breakdown",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args TransactionAnalysisArgs) (*mcp.CallToolResult, any, error) {
+		out, err := buildTransactionAnalysis(cfg, args)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		return toolJSONBytes(b), nil, nil
+	})
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "player_gw_stats",
+		Description: "Per-gameweek stats for a specific player: minutes, points, goals, assists, xG, xA across a GW range",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args PlayerGWStatsArgs) (*mcp.CallToolResult, any, error) {
+		out, err := buildPlayerGWStats(cfg, args)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		return toolJSONBytes(b), nil, nil
+	})
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "head_to_head",
+		Description: "Head-to-head record between two managers: all matches played, scores, and W/D/L tally",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args HeadToHeadArgs) (*mcp.CallToolResult, any, error) {
+		out, err := buildHeadToHead(cfg, args)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		return toolJSONBytes(b), nil, nil
+	})
+
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
 	}, &mcp.StreamableHTTPOptions{JSONResponse: true})
