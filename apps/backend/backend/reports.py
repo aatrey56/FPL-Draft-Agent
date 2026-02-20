@@ -6,6 +6,7 @@ from typing import Any, Dict, Tuple, Optional
 from zoneinfo import ZoneInfo
 
 from .config import SETTINGS
+from .constants import POSITION_TYPE_LABELS
 from .llm import LLMClient
 from .mcp_client import MCPClient
 
@@ -237,7 +238,6 @@ def _best_starter(entry: Dict[str, Any], points: Dict[int, float]) -> str:
     best_name = ""
     best_pos = ""
     best_pts = None
-    pos_map = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
     for r in starters:
         elem = r.get("element")
         if elem is None:
@@ -248,7 +248,7 @@ def _best_starter(entry: Dict[str, Any], points: Dict[int, float]) -> str:
         if best_pts is None or pts > best_pts:
             best_pts = pts
             best_name = r.get("name") or ""
-            best_pos = pos_map.get(r.get("position_type"), "")
+            best_pos = POSITION_TYPE_LABELS.get(r.get("position_type"), "")
     if best_pts is None:
         return "n/a"
     if best_pos:
@@ -577,7 +577,7 @@ def render_starting_xi_md(
             lines.append(f"- {w}")
         lines.append("")
     for s in out["starters"]:
-        pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}.get(s["position_type"], "UNK")
+        pos_label = POSITION_TYPE_LABELS.get(s["position_type"], "UNK")
         lines.append(
             f"- {s['name']} ({s['team']}, {pos_label}) vs {s['opponent']} ({s['venue']}) "
             f"| score {s['score']}"
