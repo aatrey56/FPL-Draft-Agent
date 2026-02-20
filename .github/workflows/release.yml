@@ -1,9 +1,20 @@
 name: Release
 
+# Publishes a GitHub release when a version tag is pushed to `main`.
+#
+# The full structured changelog (breaking changes, environment impact, ecosystem
+# effects) is generated separately by claude-changelog.yml when stage is merged
+# into main. This workflow finalises the release draft created at that point.
+#
+# Tag format: v<major>.<minor>.<patch>  (e.g. v1.2.3)
+# Only tags on `main` are considered production releases.
+
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "v[0-9]+.[0-9]+.[0-9]+"   # production releases only (no -rc, -beta, etc.)
+    branches:
+      - main                        # guard: only finalize on main
   workflow_dispatch:
 
 permissions:
@@ -11,10 +22,22 @@ permissions:
 
 jobs:
   release:
+    name: Publish Release
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
-      - name: Create GitHub release
+        with:
+          fetch-depth: 0
+
+      # If claude-changelog.yml already created a draft release for this tag,
+      # softprops/action-gh-release will update it; otherwise it creates a new one.
+      # The body is left empty here — the structured changelog body was written by
+      # the claude-changelog.yml step when stage was merged into main.
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          # Do not overwrite body if a draft already exists with Claude's changelog.
+          generate_release_notes: false
+          draft: false
+          prerelease: false
