@@ -1,13 +1,24 @@
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 import re
 from pathlib import Path
 
 from .llm import LLMClient, try_parse_json
 from .mcp_client import MCPClient
 from .config import SETTINGS
+from .constants import GW_PATTERN, POSITION_TYPE_LABELS
 from .reports import render_league_summary_md, render_standings_md, render_matchup_md, render_lineup_efficiency_md
 from .rag import get_rag_index, format_rag_docs
+
+
+class AgentSession(TypedDict, total=False):
+    """Typed container for per-conversation session state tracked by the Agent."""
+
+    league_id: Optional[int]
+    entry_id: Optional[int]
+    entry_name: Optional[str]
+    gw: Optional[int]
+    last_tool: Optional[str]
 
 
 SYSTEM_PROMPT = """You are a data-accurate FPL Draft assistant. You MUST call tools for any factual data.
@@ -73,7 +84,81 @@ Example tool calls:
 
 
 class Agent:
+    # Maps intent name → list of match patterns.
+    # Each pattern is either:
+    #   str   – matches if the keyword is a substring of the (lowercased) text
+    #   tuple – matches if ALL strings in the tuple are substrings of the text
+    # The outer list is OR: the intent matches if ANY pattern matches.
+    _INTENT_KEYWORDS: Dict[str, List] = {
+        "draft_picks": [
+            ("draft", "pick"), ("draft", "picks"), ("draft", "order"),
+            ("draft", "history"), ("draft", "round"), ("draft", "drafted"),
+            ("draft", "who did"),
+        ],
+        "player_gw_stats": [
+            "stats each week", "stats per week", "weekly stats",
+            "points each week", "points per gameweek", "gw points",
+            "gameweek points", "weekly breakdown", "each gameweek", "per gw",
+        ],
+        "transaction_analysis": [
+            ("transaction", "analysis"), "most targeted", "who added",
+            "who dropped", ("position", "targeted"), ("position", "popular"),
+            "popular adds", "popular drops",
+        ],
+        "head_to_head": ["head to head", " h2h ", "record against"],
+        "manager_season": [
+            "season stats", "season history", "season record",
+            "how have i done", "overall record", "weekly scores",
+            "week by week", "all season", "season breakdown", "full season",
+            "season summary", "my record", "this season",
+        ],
+        "current_roster": [
+            "my team", "my roster", "my squad", "current lineup",
+            "current roster", "who's on my team", "show my team",
+            "show my squad", "my players", "who do i have",
+            "my starting", "my bench",
+        ],
+        "waiver": ["waiver"],
+        "streak": [("streak", "win"), ("in a row", "win")],
+        "win_list": [
+            ("win", "week"), ("win", "gw"), ("win", "gameweek"),
+            ("won", "week"), ("won", "gw"), ("won", "gameweek"),
+            ("wins", "week"), ("wins", "gw"), ("wins", "gameweek"),
+        ],
+        "schedule": ["schedule", ("who does", "play")],
+        "fixtures": ["fixtures", "fixture list"],
+        "player_form": ["player_form", "player form", "form table"],
+        "standings": ["standings", "table"],
+        "league_summary": ["league summary", ("summary", "league")],
+        "transactions": ["transactions", "trades", ("waivers", "summary")],
+        "lineup": ["lineup efficiency", "bench points", "bench"],
+        "strength": ["strength of schedule", "schedule difficulty"],
+        "ownership": ["ownership", "scarcity"],
+        "matchup_summary": [
+            (" vs ", "summary"), (" vs ", "recap"),
+            (" vs. ", "summary"), (" vs. ", "recap"),
+        ],
+    }
+
+    def _looks_like(self, intent: str, text: str) -> bool:
+        """Return True if *text* matches any pattern for *intent*."""
+        for pattern in self._INTENT_KEYWORDS.get(intent, []):
+            if isinstance(pattern, tuple):
+                if all(kw in text for kw in pattern):
+                    return True
+            else:
+                if pattern in text:
+                    return True
+        return False
+
     def __init__(self, mcp: MCPClient, llm: LLMClient) -> None:
+        """Initialise the agent with an MCP tool client and an LLM client.
+
+        Args:
+            mcp: Client used to list and call tools exposed by the Go MCP server.
+            llm: Client used to call the OpenAI chat completions API when the
+                 fast-path keyword router cannot handle a query directly.
+        """
         self.mcp = mcp
         self.llm = llm
         self._element_name_cache: Optional[Dict[int, str]] = None
@@ -81,7 +166,7 @@ class Agent:
         self._pending_candidates: Optional[List[str]] = None
         self._pending_league_id: Optional[int] = None
         self._pending_text: Optional[str] = None
-        self._session: Dict[str, Any] = {
+        self._session: AgentSession = {
             "league_id": None,
             "entry_id": None,
             "entry_name": None,
@@ -98,6 +183,25 @@ class Agent:
         max_steps: int = 6,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """Process a user message and return the agent's response.
+
+        The agent first tries a fast-path keyword router (_try_route).  If no
+        route matches, it falls back to an LLM-guided tool-call loop that runs
+        for up to *max_steps* iterations.
+
+        Args:
+            user_message: The raw text sent by the user.
+            max_steps:    Maximum number of LLM → tool → LLM cycles before
+                          giving up (default 6).
+            context:      Optional dict carrying caller-supplied session hints
+                          such as ``league_id``, ``entry_id``, ``entry_name``,
+                          and ``gw``.
+
+        Returns:
+            A dict with at least:
+              - ``"content"`` (str): the final text reply for the user.
+              - ``"tool_events"`` (list): ordered log of every tool call made.
+        """
         user_message = (user_message or "").strip()
         context = context or {}
         self._update_session_from_context(context)
@@ -196,6 +300,25 @@ class Agent:
         return {"content": content, "tool_events": tool_events}
 
     def _apply_defaults(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Inject session context into LLM-chosen tool arguments.
+
+        When the LLM picks a tool but omits ``league_id``, ``entry_id``, or
+        ``gw``, this method fills them in from the current session state so
+        that callers never have to repeat the values in every turn.
+
+        It also normalises a few tool-specific quirks:
+        - ``manager_schedule`` / ``league_entries``: flattens ``first``/``last``
+          name fields into a single ``entry_name`` string.
+        - All tools: skips injection of ``None`` values so that optional
+          arguments are never accidentally set to null.
+
+        Args:
+            name: The tool name chosen by the LLM.
+            args: The raw argument dict from the LLM response.
+
+        Returns:
+            A new dict with defaults merged in.
+        """
         out = dict(args or {})
         if name in ("manager_schedule", "league_entries"):
             first = out.get("first")
@@ -477,45 +600,45 @@ class Agent:
         lower = text.lower()
 
         # ---- New tools (higher priority — check before broad existing patterns) ----
-        if self._looks_like_draft_picks(lower):
+        if self._looks_like("draft_picks", lower):
             return self._handle_draft_picks(text, tool_events)
-        if self._looks_like_player_gw_stats(lower):
+        if self._looks_like("player_gw_stats", lower):
             return self._handle_player_gw_stats(text, tool_events)
-        if self._looks_like_transaction_analysis(lower):
+        if self._looks_like("transaction_analysis", lower):
             return self._handle_transaction_analysis(text, tool_events)
-        if self._looks_like_head_to_head(lower):
+        if self._looks_like("head_to_head", lower):
             return self._handle_head_to_head(text, tool_events)
-        if self._looks_like_manager_season(lower):
+        if self._looks_like("manager_season", lower):
             return self._handle_manager_season(text, tool_events)
-        if self._looks_like_current_roster(lower):
+        if self._looks_like("current_roster", lower):
             return self._handle_current_roster(text, tool_events)
 
         # ---- Existing fast-path routes ----
-        if self._looks_like_waiver(lower):
+        if self._looks_like("waiver", lower):
             return self._handle_waiver(text, tool_events)
-        if self._looks_like_streak(lower):
+        if self._looks_like("streak", lower):
             return self._handle_streak(text, tool_events)
-        if self._looks_like_win_list(lower):
+        if self._looks_like("win_list", lower):
             return self._handle_wins_list(text, tool_events)
-        if self._looks_like_schedule(lower):
+        if self._looks_like("schedule", lower):
             return self._handle_schedule(text, tool_events)
-        if self._looks_like_fixtures(lower):
+        if self._looks_like("fixtures", lower):
             return self._handle_fixtures(text, tool_events)
-        if self._looks_like_player_form(lower):
+        if self._looks_like("player_form", lower):
             return self._handle_player_form(text, tool_events)
-        if self._looks_like_standings(lower):
+        if self._looks_like("standings", lower):
             return self._handle_simple_tool(text, tool_events, "standings", "Standings")
-        if self._looks_like_league_summary(lower):
+        if self._looks_like("league_summary", lower):
             return self._handle_league_summary(text, tool_events)
-        if self._looks_like_transactions(lower):
+        if self._looks_like("transactions", lower):
             return self._handle_transactions(text, tool_events)
-        if self._looks_like_lineup(lower):
+        if self._looks_like("lineup", lower):
             return self._handle_lineup_efficiency(text, tool_events)
-        if self._looks_like_strength(lower):
+        if self._looks_like("strength", lower):
             return self._handle_simple_tool(text, tool_events, "strength_of_schedule", "Strength of schedule")
-        if self._looks_like_ownership(lower):
+        if self._looks_like("ownership", lower):
             return self._handle_simple_tool(text, tool_events, "ownership_scarcity", "Ownership scarcity")
-        if self._looks_like_matchup_summary(lower):
+        if self._looks_like("matchup_summary", lower):
             return self._handle_matchup_summary(text, tool_events)
         if "league entries" in lower or "all teams" in lower:
             return self._handle_simple_tool(text, tool_events, "league_entries", "League teams")
@@ -584,28 +707,16 @@ class Agent:
         return " ".join(labeled)
 
     def _extract_league_id(self, text: str) -> Optional[int]:
-        match = re.search(r"league\s*(?:id)?\s*[:=#]?\s*(\d{4,6})", text, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-        return None
+        return self._extract_param("league_id", text)
 
     def _extract_gw(self, text: str) -> Optional[int]:
-        match = re.search(r"(?:gw|gameweek|game\s*week|week)\s*[:=#]?\s*(\d{1,2})", text, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-        return None
+        return self._extract_param("gw", text)
 
     def _extract_horizon(self, text: str) -> Optional[int]:
-        match = re.search(r"horizon\s*[:=#]?\s*(\d{1,2})", text, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-        return None
+        return self._extract_param("horizon", text)
 
     def _extract_entry_id(self, text: str) -> Optional[int]:
-        match = re.search(r"(?:entry[_\s-]*id|entry)\s*[:=#]?\s*(\d{4,8})", text, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-        return None
+        return self._extract_param("entry_id", text)
 
     def _normalize_text(self, text: str) -> str:
         return re.sub(r"[^a-z0-9 ]+", " ", text.lower())
@@ -685,46 +796,23 @@ class Agent:
 
     # ---- Intent detectors (existing) ----
 
-    def _looks_like_waiver(self, text: str) -> bool:
-        return "waiver" in text or "waivers" in text or "waiver rec" in text
 
-    def _looks_like_schedule(self, text: str) -> bool:
-        return "who does" in text and "play" in text or "schedule" in text
+    # Maps parameter name → compiled regex for extracting a numeric value from text.
+    _PARAM_PATTERNS: Dict[str, Any] = {
+        "league_id": re.compile(r"league\s*(?:id)?\s*[:=#]?\s*(\d{4,6})", re.IGNORECASE),
+        "gw": GW_PATTERN,
+        "horizon": re.compile(r"horizon\s*[:=#]?\s*(\d{1,2})", re.IGNORECASE),
+        "entry_id": re.compile(r"(?:entry[_\s-]*id|entry)\s*[:=#]?\s*(\d{4,8})", re.IGNORECASE),
+    }
 
-    def _looks_like_fixtures(self, text: str) -> bool:
-        return "fixtures" in text or "fixture list" in text
+    def _extract_param(self, param: str, text: str) -> Optional[int]:
+        """Extract a named numeric parameter from *text* using *_PARAM_PATTERNS*."""
+        pattern = self._PARAM_PATTERNS.get(param)
+        if pattern is None:
+            return None
+        match = pattern.search(text)
+        return int(match.group(1)) if match else None
 
-    def _looks_like_player_form(self, text: str) -> bool:
-        return "player_form" in text or "player form" in text or "form table" in text
-
-    def _looks_like_streak(self, text: str) -> bool:
-        return ("streak" in text or "in a row" in text) and "win" in text
-
-    def _looks_like_win_list(self, text: str) -> bool:
-        if "win" not in text and "won" not in text and "wins" not in text:
-            return False
-        return "week" in text or "gw" in text or "gameweek" in text
-
-    def _looks_like_standings(self, text: str) -> bool:
-        return "standings" in text or "table" in text
-
-    def _looks_like_league_summary(self, text: str) -> bool:
-        return "league summary" in text or ("summary" in text and "league" in text)
-
-    def _looks_like_transactions(self, text: str) -> bool:
-        return ("transactions" in text) or ("waivers" in text and "summary" in text) or ("trades" in text)
-
-    def _looks_like_lineup(self, text: str) -> bool:
-        return "lineup efficiency" in text or "bench points" in text or "bench" in text
-
-    def _looks_like_strength(self, text: str) -> bool:
-        return "strength of schedule" in text or "schedule difficulty" in text
-
-    def _looks_like_ownership(self, text: str) -> bool:
-        return "ownership" in text or "scarcity" in text
-
-    def _looks_like_matchup_summary(self, text: str) -> bool:
-        return (" vs " in text or " vs. " in text) and ("summary" in text or "recap" in text)
 
     def _looks_like_team_name_only(self, text: str, league_id: int, tool_events: List[Dict[str, Any]]) -> bool:
         if len(text.split()) > 6:
@@ -751,44 +839,6 @@ class Agent:
             return False
         entry_id, _ = self._resolve_team_exact(league_id, text, tool_events)
         return entry_id is not None
-
-    # ---- Intent detectors (new tools) ----
-
-    def _looks_like_current_roster(self, text: str) -> bool:
-        roster_words = ("my team", "my roster", "my squad", "current lineup", "current roster",
-                        "who's on my team", "show my team", "show my squad", "my players",
-                        "who do i have", "my starting", "my bench")
-        return any(w in text for w in roster_words)
-
-    def _looks_like_draft_picks(self, text: str) -> bool:
-        return ("draft" in text and any(w in text for w in ("pick", "picks", "order", "history", "round", "drafted", "who did")))
-
-    def _looks_like_manager_season(self, text: str) -> bool:
-        season_phrases = ("season stats", "season history", "season record", "how have i done",
-                          "how have you done", "overall record", "weekly scores", "week by week",
-                          "all season", "season breakdown", "full season", "season summary",
-                          "my record", "this season")
-        return any(p in text for p in season_phrases)
-
-    def _looks_like_transaction_analysis(self, text: str) -> bool:
-        return (
-            ("transaction" in text and "analysis" in text)
-            or "most targeted" in text
-            or "who added" in text
-            or "who dropped" in text
-            or ("position" in text and ("targeted" in text or "popular" in text))
-            or "popular adds" in text
-            or "popular drops" in text
-        )
-
-    def _looks_like_player_gw_stats(self, text: str) -> bool:
-        gw_stat_phrases = ("stats each week", "stats per week", "weekly stats", "points each week",
-                           "points per gameweek", "gw points", "gameweek points", "weekly breakdown",
-                           "each gameweek", "per gw")
-        return any(p in text for p in gw_stat_phrases)
-
-    def _looks_like_head_to_head(self, text: str) -> bool:
-        return "head to head" in text or " h2h " in text or "record against" in text
 
     # ---- Handlers (new tools) ----
 
@@ -826,12 +876,11 @@ class Agent:
         lines = [f"**{team_label}** — GW{gw_val} squad:"]
         starters = result.get("starters", [])
         bench = result.get("bench", [])
-        pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
         lines.append("Starting XI:")
         for p in starters:
             name = p.get("name") or "Unknown"
             team = p.get("team") or ""
-            pos = pos_label.get(p.get("position_type"), "?")
+            pos = POSITION_TYPE_LABELS.get(p.get("position_type"), "?")
             cap = " ©" if p.get("is_captain") else (" (vc)" if p.get("is_vice_captain") else "")
             lines.append(f"  {p.get('position_slot', '')}) {name} ({team}, {pos}){cap}")
         if bench:
@@ -839,7 +888,7 @@ class Agent:
             for p in bench:
                 name = p.get("name") or "Unknown"
                 team = p.get("team") or ""
-                pos = pos_label.get(p.get("position_type"), "?")
+                pos = POSITION_TYPE_LABELS.get(p.get("position_type"), "?")
                 lines.append(f"  {p.get('position_slot', '')}) {name} ({team}, {pos})")
         return "\n".join(lines)
 
@@ -865,12 +914,11 @@ class Agent:
         filtered_by = result.get("filtered_by") or ""
         header = f"Draft picks for **{filtered_by}**:" if filtered_by else "Draft picks (all teams):"
         lines = [header]
-        pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
         for p in picks[:30]:
             manager = p.get("entry_name") or "Unknown"
             player = p.get("player_name") or "Unknown"
             team = p.get("team") or ""
-            pos = pos_label.get(p.get("position_type"), "?")
+            pos = POSITION_TYPE_LABELS.get(p.get("position_type"), "?")
             auto = " (auto)" if p.get("was_auto") else ""
             lines.append(f"  Rd{p.get('round')}, Pick{p.get('pick')}: {manager} → {player} ({team}, {pos}){auto}")
         if len(picks) > 30:
@@ -1006,8 +1054,7 @@ class Agent:
 
         name = result.get("player_name") or "Unknown player"
         team = result.get("team") or ""
-        pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
-        pos = pos_label.get(result.get("position_type"), "?")
+        pos = POSITION_TYPE_LABELS.get(result.get("position_type"), "?")
         total = result.get("total_points", 0)
         avg = result.get("avg_points", 0.0)
         gws = result.get("gameweeks", [])
@@ -1238,7 +1285,7 @@ class Agent:
             name = add.get("name") or "Unknown player"
             team = add.get("team") or ""
             pos = add.get("position_type")
-            pos_label = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}.get(pos, "UNK")
+            pos_label = POSITION_TYPE_LABELS.get(pos, "UNK")
             line = f"{i}. {name}"
             if team:
                 line += f" ({team}, {pos_label})"
