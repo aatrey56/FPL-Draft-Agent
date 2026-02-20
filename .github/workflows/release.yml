@@ -12,9 +12,10 @@ name: Release
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"   # production releases only (no -rc, -beta, etc.)
-    branches:
-      - main                        # guard: only finalize on main
+      # GitHub Actions uses glob syntax, not regex.
+      # v[0-9]* matches v1, v10, v100, etc. — no + operator.
+      # The job-level `if` below excludes pre-release tags (-rc, -beta, -alpha).
+      - "v[0-9]*.[0-9]*.[0-9]*"
   workflow_dispatch:
 
 permissions:
@@ -24,6 +25,10 @@ jobs:
   release:
     name: Publish Release
     runs-on: ubuntu-latest
+
+    # Exclude pre-release tags (v1.2.3-rc.1, v1.2.3-beta, etc.).
+    # Only bare semver tags like v1.2.3 reach this step.
+    if: "!contains(github.ref_name, '-')"
 
     steps:
       - uses: actions/checkout@v4
