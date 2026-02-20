@@ -1,5 +1,5 @@
 fastapi==0.115.5
-uvicorn[standard]==0.30.6
+uvicorn[standard]==0.40.0
 requests==2.32.3
 apscheduler==3.10.4
 openai==1.63.2
