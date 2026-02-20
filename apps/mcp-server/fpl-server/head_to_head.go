@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -19,11 +20,11 @@ type HeadToHeadArgs struct {
 
 // H2HMatch describes a single match between the two teams.
 type H2HMatch struct {
-	Gameweek  int    `json:"gameweek"`
-	ScoreA    int    `json:"score_a"`
-	ScoreB    int    `json:"score_b"`
-	ResultA   string `json:"result_a"`
-	Finished  bool   `json:"finished"`
+	Gameweek int    `json:"gameweek"`
+	ScoreA   int    `json:"score_a"`
+	ScoreB   int    `json:"score_b"`
+	ResultA  string `json:"result_a"`
+	Finished bool   `json:"finished"`
 }
 
 // H2HTeamRecord holds one team's record in this H2H matchup.
@@ -149,11 +150,9 @@ func buildHeadToHead(cfg ServerConfig, args HeadToHeadArgs) (HeadToHeadOutput, e
 	}
 
 	// Sort matches chronologically.
-	for i := 1; i < len(matches); i++ {
-		for j := i; j > 0 && matches[j].Gameweek < matches[j-1].Gameweek; j-- {
-			matches[j], matches[j-1] = matches[j-1], matches[j]
-		}
-	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].Gameweek < matches[j].Gameweek
+	})
 
 	return HeadToHeadOutput{
 		LeagueID: args.LeagueID,

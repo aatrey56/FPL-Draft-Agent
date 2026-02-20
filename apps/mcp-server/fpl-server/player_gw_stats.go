@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -125,14 +126,14 @@ func buildPlayerGWStats(cfg ServerConfig, args PlayerGWStatsArgs) (PlayerGWStats
 		var liveResp struct {
 			Elements map[string]struct {
 				Stats struct {
-					Minutes     int     `json:"minutes"`
-					TotalPoints int     `json:"total_points"`
-					GoalsScored int     `json:"goals_scored"`
-					Assists     int     `json:"assists"`
-					CleanSheets int     `json:"clean_sheets"`
-					BPS         int     `json:"bps"`
-					XG          string  `json:"expected_goals"`
-					XA          string  `json:"expected_assists"`
+					Minutes     int    `json:"minutes"`
+					TotalPoints int    `json:"total_points"`
+					GoalsScored int    `json:"goals_scored"`
+					Assists     int    `json:"assists"`
+					CleanSheets int    `json:"clean_sheets"`
+					BPS         int    `json:"bps"`
+					XG          string `json:"expected_goals"`
+					XA          string `json:"expected_assists"`
 				} `json:"stats"`
 			} `json:"elements"`
 		}
@@ -191,7 +192,9 @@ func parseFloat(s string) float64 {
 	if s == "" {
 		return 0
 	}
-	var f float64
-	fmt.Sscanf(s, "%f", &f)
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
 	return f
 }

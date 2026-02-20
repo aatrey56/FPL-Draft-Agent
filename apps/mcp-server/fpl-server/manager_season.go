@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -17,13 +18,13 @@ type ManagerSeasonArgs struct {
 
 // SeasonGameweek holds results for a single gameweek in a manager's season.
 type SeasonGameweek struct {
-	Gameweek     int    `json:"gameweek"`
-	Score        int    `json:"score"`
-	OpponentID   int    `json:"opponent_entry_id"`
-	OpponentName string `json:"opponent_name"`
-	OpponentScore int   `json:"opponent_score"`
-	Result       string `json:"result"`
-	Finished     bool   `json:"finished"`
+	Gameweek      int    `json:"gameweek"`
+	Score         int    `json:"score"`
+	OpponentID    int    `json:"opponent_entry_id"`
+	OpponentName  string `json:"opponent_name"`
+	OpponentScore int    `json:"opponent_score"`
+	Result        string `json:"result"`
+	Finished      bool   `json:"finished"`
 }
 
 // SeasonRecord holds season-level W/D/L.
@@ -164,11 +165,9 @@ func buildManagerSeason(cfg ServerConfig, args ManagerSeasonArgs) (ManagerSeason
 	}
 
 	// Sort gameweeks chronologically.
-	for i := 1; i < len(gameweeks); i++ {
-		for j := i; j > 0 && gameweeks[j].Gameweek < gameweeks[j-1].Gameweek; j-- {
-			gameweeks[j], gameweeks[j-1] = gameweeks[j-1], gameweeks[j]
-		}
-	}
+	sort.Slice(gameweeks, func(i, j int) bool {
+		return gameweeks[i].Gameweek < gameweeks[j].Gameweek
+	})
 
 	avg := 0.0
 	if finishedCount > 0 {
