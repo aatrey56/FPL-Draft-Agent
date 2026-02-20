@@ -1,0 +1,363 @@
+name: Claude Changelog
+
+# Generates a structured changelog when code crosses a gated branch transition.
+#
+#   dev  →  stage   → posts pre-release changelog as a PR comment + draft pre-release
+#   stage →  main   → posts release changelog as a PR comment + draft GitHub release
+#
+# The changelog classifies every commit as:
+#   - Breaking change (deployer action required)
+#   - New feature (additive, non-breaking)
+#   - Bug fix
+#   - Internal change (tests, docs, refactors)
+#
+# It also calls out environment/config changes (new env vars, port changes)
+# and ecosystem effects (Go↔Python MCP contract changes, report format changes).
+#
+# Trigger: a PR is merged into `stage` (from dev) or `main` (from stage).
+# Manual runs: workflow_dispatch with base_ref and head_sha inputs.
+#
+# Required secret: CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [stage, main]
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "Target branch (stage or main)"
+        required: true
+        default: "stage"
+        type: choice
+        options: [stage, main]
+      head_sha:
+        description: "Head SHA to diff from (defaults to branch HEAD)"
+        required: false
+
+permissions:
+  contents: write      # needed to create releases and tags
+  pull-requests: write # needed to post PR comments
+
+jobs:
+  changelog:
+    name: Generate Changelog
+    runs-on: ubuntu-latest
+
+    # Only run when a PR from dev→stage or stage→main is actually merged.
+    # Manual dispatch bypasses the merge check.
+    if: |
+      (
+        github.event.pull_request.merged == true &&
+        (
+          (github.base_ref == 'stage' && github.head_ref == 'dev') ||
+          (github.base_ref == 'main'  && github.head_ref == 'stage')
+        )
+      ) ||
+      github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout merged branch
+        uses: actions/checkout@v4
+        with:
+          # For workflow_dispatch, use the specified base_ref; otherwise use the PR base.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.base_ref || github.base_ref }}
+          fetch-depth: 0
+
+      # Capture the exact commit SHA we checked out.
+      # This is passed as target_commitish when creating release tags so that
+      # GitHub anchors the tag to the correct commit rather than defaulting to
+      # the repository's default branch HEAD.
+      - name: Capture HEAD SHA
+        id: headsha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # ── API key guard ──────────────────────────────────────────────────────
+      - name: Check Claude auth secret
+        id: keycheck
+        continue-on-error: true
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY:       ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set."
+            exit 1
+          fi
+
+      - name: Fail when auth secret is missing
+        if: steps.keycheck.outcome != 'success'
+        run: exit 1
+
+      # ── Determine version label and diff base ──────────────────────────────
+      - name: Compute version and diff base
+        id: version
+        env:
+          BASE_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.base_ref || github.base_ref }}
+        run: |
+          # Find the most recent tag reachable from HEAD (excluding HEAD itself).
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            # No previous tag — diff from the very first commit.
+            DIFF_BASE=$(git rev-list --max-parents=0 HEAD)
+            echo "No previous tag found; diffing from initial commit."
+          else
+            DIFF_BASE="$PREV_TAG"
+            echo "Diffing from $PREV_TAG"
+          fi
+
+          # Derive a version label for the changelog heading.
+          # For main: next semantic version after the last tag.
+          # For stage: pre-release label.
+          TODAY=$(date -u +%Y-%m-%d)
+
+          if [ "$BASE_REF" = "main" ]; then
+            if [ -n "$PREV_TAG" ]; then
+              # Bump patch version of previous tag (e.g. v1.2.3 → v1.2.4)
+              MAJOR=$(echo "$PREV_TAG" | sed 's/v//' | cut -d. -f1)
+              MINOR=$(echo "$PREV_TAG" | sed 's/v//' | cut -d. -f2)
+              PATCH=$(echo "$PREV_TAG" | sed 's/v//' | cut -d. -f3)
+              VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+            else
+              VERSION="v1.0.0"
+            fi
+            TRANSITION="stage → main (production release)"
+            RELEASE_TYPE="release"
+          else
+            # stage branch: pre-release label
+            if [ -n "$PREV_TAG" ]; then
+              MAJOR=$(echo "$PREV_TAG" | sed 's/v//' | cut -d. -f1)
+              MINOR=$(echo "$PREV_TAG" | sed 's/v//' | cut -d. -f2)
+              PATCH=$(echo "$PREV_TAG" | sed 's/v//' | cut -d. -f3)
+              VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))-rc.1"
+            else
+              VERSION="v0.1.0-rc.1"
+            fi
+            TRANSITION="dev → stage (pre-release integration)"
+            RELEASE_TYPE="pre-release"
+          fi
+
+          echo "version=$VERSION"         >> "$GITHUB_OUTPUT"
+          echo "prev_tag=$PREV_TAG"       >> "$GITHUB_OUTPUT"
+          echo "diff_base=$DIFF_BASE"     >> "$GITHUB_OUTPUT"
+          echo "transition=$TRANSITION"   >> "$GITHUB_OUTPUT"
+          echo "release_type=$RELEASE_TYPE" >> "$GITHUB_OUTPUT"
+          echo "today=$TODAY"             >> "$GITHUB_OUTPUT"
+
+      # ── Collect git context ────────────────────────────────────────────────
+      - name: Collect commits and changed files
+        id: gitctx
+        env:
+          DIFF_BASE: ${{ steps.version.outputs.diff_base }}
+        run: |
+          # Commit log: exclude merge commits, max 150 lines.
+          COMMIT_LOG=$(git log "$DIFF_BASE"..HEAD --oneline --no-merges | head -150)
+          COMMIT_COUNT=$(git log "$DIFF_BASE"..HEAD --oneline --no-merges | wc -l | tr -d ' ')
+
+          # Files changed: status letter + path (A=added, M=modified, D=deleted, R=renamed).
+          CHANGED_FILES=$(git diff --name-status "$DIFF_BASE"..HEAD | head -200)
+
+          # Diffstat summary (last 5 lines = totals).
+          DIFFSTAT=$(git diff --stat "$DIFF_BASE"..HEAD | tail -5)
+
+          {
+            echo "COMMIT_LOG<<SENTINEL_CL"
+            echo "$COMMIT_LOG"
+            echo "SENTINEL_CL"
+            echo "COMMIT_COUNT=$COMMIT_COUNT"
+            echo "CHANGED_FILES<<SENTINEL_CF"
+            echo "$CHANGED_FILES"
+            echo "SENTINEL_CF"
+            echo "DIFFSTAT<<SENTINEL_DS"
+            echo "$DIFFSTAT"
+            echo "SENTINEL_DS"
+          } >> "$GITHUB_ENV"
+
+      # ── Build Claude prompt ────────────────────────────────────────────────
+      - name: Build changelog prompt
+        id: prompt
+        env:
+          VERSION:       ${{ steps.version.outputs.version }}
+          TRANSITION:    ${{ steps.version.outputs.transition }}
+          RELEASE_TYPE:  ${{ steps.version.outputs.release_type }}
+          TODAY:         ${{ steps.version.outputs.today }}
+          PREV_TAG:      ${{ steps.version.outputs.prev_tag }}
+          COMMIT_COUNT:  ${{ env.COMMIT_COUNT }}
+          COMMIT_LOG:    ${{ env.COMMIT_LOG }}
+          CHANGED_FILES: ${{ env.CHANGED_FILES }}
+          DIFFSTAT:      ${{ env.DIFFSTAT }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          base_prompt   = Path(".github/claude/prompts/changelog.md").read_text()
+          version       = os.environ.get("VERSION",       "vUNKNOWN")
+          transition    = os.environ.get("TRANSITION",    "")
+          release_type  = os.environ.get("RELEASE_TYPE",  "")
+          today         = os.environ.get("TODAY",         "")
+          prev_tag      = os.environ.get("PREV_TAG",      "(none — first release)")
+          commit_count  = os.environ.get("COMMIT_COUNT",  "?")
+          commit_log    = os.environ.get("COMMIT_LOG",    "(none)")
+          changed_files = os.environ.get("CHANGED_FILES", "(none)")
+          diffstat      = os.environ.get("DIFFSTAT",      "(none)")
+
+          # Fill in template placeholders in the prompt.
+          base_prompt = (
+              base_prompt
+              .replace("{VERSION}",      version)
+              .replace("{DATE}",         today)
+              .replace("{TRANSITION}",   transition)
+              .replace("{COMMIT_COUNT}", commit_count)
+          )
+
+          prompt = "\n".join([
+              base_prompt,
+              "",
+              "---",
+              "",
+              "## Input Data",
+              "",
+              f"**Version:** {version}",
+              f"**Date:** {today}",
+              f"**Transition:** {transition}",
+              f"**Release type:** {release_type}",
+              f"**Previous tag:** {prev_tag}",
+              f"**Commits included:** {commit_count}",
+              "",
+              "### Commit Log (newest first)",
+              "```",
+              commit_log,
+              "```",
+              "",
+              "### Files Changed (status + path)",
+              "```",
+              changed_files,
+              "```",
+              "",
+              "### Diffstat",
+              "```",
+              diffstat,
+              "```",
+              "",
+              "---",
+              "",
+              "Use the Read, Glob, and Grep tools to inspect any files you need more context on.",
+              "Then produce the full changelog using exactly the required output format above.",
+              "Replace all placeholder text with real content based on the commits and file changes.",
+          ])
+
+          github_env = os.environ.get("GITHUB_ENV", "")
+          if github_env:
+              with open(github_env, "a") as f:
+                  f.write("CLAUDE_CHANGELOG_PROMPT<<HEREDOC_SENTINEL\n")
+                  f.write(prompt)
+                  f.write("\nHEREDOC_SENTINEL\n")
+          PY
+
+      # ── Run Claude to generate changelog ──────────────────────────────────
+      - name: Generate changelog with Claude
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key:       ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token:            ${{ secrets.GITHUB_TOKEN }}
+          # Read-only: Claude reads files to understand changes but does not modify them.
+          allowed_tools:           "Read,Glob,Grep"
+          direct_prompt:           ${{ env.CLAUDE_CHANGELOG_PROMPT }}
+
+      # ── Post changelog as PR comment ───────────────────────────────────────
+      - name: Post changelog on PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
+        uses: actions/github-script@v7
+        env:
+          VERSION:      ${{ steps.version.outputs.version }}
+          TRANSITION:   ${{ steps.version.outputs.transition }}
+          RELEASE_TYPE: ${{ steps.version.outputs.release_type }}
+        with:
+          script: |
+            const version      = process.env.VERSION;
+            const transition   = process.env.TRANSITION;
+            const releaseType  = process.env.RELEASE_TYPE;
+
+            await github.rest.issues.createComment({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                `## Changelog: ${version}`,
+                `**Transition:** \`${transition}\``,
+                `**Type:** ${releaseType}`,
+                "",
+                "> The full structured changelog was generated by Claude above.",
+                "> Check the Claude step output for the complete breakdown of breaking/non-breaking changes.",
+                "",
+                "---",
+                "> 🤖 Generated by [Claude Code](https://claude.ai/claude-code) via `claude-changelog.yml`",
+              ].join("\n"),
+            });
+
+      # ── Create GitHub pre-release or release draft ─────────────────────────
+      - name: Create GitHub release draft
+        if: steps.keycheck.outcome == 'success'
+        uses: actions/github-script@v7
+        env:
+          VERSION:       ${{ steps.version.outputs.version }}
+          PREV_TAG:      ${{ steps.version.outputs.prev_tag }}
+          RELEASE_TYPE:  ${{ steps.version.outputs.release_type }}
+          TRANSITION:    ${{ steps.version.outputs.transition }}
+          TODAY:         ${{ steps.version.outputs.today }}
+          COMMIT_LOG:    ${{ env.COMMIT_LOG }}
+          # The exact SHA we checked out — used as target_commitish so that
+          # GitHub creates the tag on this commit, not the default branch HEAD.
+          HEAD_SHA:      ${{ steps.headsha.outputs.sha }}
+        with:
+          script: |
+            const version      = process.env.VERSION;
+            const releaseType  = process.env.RELEASE_TYPE;
+            const transition   = process.env.TRANSITION;
+            const today        = process.env.TODAY;
+            const commitLog    = process.env.COMMIT_LOG || "(see PR for details)";
+            const headSha      = process.env.HEAD_SHA;
+            const isPrerelease = releaseType === "pre-release";
+
+            // Build a concise release body pointing to the Claude-generated details.
+            const body = [
+              `## ${version} — ${today}`,
+              "",
+              `**Transition:** \`${transition}\``,
+              "",
+              "### Commits",
+              "```",
+              commitLog,
+              "```",
+              "",
+              "> Full changelog with breaking change analysis, environment impact, and ecosystem effects",
+              "> was generated by Claude Code. See the merged PR for the complete structured changelog.",
+              "",
+              "---",
+              "> 🤖 Release draft created by [Claude Code](https://claude.ai/claude-code)",
+            ].join("\n");
+
+            try {
+              await github.rest.repos.createRelease({
+                owner:             context.repo.owner,
+                repo:              context.repo.repo,
+                tag_name:          version,
+                // Anchor the tag to the exact merged commit, not the default branch.
+                // Without this, GitHub falls back to the repo default branch HEAD,
+                // which attaches -rc tags to the wrong commit during dev→stage runs
+                // and corrupts subsequent version calculations.
+                target_commitish:  headSha,
+                name:              version,
+                body,
+                draft:             true,
+                prerelease:        isPrerelease,
+              });
+              core.info(`Created draft ${releaseType}: ${version} @ ${headSha}`);
+            } catch (err) {
+              // Tag may already exist (e.g. re-running the workflow). Log and continue.
+              core.warning(`Could not create release draft for ${version}: ${err.message}`);
+            }
