@@ -662,28 +662,16 @@ class Agent:
         return " ".join(labeled)
 
     def _extract_league_id(self, text: str) -> Optional[int]:
-        match = re.search(r"league\s*(?:id)?\s*[:=#]?\s*(\d{4,6})", text, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-        return None
+        return self._extract_param("league_id", text)
 
     def _extract_gw(self, text: str) -> Optional[int]:
-        match = GW_PATTERN.search(text)
-        if match:
-            return int(match.group(1))
-        return None
+        return self._extract_param("gw", text)
 
     def _extract_horizon(self, text: str) -> Optional[int]:
-        match = re.search(r"horizon\s*[:=#]?\s*(\d{1,2})", text, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-        return None
+        return self._extract_param("horizon", text)
 
     def _extract_entry_id(self, text: str) -> Optional[int]:
-        match = re.search(r"(?:entry[_\s-]*id|entry)\s*[:=#]?\s*(\d{4,8})", text, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-        return None
+        return self._extract_param("entry_id", text)
 
     def _normalize_text(self, text: str) -> str:
         return re.sub(r"[^a-z0-9 ]+", " ", text.lower())
@@ -762,6 +750,23 @@ class Agent:
         return None
 
     # ---- Intent detectors (existing) ----
+
+
+    # Maps parameter name → compiled regex for extracting a numeric value from text.
+    _PARAM_PATTERNS: Dict[str, Any] = {
+        "league_id": re.compile(r"league\s*(?:id)?\s*[:=#]?\s*(\d{4,6})", re.IGNORECASE),
+        "gw": GW_PATTERN,
+        "horizon": re.compile(r"horizon\s*[:=#]?\s*(\d{1,2})", re.IGNORECASE),
+        "entry_id": re.compile(r"(?:entry[_\s-]*id|entry)\s*[:=#]?\s*(\d{4,8})", re.IGNORECASE),
+    }
+
+    def _extract_param(self, param: str, text: str) -> Optional[int]:
+        """Extract a named numeric parameter from *text* using *_PARAM_PATTERNS*."""
+        pattern = self._PARAM_PATTERNS.get(param)
+        if pattern is None:
+            return None
+        match = pattern.search(text)
+        return int(match.group(1)) if match else None
 
 
     def _looks_like_team_name_only(self, text: str, league_id: int, tool_events: List[Dict[str, Any]]) -> bool:
