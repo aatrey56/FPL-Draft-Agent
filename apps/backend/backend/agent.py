@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 import re
 from pathlib import Path
 
@@ -9,6 +9,16 @@ from .config import SETTINGS
 from .constants import GW_PATTERN, POSITION_TYPE_LABELS
 from .reports import render_league_summary_md, render_standings_md, render_matchup_md, render_lineup_efficiency_md
 from .rag import get_rag_index, format_rag_docs
+
+
+class AgentSession(TypedDict, total=False):
+    """Typed container for per-conversation session state tracked by the Agent."""
+
+    league_id: Optional[int]
+    entry_id: Optional[int]
+    entry_name: Optional[str]
+    gw: Optional[int]
+    last_tool: Optional[str]
 
 
 SYSTEM_PROMPT = """You are a data-accurate FPL Draft assistant. You MUST call tools for any factual data.
@@ -82,7 +92,7 @@ class Agent:
         self._pending_candidates: Optional[List[str]] = None
         self._pending_league_id: Optional[int] = None
         self._pending_text: Optional[str] = None
-        self._session: Dict[str, Any] = {
+        self._session: AgentSession = {
             "league_id": None,
             "entry_id": None,
             "entry_name": None,
