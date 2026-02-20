@@ -84,6 +84,73 @@ Example tool calls:
 
 
 class Agent:
+    # Maps intent name → list of match patterns.
+    # Each pattern is either:
+    #   str   – matches if the keyword is a substring of the (lowercased) text
+    #   tuple – matches if ALL strings in the tuple are substrings of the text
+    # The outer list is OR: the intent matches if ANY pattern matches.
+    _INTENT_KEYWORDS: Dict[str, List] = {
+        "draft_picks": [
+            ("draft", "pick"), ("draft", "picks"), ("draft", "order"),
+            ("draft", "history"), ("draft", "round"), ("draft", "drafted"),
+            ("draft", "who did"),
+        ],
+        "player_gw_stats": [
+            "stats each week", "stats per week", "weekly stats",
+            "points each week", "points per gameweek", "gw points",
+            "gameweek points", "weekly breakdown", "each gameweek", "per gw",
+        ],
+        "transaction_analysis": [
+            ("transaction", "analysis"), "most targeted", "who added",
+            "who dropped", ("position", "targeted"), ("position", "popular"),
+            "popular adds", "popular drops",
+        ],
+        "head_to_head": ["head to head", " h2h ", "record against"],
+        "manager_season": [
+            "season stats", "season history", "season record",
+            "how have i done", "overall record", "weekly scores",
+            "week by week", "all season", "season breakdown", "full season",
+            "season summary", "my record", "this season",
+        ],
+        "current_roster": [
+            "my team", "my roster", "my squad", "current lineup",
+            "current roster", "who's on my team", "show my team",
+            "show my squad", "my players", "who do i have",
+            "my starting", "my bench",
+        ],
+        "waiver": ["waiver"],
+        "streak": [("streak", "win"), ("in a row", "win")],
+        "win_list": [
+            ("win", "week"), ("win", "gw"), ("win", "gameweek"),
+            ("won", "week"), ("won", "gw"), ("won", "gameweek"),
+            ("wins", "week"), ("wins", "gw"), ("wins", "gameweek"),
+        ],
+        "schedule": ["schedule", ("who does", "play")],
+        "fixtures": ["fixtures", "fixture list"],
+        "player_form": ["player_form", "player form", "form table"],
+        "standings": ["standings", "table"],
+        "league_summary": ["league summary", ("summary", "league")],
+        "transactions": ["transactions", "trades", ("waivers", "summary")],
+        "lineup": ["lineup efficiency", "bench points", "bench"],
+        "strength": ["strength of schedule", "schedule difficulty"],
+        "ownership": ["ownership", "scarcity"],
+        "matchup_summary": [
+            (" vs ", "summary"), (" vs ", "recap"),
+            (" vs. ", "summary"), (" vs. ", "recap"),
+        ],
+    }
+
+    def _looks_like(self, intent: str, text: str) -> bool:
+        """Return True if *text* matches any pattern for *intent*."""
+        for pattern in self._INTENT_KEYWORDS.get(intent, []):
+            if isinstance(pattern, tuple):
+                if all(kw in text for kw in pattern):
+                    return True
+            else:
+                if pattern in text:
+                    return True
+        return False
+
     def __init__(self, mcp: MCPClient, llm: LLMClient) -> None:
         self.mcp = mcp
         self.llm = llm
@@ -488,45 +555,45 @@ class Agent:
         lower = text.lower()
 
         # ---- New tools (higher priority — check before broad existing patterns) ----
-        if self._looks_like_draft_picks(lower):
+        if self._looks_like("draft_picks", lower):
             return self._handle_draft_picks(text, tool_events)
-        if self._looks_like_player_gw_stats(lower):
+        if self._looks_like("player_gw_stats", lower):
             return self._handle_player_gw_stats(text, tool_events)
-        if self._looks_like_transaction_analysis(lower):
+        if self._looks_like("transaction_analysis", lower):
             return self._handle_transaction_analysis(text, tool_events)
-        if self._looks_like_head_to_head(lower):
+        if self._looks_like("head_to_head", lower):
             return self._handle_head_to_head(text, tool_events)
-        if self._looks_like_manager_season(lower):
+        if self._looks_like("manager_season", lower):
             return self._handle_manager_season(text, tool_events)
-        if self._looks_like_current_roster(lower):
+        if self._looks_like("current_roster", lower):
             return self._handle_current_roster(text, tool_events)
 
         # ---- Existing fast-path routes ----
-        if self._looks_like_waiver(lower):
+        if self._looks_like("waiver", lower):
             return self._handle_waiver(text, tool_events)
-        if self._looks_like_streak(lower):
+        if self._looks_like("streak", lower):
             return self._handle_streak(text, tool_events)
-        if self._looks_like_win_list(lower):
+        if self._looks_like("win_list", lower):
             return self._handle_wins_list(text, tool_events)
-        if self._looks_like_schedule(lower):
+        if self._looks_like("schedule", lower):
             return self._handle_schedule(text, tool_events)
-        if self._looks_like_fixtures(lower):
+        if self._looks_like("fixtures", lower):
             return self._handle_fixtures(text, tool_events)
-        if self._looks_like_player_form(lower):
+        if self._looks_like("player_form", lower):
             return self._handle_player_form(text, tool_events)
-        if self._looks_like_standings(lower):
+        if self._looks_like("standings", lower):
             return self._handle_simple_tool(text, tool_events, "standings", "Standings")
-        if self._looks_like_league_summary(lower):
+        if self._looks_like("league_summary", lower):
             return self._handle_league_summary(text, tool_events)
-        if self._looks_like_transactions(lower):
+        if self._looks_like("transactions", lower):
             return self._handle_transactions(text, tool_events)
-        if self._looks_like_lineup(lower):
+        if self._looks_like("lineup", lower):
             return self._handle_lineup_efficiency(text, tool_events)
-        if self._looks_like_strength(lower):
+        if self._looks_like("strength", lower):
             return self._handle_simple_tool(text, tool_events, "strength_of_schedule", "Strength of schedule")
-        if self._looks_like_ownership(lower):
+        if self._looks_like("ownership", lower):
             return self._handle_simple_tool(text, tool_events, "ownership_scarcity", "Ownership scarcity")
-        if self._looks_like_matchup_summary(lower):
+        if self._looks_like("matchup_summary", lower):
             return self._handle_matchup_summary(text, tool_events)
         if "league entries" in lower or "all teams" in lower:
             return self._handle_simple_tool(text, tool_events, "league_entries", "League teams")
@@ -696,46 +763,6 @@ class Agent:
 
     # ---- Intent detectors (existing) ----
 
-    def _looks_like_waiver(self, text: str) -> bool:
-        return "waiver" in text or "waivers" in text or "waiver rec" in text
-
-    def _looks_like_schedule(self, text: str) -> bool:
-        return "who does" in text and "play" in text or "schedule" in text
-
-    def _looks_like_fixtures(self, text: str) -> bool:
-        return "fixtures" in text or "fixture list" in text
-
-    def _looks_like_player_form(self, text: str) -> bool:
-        return "player_form" in text or "player form" in text or "form table" in text
-
-    def _looks_like_streak(self, text: str) -> bool:
-        return ("streak" in text or "in a row" in text) and "win" in text
-
-    def _looks_like_win_list(self, text: str) -> bool:
-        if "win" not in text and "won" not in text and "wins" not in text:
-            return False
-        return "week" in text or "gw" in text or "gameweek" in text
-
-    def _looks_like_standings(self, text: str) -> bool:
-        return "standings" in text or "table" in text
-
-    def _looks_like_league_summary(self, text: str) -> bool:
-        return "league summary" in text or ("summary" in text and "league" in text)
-
-    def _looks_like_transactions(self, text: str) -> bool:
-        return ("transactions" in text) or ("waivers" in text and "summary" in text) or ("trades" in text)
-
-    def _looks_like_lineup(self, text: str) -> bool:
-        return "lineup efficiency" in text or "bench points" in text or "bench" in text
-
-    def _looks_like_strength(self, text: str) -> bool:
-        return "strength of schedule" in text or "schedule difficulty" in text
-
-    def _looks_like_ownership(self, text: str) -> bool:
-        return "ownership" in text or "scarcity" in text
-
-    def _looks_like_matchup_summary(self, text: str) -> bool:
-        return (" vs " in text or " vs. " in text) and ("summary" in text or "recap" in text)
 
     def _looks_like_team_name_only(self, text: str, league_id: int, tool_events: List[Dict[str, Any]]) -> bool:
         if len(text.split()) > 6:
@@ -762,44 +789,6 @@ class Agent:
             return False
         entry_id, _ = self._resolve_team_exact(league_id, text, tool_events)
         return entry_id is not None
-
-    # ---- Intent detectors (new tools) ----
-
-    def _looks_like_current_roster(self, text: str) -> bool:
-        roster_words = ("my team", "my roster", "my squad", "current lineup", "current roster",
-                        "who's on my team", "show my team", "show my squad", "my players",
-                        "who do i have", "my starting", "my bench")
-        return any(w in text for w in roster_words)
-
-    def _looks_like_draft_picks(self, text: str) -> bool:
-        return ("draft" in text and any(w in text for w in ("pick", "picks", "order", "history", "round", "drafted", "who did")))
-
-    def _looks_like_manager_season(self, text: str) -> bool:
-        season_phrases = ("season stats", "season history", "season record", "how have i done",
-                          "how have you done", "overall record", "weekly scores", "week by week",
-                          "all season", "season breakdown", "full season", "season summary",
-                          "my record", "this season")
-        return any(p in text for p in season_phrases)
-
-    def _looks_like_transaction_analysis(self, text: str) -> bool:
-        return (
-            ("transaction" in text and "analysis" in text)
-            or "most targeted" in text
-            or "who added" in text
-            or "who dropped" in text
-            or ("position" in text and ("targeted" in text or "popular" in text))
-            or "popular adds" in text
-            or "popular drops" in text
-        )
-
-    def _looks_like_player_gw_stats(self, text: str) -> bool:
-        gw_stat_phrases = ("stats each week", "stats per week", "weekly stats", "points each week",
-                           "points per gameweek", "gw points", "gameweek points", "weekly breakdown",
-                           "each gameweek", "per gw")
-        return any(p in text for p in gw_stat_phrases)
-
-    def _looks_like_head_to_head(self, text: str) -> bool:
-        return "head to head" in text or " h2h " in text or "record against" in text
 
     # ---- Handlers (new tools) ----
 
