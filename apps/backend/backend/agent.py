@@ -712,7 +712,7 @@ class Agent:
         return "league summary" in text or ("summary" in text and "league" in text)
 
     def _looks_like_transactions(self, text: str) -> bool:
-        return "transactions" in text or "waivers" in text and "summary" in text or "trades" in text
+        return ("transactions" in text) or ("waivers" in text and "summary" in text) or ("trades" in text)
 
     def _looks_like_lineup(self, text: str) -> bool:
         return "lineup efficiency" in text or "bench points" in text or "bench" in text
@@ -843,7 +843,7 @@ class Agent:
                 lines.append(f"  {p.get('position_slot', '')}) {name} ({team}, {pos})")
         return "\n".join(lines)
 
-    def _handle_draft_picks(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+    def _handle_draft_picks(self, text: str, tool_events: List[Dict[str, Any]]) -> Optional[str]:
         league_id = self._extract_league_id(text) or self._default_league_id()
         entry_id = self._extract_entry_id(text) or self._default_entry_id()
         team_name = self._default_entry_name()
@@ -851,8 +851,8 @@ class Agent:
         if not entry_id:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
-                # Can't set pending for draft since it's not in pending handler — fall through to LLM
-                return None  # type: ignore[return-value]
+                # Can't set pending for draft since it's not in pending handler — fall through to LLM.
+                return None
 
         args: Dict[str, Any] = {"league_id": league_id}
         if entry_id:
