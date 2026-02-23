@@ -253,3 +253,4 @@ To show the chat UI and reports in action, follow these steps:
    ```
 
 > Tip: keep GIFs under 10 MB; use [ezgif.com](https://ezgif.com/optimize) to optimise if needed.  For video, consider linking to a YouTube/Loom recording instead.
+
