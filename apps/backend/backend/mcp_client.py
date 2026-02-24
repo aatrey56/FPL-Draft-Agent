@@ -108,12 +108,21 @@ def ensure_go_server() -> None:
         stdout=None,
         stderr=None,
     )
-    # wait for health
+    # Poll for health for up to 10 seconds (20 × 0.5 s).
     for _ in range(20):
         if is_server_healthy():
             return
         time.sleep(0.5)
-    raise RuntimeError("Go MCP server failed to start or become healthy.")
+
+    # Startup timed out — terminate the orphaned process before raising so
+    # we don't leave a zombie Go server consuming resources.
+    if _GO_PROCESS is not None and _GO_PROCESS.poll() is None:
+        _GO_PROCESS.terminate()
+        try:
+            _GO_PROCESS.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _GO_PROCESS.kill()
+    raise RuntimeError("Go MCP server failed to start or become healthy within 10 seconds.")
 
 
 def is_server_healthy() -> bool:
