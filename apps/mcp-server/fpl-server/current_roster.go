@@ -17,14 +17,13 @@ type CurrentRosterArgs struct {
 }
 
 // RosterPlayerInfo describes a single player on a manager's roster.
+// FPL Draft has no captain mechanic, so is_captain/is_vice_captain are omitted.
 type RosterPlayerInfo struct {
 	Element      int    `json:"element"`
 	Name         string `json:"name"`
 	Team         string `json:"team"`
 	PositionType int    `json:"position_type"`
 	PositionSlot int    `json:"position_slot"`
-	IsCaptain    bool   `json:"is_captain"`
-	IsViceCap    bool   `json:"is_vice_captain"`
 	OnBench      bool   `json:"on_bench"`
 }
 
@@ -105,11 +104,8 @@ func buildCurrentRoster(cfg ServerConfig, args CurrentRosterArgs) (CurrentRoster
 	}
 	var snap struct {
 		Picks []struct {
-			Element       int  `json:"element"`
-			Position      int  `json:"position"`
-			IsCaptain     bool `json:"is_captain"`
-			IsViceCaptain bool `json:"is_vice_captain"`
-			Multiplier    int  `json:"multiplier"`
+			Element  int `json:"element"`
+			Position int `json:"position"`
 		} `json:"picks"`
 	}
 	if err := json.Unmarshal(snapRaw, &snap); err != nil {
@@ -136,8 +132,6 @@ func buildCurrentRoster(cfg ServerConfig, args CurrentRosterArgs) (CurrentRoster
 			Team:         teamShort[meta.TeamID],
 			PositionType: meta.PositionType,
 			PositionSlot: p.Position,
-			IsCaptain:    p.IsCaptain,
-			IsViceCap:    p.IsViceCaptain,
 			OnBench:      p.Position > 11,
 		}
 		if p.Position <= 11 {
