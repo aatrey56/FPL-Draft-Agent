@@ -5,7 +5,8 @@ import shlex
 import subprocess
 import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -31,7 +32,28 @@ os.makedirs(SETTINGS.reports_dir, exist_ok=True)
 _CACHE_SCHEDULER: Optional[BackgroundScheduler] = None
 _CHAT_SESSIONS: Dict[str, Agent] = {}
 
-app = FastAPI()
+@asynccontextmanager
+async def _lifespan(application: FastAPI) -> AsyncIterator[None]:  # type: ignore[misc]
+    """FastAPI lifespan handler: start services on startup, clean up on shutdown.
+
+    Replaces the deprecated ``@app.on_event("startup"/"shutdown")`` decorators.
+    """
+    # ── Startup ────────────────────────────────────────────────────────────────
+    ensure_go_server()
+    _start_cache_scheduler()
+    if SETTINGS.refresh_on_start:
+        threading.Thread(target=run_cache_refresh, daemon=True).start()
+
+    yield  # application runs here
+
+    # ── Shutdown ───────────────────────────────────────────────────────────────
+    global _CACHE_SCHEDULER
+    if _CACHE_SCHEDULER:
+        _CACHE_SCHEDULER.shutdown()
+        _CACHE_SCHEDULER = None
+
+
+app = FastAPI(lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -112,21 +134,6 @@ def _parse_chat_payload(raw: str) -> Dict[str, Any]:
         pass
     return {"message": raw}
 
-
-@app.on_event("startup")
-def _startup() -> None:
-    ensure_go_server()
-    _start_cache_scheduler()
-    if SETTINGS.refresh_on_start:
-        threading.Thread(target=run_cache_refresh, daemon=True).start()
-
-
-@app.on_event("shutdown")
-def _shutdown() -> None:
-    global _CACHE_SCHEDULER
-    if _CACHE_SCHEDULER:
-        _CACHE_SCHEDULER.shutdown()
-        _CACHE_SCHEDULER = None
 
 
 @app.get("/health")
@@ -242,6 +249,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
 def _current_gw(client: MCPClient, league_id: int) -> int:
     summary = client.call_tool("league_summary", {"league_id": league_id, "gw": 0})
+    if not isinstance(summary, dict):
+        return 0
     return int(summary.get("gameweek", 0) or 0)
 
 
