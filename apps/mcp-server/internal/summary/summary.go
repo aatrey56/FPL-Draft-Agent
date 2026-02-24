@@ -689,7 +689,7 @@ func computePoints(meta map[int]PlayerMeta, snap *ledger.EntrySnapshot, liveByEl
 	pos := PositionPoints{}
 	for _, p := range snap.Picks {
 		stats := liveByElement[p.Element]
-		total := stats.TotalPoints * p.Multiplier
+		total := stats.TotalPoints
 		if p.Position <= 11 {
 			starter += total
 			switch meta[p.Element].PositionType {
