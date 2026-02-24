@@ -3,10 +3,11 @@ name: Claude Review
 # Runs an automated Claude Code review on pull requests that move code between
 # the two gated branch transitions in this repo:
 #
-#   dev  →  stage   (integration gate)
-#   stage →  main   (production gate)
+#   dev  →  stage   (pre-release integration gate)
+#   stage →  main   (production release gate)
 #
-# Feature-branch PRs are intentionally excluded to keep token usage low.
+# Feature-branch PRs are intentionally excluded to keep token usage low and
+# to make reviews meaningful — only gate-crossing transitions get reviewed.
 # Manual runs (workflow_dispatch) bypass the branch filter for testing.
 #
 # Required secret: CLAUDE_CODE_OAUTH_TOKEN (added automatically by the Claude GitHub App)
@@ -59,7 +60,6 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY:       ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          # Accept either the GitHub App OAuth token or a direct API key.
           if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
             echo "Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set."
             exit 1
@@ -86,35 +86,108 @@ jobs:
         if: steps.keycheck.outcome != 'success'
         run: exit 1
 
+      # ── Collect git context ────────────────────────────────────────────────
+      # Build a summary of commits and changed files since the base branch,
+      # so Claude can classify changes without having to run git itself.
+      - name: Collect git context
+        if: steps.keycheck.outcome == 'success'
+        id: gitctx
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # Fetch the base branch so we can diff against it.
+          git fetch origin "$BASE_REF" --depth=100
+
+          BASE="origin/$BASE_REF"
+
+          # Commits unique to this PR (no merges, one-line summary).
+          COMMIT_LOG=$(git log "$BASE"...HEAD --oneline --no-merges | head -80)
+
+          # Files changed: status (A/M/D/R) + path.
+          CHANGED_FILES=$(git diff --name-status "$BASE"...HEAD | head -120)
+
+          # Diffstat (insertions/deletions per file).
+          DIFFSTAT=$(git diff --stat "$BASE"...HEAD | tail -5)
+
+          # Write to GITHUB_ENV using heredoc sentinels so newlines survive.
+          {
+            echo "COMMIT_LOG<<SENTINEL_CL"
+            echo "$COMMIT_LOG"
+            echo "SENTINEL_CL"
+            echo "CHANGED_FILES<<SENTINEL_CF"
+            echo "$CHANGED_FILES"
+            echo "SENTINEL_CF"
+            echo "DIFFSTAT<<SENTINEL_DS"
+            echo "$DIFFSTAT"
+            echo "SENTINEL_DS"
+          } >> "$GITHUB_ENV"
+
       # ── Build review prompt ────────────────────────────────────────────────
       - name: Build review prompt
         if: steps.keycheck.outcome == 'success'
         env:
-          BASE_REF:  ${{ github.base_ref }}
-          HEAD_REF:  ${{ github.head_ref }}
-          PR_TITLE:  ${{ github.event.pull_request.title }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF:      ${{ github.base_ref }}
+          HEAD_REF:      ${{ github.head_ref }}
+          PR_TITLE:      ${{ github.event.pull_request.title }}
+          PR_NUMBER:     ${{ github.event.pull_request.number }}
+          COMMIT_LOG:    ${{ env.COMMIT_LOG }}
+          CHANGED_FILES: ${{ env.CHANGED_FILES }}
+          DIFFSTAT:      ${{ env.DIFFSTAT }}
         run: |
           python3 - <<'PY'
           import os
           from pathlib import Path
 
-          base      = Path(".github/claude/prompts/review.md").read_text()
-          base_ref  = os.environ.get("BASE_REF",  "")
-          head_ref  = os.environ.get("HEAD_REF",  "")
-          pr_title  = os.environ.get("PR_TITLE",  "")
-          pr_number = os.environ.get("PR_NUMBER", "")
+          base_prompt  = Path(".github/claude/prompts/review.md").read_text()
+          base_ref     = os.environ.get("BASE_REF",      "")
+          head_ref     = os.environ.get("HEAD_REF",      "")
+          pr_title     = os.environ.get("PR_TITLE",      "")
+          pr_number    = os.environ.get("PR_NUMBER",     "")
+          commit_log   = os.environ.get("COMMIT_LOG",    "(none)")
+          changed_files= os.environ.get("CHANGED_FILES", "(none)")
+          diffstat     = os.environ.get("DIFFSTAT",      "(none)")
+
+          # Determine transition label for the prompt.
+          if base_ref == "stage":
+              transition_label = "dev → stage  (pre-release integration gate)"
+          elif base_ref == "main":
+              transition_label = "stage → main  (production release gate — highest scrutiny)"
+          else:
+              transition_label = f"{head_ref} → {base_ref}"
 
           prompt = "\n".join([
-              base,
+              base_prompt,
               "",
               "---",
               "",
-              f"You are reviewing **PR #{pr_number}: {pr_title}**",
-              f"This PR merges `{head_ref}` into `{base_ref}`.",
+              f"## This Review",
+              f"",
+              f"**PR #{pr_number}:** {pr_title}",
+              f"**Transition:** `{transition_label}`",
+              f"**Merging:** `{head_ref}` into `{base_ref}`",
+              "",
+              "### Commits in this PR",
+              "```",
+              commit_log or "(no commits found)",
+              "```",
+              "",
+              "### Files Changed",
+              "```",
+              changed_files or "(no files changed)",
+              "```",
+              "",
+              "### Diffstat",
+              "```",
+              diffstat or "(no diffstat available)",
+              "```",
+              "",
+              "---",
               "",
               "Use the Read, Glob, and Grep tools to inspect changed or related files as needed,",
               "then post your structured review as a single comment on this PR.",
+              "Fill in every section of the required output format — Breaking Changes,",
+              "Non-Breaking Changes, Environment & Config Impact, Ecosystem Effects,",
+              "Blocking Issues, Other Issues, and Suggested Tests.",
           ])
 
           github_env = os.environ.get("GITHUB_ENV", "")
@@ -130,7 +203,6 @@ jobs:
         if: steps.keycheck.outcome == 'success'
         uses: anthropics/claude-code-action@v1
         with:
-          # GitHub App OAuth token takes priority; falls back to direct API key.
           anthropic_api_key:       ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token:            ${{ secrets.GITHUB_TOKEN }}
