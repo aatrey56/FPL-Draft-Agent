@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 
 from dotenv import load_dotenv
@@ -42,6 +42,25 @@ def _resolve_dir(raw: str, repo_root: str) -> tuple[str, str]:
     return abs_path, value
 
 
+def _require_int_env(key: str) -> int:
+    """Read a required integer environment variable.
+
+    Raises ValueError at startup if the variable is unset or not a valid integer,
+    so misconfiguration is caught immediately rather than silently producing
+    results for the wrong league or manager.
+    """
+    value = os.getenv(key, "").strip()
+    if not value:
+        raise ValueError(
+            f"{key} environment variable is required but not set. "
+            f"Add it to your .env file (e.g. {key}=12345)."
+        )
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(f"{key} must be an integer, got: {value!r}") from None
+
+
 # Load .env from repo root if present
 load_dotenv(os.path.join(_INITIAL_ROOT, ".env"))
 
@@ -67,8 +86,8 @@ class Settings:
     data_rel: str = _DATA_DIR_REL
     web_dir: str = _WEB_DIR_ABS
     timezone: str = os.getenv("REPORTS_TZ", "America/New_York")
-    league_id: int = int(os.getenv("LEAGUE_ID", "14204"))
-    entry_id: int = int(os.getenv("ENTRY_ID", "286192"))
+    league_id: int = field(default_factory=lambda: _require_int_env("LEAGUE_ID"))
+    entry_id: int = field(default_factory=lambda: _require_int_env("ENTRY_ID"))
     start_go_server: bool = os.getenv("START_GO_SERVER", "true").lower() in ("1", "true", "yes")
     go_server_cmd: str = os.getenv("GO_SERVER_CMD", "go run ./apps/mcp-server/fpl-server --addr :8080 --path /mcp")
     refresh_cmd: str = os.getenv("CACHE_REFRESH_CMD", "")
