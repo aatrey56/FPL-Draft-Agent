@@ -113,6 +113,22 @@ func TestBuildResult_EmptyPicks(t *testing.T) {
 	}
 }
 
+func TestBuildResult_ZeroPointsPlayer(t *testing.T) {
+	// A starter who scored 0 should contribute 0, not be skipped.
+	snap := makeSnap(
+		struct{ elem, pos int }{10, 1},
+	)
+	live := map[int]LiveStats{
+		10: {Minutes: 0, TotalPoints: 0},
+	}
+
+	r := BuildResult(1, 1, 1, snap, live)
+
+	if r.TotalPoints != 0 {
+		t.Errorf("TotalPoints = %d, want 0 (player scored 0)", r.TotalPoints)
+	}
+}
+
 func TestBuildResult_FieldsPopulated(t *testing.T) {
 	snap := makeSnap(struct{ elem, pos int }{10, 1})
 	live := map[int]LiveStats{10: {Minutes: 45, TotalPoints: 2}}
