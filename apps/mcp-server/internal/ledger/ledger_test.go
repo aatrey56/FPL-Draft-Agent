@@ -153,11 +153,12 @@ func TestWriteDraftLedger(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildEntrySnapshot_FieldsPreserved(t *testing.T) {
+	// FPL Draft has no captain mechanic — EntryPick only carries Element and Position.
 	raw := EntryEventRaw{
 		EntryHistory: json.RawMessage(`{"total_points":120}`),
 		Picks: []EntryPick{
-			{Element: 5, Position: 1, Multiplier: 2, IsCaptain: true},
-			{Element: 9, Position: 3, Multiplier: 1},
+			{Element: 5, Position: 1},
+			{Element: 9, Position: 3},
 		},
 		Subs: []EntrySub{
 			{ElementIn: 7, ElementOut: 5, Event: 3},
@@ -202,7 +203,7 @@ func TestWriteEntrySnapshot(t *testing.T) {
 	path := filepath.Join(dir, "nested", "snapshot.json")
 
 	raw := EntryEventRaw{
-		Picks: []EntryPick{{Element: 1, Position: 1, Multiplier: 1}},
+		Picks: []EntryPick{{Element: 1, Position: 1}},
 	}
 	snap := BuildEntrySnapshot(1, 2, 3, raw)
 
