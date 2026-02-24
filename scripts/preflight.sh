@@ -37,7 +37,17 @@ PY
 ensure_module "ruff"
 ensure_module "pytest"
 
-find apps/backend/backend -name "*.py" -not -path "*/.venv/*" -print0 \
+# Syntax-check all Python sources, explicitly skipping any .venv tree.
+# Using find+py_compile rather than compileall so we can exclude .venv without
+# compileall traversing thousands of installed-package files.
+find apps/backend -name "*.py" \
+  -not -path "*/.venv/*" \
+  -not -path "*/__pycache__/*" \
+  -print0 \
   | xargs -0 "$PYTHON_BIN" -m py_compile
-"$PYTHON_BIN" -m ruff check apps/backend
+
+# Lint — pass --exclude explicitly so ruff skips .venv even when invoked
+# from outside the apps/backend directory.
+"$PYTHON_BIN" -m ruff check apps/backend --exclude "**/.venv/**"
+
 PYTHONPATH=apps/backend "$PYTHON_BIN" -m pytest apps/backend/tests
