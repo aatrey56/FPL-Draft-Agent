@@ -312,7 +312,8 @@ def _load_points_map(league_id: int, entry_id: int, gw: int) -> Dict[int, float]
     if not os.path.exists(path):
         return {}
     try:
-        payload = json.loads(open(path, "r", encoding="utf-8").read())
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
     except Exception:
         return {}
     out: Dict[int, float] = {}
@@ -405,7 +406,7 @@ def _simple_trades_md(tx: Dict[str, Any]) -> str:
     for entry in tx.get("entries", []):
         if entry.get("total_in", 0) == 0 and entry.get("total_out", 0) == 0:
             continue
-        lines.append(f"- {entry['entry_name']}: +{entry['total_in']} / -{entry['total_out']}")
+        lines.append(f"- {entry.get('entry_name', 'Unknown')}: +{entry.get('total_in', 0)} / -{entry.get('total_out', 0)}")
     lines.append("")
     return "\n".join(lines)
 
@@ -722,7 +723,7 @@ def load_bootstrap_fixtures(gw: int) -> Dict[str, Any]:
     fixtures = []
     teams = {t["id"]: t["short_name"] for t in data.get("teams", [])}
     gw_key = str(gw)
-    for f in data.get("fixtures", {}).get(gw_key, []):
+    for f in (data.get("fixtures") or {}).get(gw_key, []):
         fixtures.append(
             {
                 "fixture_id": f.get("id"),

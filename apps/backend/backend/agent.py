@@ -338,7 +338,10 @@ class Agent:
                     out["entry_name"] = entry_name
                 else:
                     out.pop("entry_name", None)
-        league_id = int(out.get("league_id", 0)) if out.get("league_id") is not None else 0
+        try:
+            league_id = int(out.get("league_id") or 0)
+        except (TypeError, ValueError):
+            league_id = 0
         if league_id == 0:
             league_id = self._default_league_id()
         if name in ("waiver_recommendations", "manager_schedule", "manager_streak",
