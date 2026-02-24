@@ -19,6 +19,11 @@ on:
     # further restricts to the exact source→target pairs we care about.
     branches: [stage, main]
   workflow_dispatch:
+    inputs:
+      head_sha:
+        description: "Head commit SHA to check out (leave blank to use branch HEAD)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -40,7 +45,10 @@ jobs:
       - name: Checkout PR head
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          # PR triggers supply pull_request.head.sha (pinned to the reviewed commit).
+          # workflow_dispatch supplies inputs.head_sha when a specific commit is intended;
+          # falls back to github.sha (branch HEAD) for untargeted manual runs.
+          ref: ${{ github.event.pull_request.head.sha || inputs.head_sha || github.sha }}
           fetch-depth: 0
 
       # ── API key guard ──────────────────────────────────────────────────────
