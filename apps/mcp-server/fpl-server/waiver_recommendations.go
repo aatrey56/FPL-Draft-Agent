@@ -97,11 +97,15 @@ type AvailabilityInfo struct {
 }
 
 type AddRecommendation struct {
-	Element            int                 `json:"element"`
-	Name               string              `json:"name"`
-	Team               string              `json:"team"`
-	PositionType       int                 `json:"position_type"`
+	Element      int    `json:"element"`
+	Name         string `json:"name"`
+	Team         string `json:"team"`
+	PositionType int    `json:"position_type"`
+	// Fixture is the primary (first) fixture for this player in the target GW.
+	// In a double gameweek, Fixtures contains all fixtures; FixtureCount > 1.
 	Fixture            FixtureContext      `json:"fixture"`
+	Fixtures           []FixtureContext    `json:"fixtures"`
+	FixtureCount       int                 `json:"fixture_count"`
 	Availability       AvailabilityInfo    `json:"availability"`
 	Score              ScoreComponents     `json:"score"`
 	PreviousOwners     []string            `json:"previous_owners,omitempty"`
@@ -120,9 +124,11 @@ type DropRecommendation struct {
 }
 
 type scoredPlayer struct {
-	info         elementInfo
-	score        ScoreComponents
-	fixture      FixtureContext
+	info  elementInfo
+	score ScoreComponents
+	// fixtures holds all fixtures for this player's team in the target GW.
+	// In a normal GW this has length 1; in a double gameweek, length 2.
+	fixtures     []FixtureContext
 	availability AvailabilityInfo
 }
 
@@ -343,19 +349,34 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 		if last3 < 3 && season < 10 {
 			continue
 		}
-		fixtureCtx, ok := fixtureByTeam[info.TeamID]
-		if !ok {
+		teamFixtures, ok := fixtureByTeam[info.TeamID]
+		if !ok || len(teamFixtures) == 0 {
 			continue
 		}
-		seasonScore, recentScore, blended := blendedFixtureScore(concededSeason, concededRecent, fixtureCtx.OpponentID, fixtureCtx.Venue, info.PositionType, seasonWeight, recentWeight)
+		// Average fixture scores across all fixtures for this team in the target
+		// GW.  In a normal GW there is exactly one fixture; in a double gameweek
+		// (DGW) there are two and we average so that DGW teams receive a bonus
+		// proportional to having two chances to score FPL points.
+		var totalSeason, totalRecent, totalBlended float64
+		for _, fx := range teamFixtures {
+			s, r, b := blendedFixtureScore(concededSeason, concededRecent, fx.OpponentID, fx.Venue, info.PositionType, seasonWeight, recentWeight)
+			totalSeason += s
+			totalRecent += r
+			totalBlended += b
+		}
+		n := float64(len(teamFixtures))
+		seasonScore := totalSeason / n
+		recentScore := totalRecent / n
+		blended := totalBlended / n
+
 		form := formByElement[info.ID]
 		xg := xgByElement[info.ID]
 		avgPts := avgPtsByElement[info.ID]
 		stddev := stddevPtsByElement[info.ID]
 		consistency := avgPts - consistencyK*stddev
 		candidates = append(candidates, scoredPlayer{
-			info:    info,
-			fixture: fixtureCtx,
+			info:     info,
+			fixtures: teamFixtures,
 			availability: AvailabilityInfo{
 				Minutes60Last3:  last3,
 				Minutes60Season: season,
@@ -408,11 +429,22 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 
 	adds := make([]AddRecommendation, 0, len(candidates))
 	for _, c := range candidates {
+		// Build fixture reason text: list all fixtures for DGW teams.
+		fixtureReasonParts := make([]string, 0, len(c.fixtures))
+		for _, fx := range c.fixtures {
+			fixtureReasonParts = append(fixtureReasonParts, fmt.Sprintf("vs %s (%s)", fx.OpponentShort, strings.ToLower(fx.Venue)))
+		}
 		reasons := []string{
-			fmt.Sprintf("fixture score %.2f vs %s (%s)", c.score.FixturesRaw, c.fixture.OpponentShort, strings.ToLower(c.fixture.Venue)),
+			fmt.Sprintf("fixture score %.2f (%s)", c.score.FixturesRaw, strings.Join(fixtureReasonParts, ", ")),
 			fmt.Sprintf("form %.2f pts/GW", c.score.FormRaw),
 			fmt.Sprintf("season points %.0f", c.score.TotalRaw),
 			fmt.Sprintf("xG %.2f", c.score.XGRaw),
+		}
+		// primaryFixture is the first fixture stored; for a DGW this is
+		// just the first alphabetically/in order, but all fixtures are in Fixtures.
+		var primaryFixture FixtureContext
+		if len(c.fixtures) > 0 {
+			primaryFixture = c.fixtures[0]
 		}
 		prevOwners := everOwnersByElement[c.info.ID]
 		add := AddRecommendation{
@@ -420,7 +452,9 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 			Name:               c.info.Name,
 			Team:               teamShort[c.info.TeamID],
 			PositionType:       c.info.PositionType,
-			Fixture:            c.fixture,
+			Fixture:            primaryFixture,
+			Fixtures:           c.fixtures,
+			FixtureCount:       len(c.fixtures),
 			Availability:       c.availability,
 			Score:              c.score,
 			PreviousOwners:     prevOwners,
@@ -759,10 +793,14 @@ func loadTradesRaw(st *store.JSONStore, leagueID int) ([]reconcile.Trade, error)
 	return resp.Trades, nil
 }
 
-func buildFixtureIndex(fixtures []fixture, teamShort map[int]string) map[int]FixtureContext {
-	out := make(map[int]FixtureContext)
+// buildFixtureIndex maps each team ID to all its fixtures in the given list.
+// In a normal gameweek every team has exactly one entry; in a double gameweek
+// (DGW) a team may appear twice and both fixtures are retained.  Callers must
+// average scores across all fixtures when a team has more than one.
+func buildFixtureIndex(fixtures []fixture, teamShort map[int]string) map[int][]FixtureContext {
+	out := make(map[int][]FixtureContext)
 	for _, f := range fixtures {
-		out[f.TeamH] = FixtureContext{
+		home := FixtureContext{
 			FixtureID:     f.ID,
 			Event:         f.Event,
 			TeamID:        f.TeamH,
@@ -771,7 +809,7 @@ func buildFixtureIndex(fixtures []fixture, teamShort map[int]string) map[int]Fix
 			OpponentShort: teamShort[f.TeamA],
 			Venue:         "HOME",
 		}
-		out[f.TeamA] = FixtureContext{
+		away := FixtureContext{
 			FixtureID:     f.ID,
 			Event:         f.Event,
 			TeamID:        f.TeamA,
@@ -780,6 +818,8 @@ func buildFixtureIndex(fixtures []fixture, teamShort map[int]string) map[int]Fix
 			OpponentShort: teamShort[f.TeamH],
 			Venue:         "AWAY",
 		}
+		out[f.TeamH] = append(out[f.TeamH], home)
+		out[f.TeamA] = append(out[f.TeamA], away)
 	}
 	return out
 }
@@ -1054,7 +1094,7 @@ func minMax(v, min, max float64) float64 {
 	return (v - min) / (max - min)
 }
 
-func scoreRoster(elements []elementInfo, teamShort map[int]string, form map[int]summary.PlayerForm, xg map[int]float64, fixtures map[int]FixtureContext, roster []summary.RosterPlayer, concededSeason map[int]map[string]map[int]avgStat, concededRecent map[int]map[string]map[int]avgStat, seasonWeight float64, recentWeight float64, minmax scoreMinMax, wFix, wForm, wTotal, wXG float64) []DropRecommendation {
+func scoreRoster(elements []elementInfo, teamShort map[int]string, form map[int]summary.PlayerForm, xg map[int]float64, fixtures map[int][]FixtureContext, roster []summary.RosterPlayer, concededSeason map[int]map[string]map[int]avgStat, concededRecent map[int]map[string]map[int]avgStat, seasonWeight float64, recentWeight float64, minmax scoreMinMax, wFix, wForm, wTotal, wXG float64) []DropRecommendation {
 	elementByID := make(map[int]elementInfo, len(elements))
 	for _, e := range elements {
 		elementByID[e.ID] = e
@@ -1065,11 +1105,17 @@ func scoreRoster(elements []elementInfo, teamShort map[int]string, form map[int]
 		if info.ID == 0 {
 			continue
 		}
-		fx, ok := fixtures[info.TeamID]
-		if !ok {
+		teamFixtures, ok := fixtures[info.TeamID]
+		if !ok || len(teamFixtures) == 0 {
 			continue
 		}
-		_, _, blended := blendedFixtureScore(concededSeason, concededRecent, fx.OpponentID, fx.Venue, info.PositionType, seasonWeight, recentWeight)
+		// Average blended fixture score across all fixtures (DGW support).
+		var totalBlended float64
+		for _, fx := range teamFixtures {
+			_, _, b := blendedFixtureScore(concededSeason, concededRecent, fx.OpponentID, fx.Venue, info.PositionType, seasonWeight, recentWeight)
+			totalBlended += b
+		}
+		blended := totalBlended / float64(len(teamFixtures))
 		formScore := form[info.ID].PointsPerGW
 		totalScore := float64(info.TotalPoints)
 		xgScore := xg[info.ID]
