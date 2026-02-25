@@ -204,8 +204,7 @@ func TestBuildLineupEfficiency_NegativeBenchContributor(t *testing.T) {
 	}
 	entry := out.Entries[0]
 
-	// bench_points = -2 + 2 + 2 + 2 = 4 starters points excluded; bench = -2+2+2+2=4? No.
-	// bench is positions 12-15: player 99 (-2), player 12 (2), player 13 (2), player 14 (2) = 4 total.
+	// Positions 12-15 are bench: player 99 (-2) + player 12 (2) + player 13 (2) + player 14 (2) = 4.
 	if entry.BenchPoints != 4 {
 		t.Errorf("bench_points=%d want 4 (99:-2 + 12:2 + 13:2 + 14:2)", entry.BenchPoints)
 	}

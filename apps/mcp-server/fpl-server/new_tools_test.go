@@ -555,6 +555,38 @@ func TestBuildManagerSeason(t *testing.T) {
 			t.Errorf("expected GW1 in list, got GW%d", out.Gameweeks[0].Gameweek)
 		}
 	})
+
+	// Edge case: all matches are unfinished (e.g. pre-season or brand-new league).
+	// Sentinel values for highestPts/lowestPts must be zeroed out so no garbage
+	// values appear in the JSON output.
+	t.Run("AllUnfinishedProducesEmptyOutput", func(t *testing.T) {
+		dir, cfg := tmpCfg(t)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, []any{
+			map[string]any{"event": 1, "finished": false, "league_entry_1": 1, "league_entry_1_points": 0, "league_entry_2": 2, "league_entry_2_points": 0},
+			map[string]any{"event": 2, "finished": false, "league_entry_1": 1, "league_entry_1_points": 0, "league_entry_2": 2, "league_entry_2_points": 0},
+		})
+		entryID := 200
+		out, err := buildManagerSeason(cfg, ManagerSeasonArgs{LeagueID: 100, EntryID: &entryID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Gameweeks) != 0 {
+			t.Errorf("expected 0 gameweeks, got %d", len(out.Gameweeks))
+		}
+		if out.Record.Wins != 0 || out.Record.Draws != 0 || out.Record.Losses != 0 {
+			t.Errorf("expected 0-0-0 record, got %+v", out.Record)
+		}
+		// Sentinel guards must zero out highestPts/lowestPts when no GW is finished.
+		if out.HighestPts != 0 {
+			t.Errorf("HighestPts=%d want 0 when all matches are unfinished", out.HighestPts)
+		}
+		if out.LowestPts != 0 {
+			t.Errorf("LowestPts=%d want 0 when all matches are unfinished", out.LowestPts)
+		}
+		if out.AvgScore != 0.0 {
+			t.Errorf("AvgScore=%f want 0.0 when all matches are unfinished", out.AvgScore)
+		}
+	})
 }
 
 // ---- TestParseFloat ----

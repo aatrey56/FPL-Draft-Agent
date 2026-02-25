@@ -971,18 +971,28 @@ func asFloat(v any) float64 {
 	return asNumber(v)
 }
 
-// loadFixturesFromLive loads the fixtures array embedded in gw/N/live.json.
-// Bootstrap-static.json only contains upcoming fixtures, so historical GW
-// fixture pairings must be sourced from each gameweek's live file instead.
-func loadFixturesFromLive(rawRoot string, gw int) ([]fixture, error) {
+// liveGWData holds the element stats and fixtures decoded from a single
+// gw/N/live.json read, avoiding a second file-open for callers that need both.
+type liveGWData struct {
+	Stats    map[int]liveStats
+	Fixtures []fixture
+}
+
+// loadLiveGWData reads gw/N/live.json once and returns both element stats and
+// fixture pairings. Use this instead of calling loadLiveStats and
+// loadFixturesFromLive separately inside the same loop iteration.
+func loadLiveGWData(rawRoot string, gw int) (liveGWData, error) {
 	path := filepath.Join(rawRoot, "gw", strconv.Itoa(gw), "live.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return liveGWData{}, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
+	dec.UseNumber() // required: elements are decoded into map[string]any
 	var resp struct {
+		Elements map[string]struct {
+			Stats map[string]any `json:"stats"`
+		} `json:"elements"`
 		Fixtures []struct {
 			ID    int `json:"id"`
 			TeamH int `json:"team_h"`
@@ -990,18 +1000,44 @@ func loadFixturesFromLive(rawRoot string, gw int) ([]fixture, error) {
 		} `json:"fixtures"`
 	}
 	if err := dec.Decode(&resp); err != nil {
-		return nil, err
+		return liveGWData{}, err
 	}
-	out := make([]fixture, 0, len(resp.Fixtures))
+
+	stats := make(map[int]liveStats, len(resp.Elements))
+	for k, v := range resp.Elements {
+		id, err := strconv.Atoi(k)
+		if err != nil {
+			continue
+		}
+		stats[id] = liveStats{
+			Minutes:     int(asNumber(v.Stats["minutes"])),
+			TotalPoints: int(asNumber(v.Stats["total_points"])),
+			XG:          asFloat(v.Stats["expected_goals"]),
+		}
+	}
+
+	fixtures := make([]fixture, 0, len(resp.Fixtures))
 	for _, f := range resp.Fixtures {
-		out = append(out, fixture{
+		fixtures = append(fixtures, fixture{
 			ID:    f.ID,
 			Event: gw,
 			TeamH: f.TeamH,
 			TeamA: f.TeamA,
 		})
 	}
-	return out, nil
+
+	return liveGWData{Stats: stats, Fixtures: fixtures}, nil
+}
+
+// loadFixturesFromLive loads the fixtures array embedded in gw/N/live.json.
+// Bootstrap-static.json only contains upcoming fixtures, so historical GW
+// fixture pairings must be sourced from each gameweek's live file instead.
+func loadFixturesFromLive(rawRoot string, gw int) ([]fixture, error) {
+	data, err := loadLiveGWData(rawRoot, gw)
+	if err != nil {
+		return nil, err
+	}
+	return data.Fixtures, nil
 }
 
 // computePointsConcededByPosition tallies how many FPL points each team
@@ -1022,16 +1058,13 @@ func computePointsConcededByPosition(rawRoot string, elements []elementInfo, asO
 	}
 	conceded := make(map[int]map[string]map[int]avgStat)
 	for gw := start; gw <= asOfGW; gw++ {
-		live, err := loadLiveStats(rawRoot, gw)
-		if err != nil {
-			continue
-		}
-		gwFixtures, err := loadFixturesFromLive(rawRoot, gw)
+		// Single file read supplies both element stats and fixture pairings.
+		gwData, err := loadLiveGWData(rawRoot, gw)
 		if err != nil {
 			continue
 		}
 		pointsByTeamPos := make(map[int]map[int]int)
-		for id, stats := range live {
+		for id, stats := range gwData.Stats {
 			team := elementTeam[id]
 			pos := elementPos[id]
 			if team == 0 || pos == 0 {
@@ -1043,7 +1076,7 @@ func computePointsConcededByPosition(rawRoot string, elements []elementInfo, asO
 			pointsByTeamPos[team][pos] += stats.TotalPoints
 		}
 
-		for _, f := range gwFixtures {
+		for _, f := range gwData.Fixtures {
 			home := f.TeamH
 			away := f.TeamA
 			homePts := pointsByTeamPos[home]
