@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
 from zoneinfo import ZoneInfo
 
@@ -36,6 +36,17 @@ def _now_local() -> str:
     return datetime.now(tz=tz).isoformat(timespec="seconds")
 
 
+def _get_weight(d: Dict[str, Any], key: str, default: float) -> float:
+    """Return ``float(d[key])`` when *key* is present in *d*, otherwise *default*.
+
+    Unlike ``float(d.get(key, default) or default)``, this correctly handles
+    an explicit value of ``0`` — a zero weight must not silently fall back to
+    the default.
+    """
+    val = d.get(key)
+    return float(val) if val is not None else default
+
+
 def generate_waiver_report(
     mcp: MCPClient,
     llm: LLMClient,
@@ -62,10 +73,10 @@ def generate_waiver_report(
         Dict with ``"json"`` (raw tool response) and ``"md"`` (Markdown text).
     """
     weights = weights or {}
-    w_fix = float(weights.get("fixtures", 0.35) or 0.35)
-    w_form = float(weights.get("form", 0.25) or 0.25)
-    w_total = float(weights.get("total", 0.25) or 0.25)
-    w_xg = float(weights.get("xg", 0.15) or 0.15)
+    w_fix = _get_weight(weights, "fixtures", 0.35)
+    w_form = _get_weight(weights, "form", 0.25)
+    w_total = _get_weight(weights, "total", 0.25)
+    w_xg = _get_weight(weights, "xg", 0.15)
     report = mcp.call_tool(
         "waiver_recommendations",
         {
@@ -512,13 +523,19 @@ def render_starting_xi_md(
     weights_in: Dict[str, Any],
 ) -> Tuple[str, Dict[str, Any]]:
     roster = []
-    opponent_by_team = {}
-    venue_by_team = {}
+    # Use lists to accumulate opponents/venues so that DGW teams (two fixtures
+    # in the same GW) are not silently reduced to only their last opponent.
+    opponent_by_team: Dict[str, List[str]] = {}
+    venue_by_team: Dict[str, List[str]] = {}
     for f in fixtures.get("fixtures", []):
-        opponent_by_team[f["team_h_short"]] = f["team_a_short"]
-        venue_by_team[f["team_h_short"]] = "HOME"
-        opponent_by_team[f["team_a_short"]] = f["team_h_short"]
-        venue_by_team[f["team_a_short"]] = "AWAY"
+        h = f.get("team_h_short") or ""
+        a = f.get("team_a_short") or ""
+        if h:
+            opponent_by_team.setdefault(h, []).append(a or "TBD")
+            venue_by_team.setdefault(h, []).append("HOME")
+        if a:
+            opponent_by_team.setdefault(a, []).append(h or "TBD")
+            venue_by_team.setdefault(a, []).append("AWAY")
     for e in summary.get("entries", []):
         if e.get("entry_id") == entry_id:
             roster = e.get("roster", [])
@@ -542,13 +559,13 @@ def render_starting_xi_md(
             if not team_short:
                 continue
             if team_short not in opponent_by_team:
-                opponent_by_team[team_short] = row.get("opponent_short") or "TBD"
+                opponent_by_team[team_short] = [row.get("opponent_short") or "TBD"]
             if team_short not in venue_by_team:
-                venue_by_team[team_short] = row.get("venue") or "NA"
+                venue_by_team[team_short] = [row.get("venue") or "NA"]
             fixture_map[pos][team_short] = {
                 "score": row.get("score") if row.get("score") is not None else 0.0,
-                "opponent": row.get("opponent_short") or opponent_by_team.get(team_short, "TBD"),
-                "venue": row.get("venue") or venue_by_team.get(team_short, "NA"),
+                "opponent": row.get("opponent_short") or " & ".join(opponent_by_team.get(team_short, ["TBD"])),
+                "venue": row.get("venue") or " & ".join(venue_by_team.get(team_short, ["NA"])),
             }
 
     def norm(value: float, min_val: float, max_val: float) -> float:
@@ -581,8 +598,8 @@ def render_starting_xi_md(
                 "name": r.get("name"),
                 "team": team,
                 "position_type": pos,
-                "opponent": fixture_row.get("opponent") or opponent_by_team.get(team, "TBD"),
-                "venue": fixture_row.get("venue") or venue_by_team.get(team, "NA"),
+                "opponent": fixture_row.get("opponent") or " & ".join(opponent_by_team.get(team, ["TBD"])),
+                "venue": fixture_row.get("venue") or " & ".join(venue_by_team.get(team, ["NA"])),
                 "fixture_score": fixture_score,
                 "form_score": form_score,
                 "xgi_score": xgi_score,
@@ -600,10 +617,10 @@ def render_starting_xi_md(
     xgi_min, xgi_max = min_max(raw_xgi)
     min_min, min_max_v = min_max(raw_minutes)
 
-    w_fix = float(weights_in.get("fixtures", 0.35) or 0.35)
-    w_form = float(weights_in.get("form", 0.30) or 0.30)
-    w_xgi = float(weights_in.get("xgi", 0.25) or 0.25)
-    w_min = float(weights_in.get("minutes", 0.10) or 0.10)
+    w_fix = _get_weight(weights_in, "fixtures", 0.35)
+    w_form = _get_weight(weights_in, "form", 0.30)
+    w_xgi = _get_weight(weights_in, "xgi", 0.25)
+    w_min = _get_weight(weights_in, "minutes", 0.10)
     weight_sum = w_fix + w_form + w_xgi + w_min
     if weight_sum <= 0:
         weight_sum = 1.0
