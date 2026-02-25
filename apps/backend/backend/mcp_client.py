@@ -50,6 +50,11 @@ class MCPClient:
         resp = self._session.post(self.base_url, headers=self._headers(), data=json.dumps(payload))
         resp.raise_for_status()
         self.session_id = resp.headers.get("Mcp-Session-Id")
+        if not self.session_id:
+            raise RuntimeError(
+                "MCP server did not return Mcp-Session-Id header in initialize response; "
+                "cannot proceed without a valid session."
+            )
         # notify initialized
         notif = {"jsonrpc": "2.0", "method": "notifications/initialized"}
         self._session.post(self.base_url, headers=self._headers(), data=json.dumps(notif))

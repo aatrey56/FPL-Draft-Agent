@@ -148,36 +148,43 @@ func buildTransactionAnalysis(cfg ServerConfig, args TransactionAnalysisArgs) (T
 
 		// Added player.
 		if tx.ElementIn != 0 {
-			meta := playerByID[tx.ElementIn]
-			pos := posLabel[meta.PositionType]
-			addedCount[tx.ElementIn]++
-			if pb, ok := posBreakdown[pos]; ok {
-				pb.Added++
+			// Guard: skip transactions that reference an element not present in the
+			// bootstrap (e.g. mid-season transfers, late additions). A zero-value
+			// struct would produce blank Name/Team and PositionType 0, silently
+			// corrupting the output.
+			if meta, ok := playerByID[tx.ElementIn]; ok {
+				pos := posLabel[meta.PositionType]
+				addedCount[tx.ElementIn]++
+				if pb, ok := posBreakdown[pos]; ok {
+					pb.Added++
+				}
+				managerTx[tx.Entry].Added = append(managerTx[tx.Entry].Added, TxPlayerDetail{
+					Element:      tx.ElementIn,
+					PlayerName:   meta.Name,
+					Team:         teamShort[meta.TeamID],
+					PositionType: meta.PositionType,
+					Kind:         tx.Kind,
+				})
 			}
-			managerTx[tx.Entry].Added = append(managerTx[tx.Entry].Added, TxPlayerDetail{
-				Element:      tx.ElementIn,
-				PlayerName:   meta.Name,
-				Team:         teamShort[meta.TeamID],
-				PositionType: meta.PositionType,
-				Kind:         tx.Kind,
-			})
 		}
 
 		// Dropped player.
 		if tx.ElementOut != 0 {
-			meta := playerByID[tx.ElementOut]
-			pos := posLabel[meta.PositionType]
-			droppedCount[tx.ElementOut]++
-			if pb, ok := posBreakdown[pos]; ok {
-				pb.Dropped++
+			// Same guard as for ElementIn above.
+			if meta, ok := playerByID[tx.ElementOut]; ok {
+				pos := posLabel[meta.PositionType]
+				droppedCount[tx.ElementOut]++
+				if pb, ok := posBreakdown[pos]; ok {
+					pb.Dropped++
+				}
+				managerTx[tx.Entry].Dropped = append(managerTx[tx.Entry].Dropped, TxPlayerDetail{
+					Element:      tx.ElementOut,
+					PlayerName:   meta.Name,
+					Team:         teamShort[meta.TeamID],
+					PositionType: meta.PositionType,
+					Kind:         tx.Kind,
+				})
 			}
-			managerTx[tx.Entry].Dropped = append(managerTx[tx.Entry].Dropped, TxPlayerDetail{
-				Element:      tx.ElementOut,
-				PlayerName:   meta.Name,
-				Team:         teamShort[meta.TeamID],
-				PositionType: meta.PositionType,
-				Kind:         tx.Kind,
-			})
 		}
 	}
 

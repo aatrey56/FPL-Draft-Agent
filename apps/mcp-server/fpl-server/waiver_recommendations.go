@@ -886,14 +886,17 @@ func computeConsistencyStats(rawRoot string, elements []elementInfo, asOfGW int,
 			continue
 		}
 		for _, e := range elements {
-			points := 0.0
+			// Only count gameweeks where the player actually has recorded stats.
+			// If a player is absent from the live data (e.g. injured, not tracked
+			// in an early GW), counting that GW as 0 would artificially deflate
+			// their average and distort standard deviation.
 			if s, ok := live[e.ID]; ok {
-				points = float64(s.TotalPoints)
+				points := float64(s.TotalPoints)
+				cur := stats[e.ID]
+				cur.sum += points
+				cur.sumSq += points * points
+				cur.count++
 			}
-			cur := stats[e.ID]
-			cur.sum += points
-			cur.sumSq += points * points
-			cur.count++
 		}
 	}
 
