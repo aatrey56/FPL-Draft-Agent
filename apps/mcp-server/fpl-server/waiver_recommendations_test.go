@@ -245,3 +245,107 @@ func TestResolveRosterGW(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// computePointsConcededByPosition — reads fixtures from gw/N/live.json
+// ---------------------------------------------------------------------------
+
+// TestComputePointsConcededByPosition_UsesLiveFixtures is a regression test
+// verifying that fixture pairings are sourced from gw/N/live.json rather than
+// bootstrap-static.json. Bootstrap only contains upcoming fixtures; historical
+// GW fixture data must come from each gameweek's live file.
+func TestComputePointsConcededByPosition_UsesLiveFixtures(t *testing.T) {
+	dir := t.TempDir()
+
+	// Two teams: team 1 (home) vs team 2 (away).
+	// Element 10 plays for team 1 (FWD, pos 4) and scores 10 pts in GW1.
+	// Element 20 plays for team 2 (DEF, pos 2) and scores 6 pts in GW1.
+	liveJSON := map[string]any{
+		"fixtures": []any{
+			map[string]any{"id": 1, "team_h": 1, "team_a": 2},
+		},
+		"elements": map[string]any{
+			"10": map[string]any{"stats": map[string]any{
+				"minutes": 90, "total_points": 10,
+				"expected_goals": 0.5, "expected_assists": 0.1,
+			}},
+			"20": map[string]any{"stats": map[string]any{
+				"minutes": 90, "total_points": 6,
+				"expected_goals": 0.0, "expected_assists": 0.0,
+			}},
+		},
+	}
+	raw, _ := json.MarshalIndent(liveJSON, "", "  ")
+	gwDir := filepath.Join(dir, "gw", "1")
+	if err := os.MkdirAll(gwDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gwDir, "live.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	elements := []elementInfo{
+		{ID: 10, TeamID: 1, PositionType: 4}, // FWD for team 1
+		{ID: 20, TeamID: 2, PositionType: 2}, // DEF for team 2
+	}
+
+	// asOfGW=1, horizon=1 — should process exactly GW1.
+	conceded := computePointsConcededByPosition(dir, elements, 1, 1)
+
+	// Team 2 (away) conceded 10 pts from team 1's FWD (pos 4).
+	awayFWD := conceded[2]["AWAY"][4]
+	if awayFWD.Count != 1 || awayFWD.Sum != 10 {
+		t.Errorf("team 2 AWAY FWD conceded: sum=%.0f count=%d, want sum=10 count=1", awayFWD.Sum, awayFWD.Count)
+	}
+
+	// Team 1 (home) conceded 6 pts from team 2's DEF (pos 2).
+	homeDEF := conceded[1]["HOME"][2]
+	if homeDEF.Count != 1 || homeDEF.Sum != 6 {
+		t.Errorf("team 1 HOME DEF conceded: sum=%.0f count=%d, want sum=6 count=1", homeDEF.Sum, homeDEF.Count)
+	}
+}
+
+// TestLoadFixturesFromLive verifies that fixtures embedded in a live.json file
+// are correctly parsed into the fixture struct.
+func TestLoadFixturesFromLive(t *testing.T) {
+	dir := t.TempDir()
+
+	liveJSON := map[string]any{
+		"fixtures": []any{
+			map[string]any{"id": 42, "team_h": 5, "team_a": 7},
+			map[string]any{"id": 43, "team_h": 8, "team_a": 3},
+		},
+		"elements": map[string]any{},
+	}
+	raw, _ := json.MarshalIndent(liveJSON, "", "  ")
+	gwDir := filepath.Join(dir, "gw", "3")
+	if err := os.MkdirAll(gwDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gwDir, "live.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fixtures, err := loadFixturesFromLive(dir, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fixtures) != 2 {
+		t.Fatalf("got %d fixtures want 2", len(fixtures))
+	}
+	if fixtures[0].ID != 42 || fixtures[0].TeamH != 5 || fixtures[0].TeamA != 7 {
+		t.Errorf("fixture[0]=%+v want {ID:42 TeamH:5 TeamA:7}", fixtures[0])
+	}
+	if fixtures[1].ID != 43 || fixtures[1].TeamH != 8 || fixtures[1].TeamA != 3 {
+		t.Errorf("fixture[1]=%+v want {ID:43 TeamH:8 TeamA:3}", fixtures[1])
+	}
+	// Event should be set to the GW argument.
+	for _, f := range fixtures {
+		if f.Event != 3 {
+			t.Errorf("fixture event=%d want 3", f.Event)
+		}
+	}
+}
+
+// Suppress unused import if math was already imported.
+var _ = math.Pi

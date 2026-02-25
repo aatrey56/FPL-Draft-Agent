@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/ledger"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/model"
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/points"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/reconcile"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/store"
 )
@@ -148,5 +150,102 @@ func TestBuildPlayerForm_NormalLeague(t *testing.T) {
 
 	if _, err := json.MarshalIndent(summary, "", "  "); err != nil {
 		t.Errorf("json.MarshalIndent failed: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildLineupEfficiency — negative bench contributors
+// ---------------------------------------------------------------------------
+
+// TestBuildLineupEfficiency_NegativeBenchContributor is a regression test for
+// the case where a bench player has a points deduction (e.g. red card), making
+// bench_points negative. The output must name the responsible player so callers
+// can surface why the total is negative.
+func TestBuildLineupEfficiency_NegativeBenchContributor(t *testing.T) {
+	// Positions 1-11 are starters; 12-15 are bench.
+	// Player 99 sits on bench (position 12) and has a -2 deduction.
+	picks := []ledger.EntryPick{
+		{Element: 1, Position: 1},
+		{Element: 2, Position: 2},
+		{Element: 3, Position: 3},
+		{Element: 4, Position: 4},
+		{Element: 5, Position: 5},
+		{Element: 6, Position: 6},
+		{Element: 7, Position: 7},
+		{Element: 8, Position: 8},
+		{Element: 9, Position: 9},
+		{Element: 10, Position: 10},
+		{Element: 11, Position: 11},
+		{Element: 99, Position: 12}, // bench player with deduction
+		{Element: 12, Position: 13},
+		{Element: 13, Position: 14},
+		{Element: 14, Position: 15},
+	}
+
+	snapshots := map[int]*ledger.EntrySnapshot{
+		500: {Picks: picks},
+	}
+
+	liveByElement := map[int]points.LiveStats{}
+	for _, p := range picks {
+		liveByElement[p.Element] = points.LiveStats{Minutes: 90, TotalPoints: 2}
+	}
+	// Override bench player 99: -2 points deduction, played 90 mins.
+	liveByElement[99] = points.LiveStats{Minutes: 90, TotalPoints: -2}
+
+	meta := map[int]PlayerMeta{
+		99: {ID: 99, Name: "Deducted Player"},
+	}
+
+	out := buildLineupEfficiency(1, 1, []int{500}, map[int]string{500: "Test FC"}, snapshots, liveByElement, meta)
+
+	if len(out.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(out.Entries))
+	}
+	entry := out.Entries[0]
+
+	// bench_points = -2 + 2 + 2 + 2 = 4 starters points excluded; bench = -2+2+2+2=4? No.
+	// bench is positions 12-15: player 99 (-2), player 12 (2), player 13 (2), player 14 (2) = 4 total.
+	if entry.BenchPoints != 4 {
+		t.Errorf("bench_points=%d want 4 (99:-2 + 12:2 + 13:2 + 14:2)", entry.BenchPoints)
+	}
+
+	// NegativeBenchContributors should list player 99.
+	if len(entry.NegativeBenchContributors) != 1 {
+		t.Fatalf("expected 1 negative bench contributor, got %d", len(entry.NegativeBenchContributors))
+	}
+	contrib := entry.NegativeBenchContributors[0]
+	if contrib.Element != 99 {
+		t.Errorf("contributor element=%d want 99", contrib.Element)
+	}
+	if contrib.Name != "Deducted Player" {
+		t.Errorf("contributor name=%q want 'Deducted Player'", contrib.Name)
+	}
+	if contrib.Points != -2 {
+		t.Errorf("contributor points=%d want -2", contrib.Points)
+	}
+}
+
+// TestBuildLineupEfficiency_NoBenchContributorsWhenPositive verifies that
+// NegativeBenchContributors is omitted (nil/empty) when all bench players have
+// non-negative points — it should not pollute clean output.
+func TestBuildLineupEfficiency_NoBenchContributorsWhenPositive(t *testing.T) {
+	picks := make([]ledger.EntryPick, 15)
+	liveByElement := map[int]points.LiveStats{}
+	for i := 0; i < 15; i++ {
+		picks[i] = ledger.EntryPick{Element: i + 1, Position: i + 1}
+		liveByElement[i+1] = points.LiveStats{Minutes: 90, TotalPoints: 5}
+	}
+	snapshots := map[int]*ledger.EntrySnapshot{
+		500: {Picks: picks},
+	}
+	meta := map[int]PlayerMeta{}
+	out := buildLineupEfficiency(1, 1, []int{500}, map[int]string{500: "Clean FC"}, snapshots, liveByElement, meta)
+
+	if len(out.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(out.Entries))
+	}
+	if len(out.Entries[0].NegativeBenchContributors) != 0 {
+		t.Errorf("expected no negative bench contributors, got %v", out.Entries[0].NegativeBenchContributors)
 	}
 }

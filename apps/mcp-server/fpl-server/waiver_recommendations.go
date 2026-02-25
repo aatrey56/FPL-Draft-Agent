@@ -313,8 +313,8 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 	}
 
 	seasonWeight, recentWeight := horizonWeights(h)
-	concededSeason := computePointsConcededByPosition(cfg.RawRoot, bootstrap, fixturesByGW, asOfGW, asOfGW)
-	concededRecent := computePointsConcededByPosition(cfg.RawRoot, bootstrap, fixturesByGW, asOfGW, h)
+	concededSeason := computePointsConcededByPosition(cfg.RawRoot, bootstrap, asOfGW, asOfGW)
+	concededRecent := computePointsConcededByPosition(cfg.RawRoot, bootstrap, asOfGW, h)
 
 	everOwnersByElement, err := buildEverOwners(cfg, args.LeagueID)
 	if err != nil {
@@ -971,7 +971,44 @@ func asFloat(v any) float64 {
 	return asNumber(v)
 }
 
-func computePointsConcededByPosition(rawRoot string, elements []elementInfo, fixturesByGW map[int][]fixture, asOfGW int, horizon int) map[int]map[string]map[int]avgStat {
+// loadFixturesFromLive loads the fixtures array embedded in gw/N/live.json.
+// Bootstrap-static.json only contains upcoming fixtures, so historical GW
+// fixture pairings must be sourced from each gameweek's live file instead.
+func loadFixturesFromLive(rawRoot string, gw int) ([]fixture, error) {
+	path := filepath.Join(rawRoot, "gw", strconv.Itoa(gw), "live.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var resp struct {
+		Fixtures []struct {
+			ID    int `json:"id"`
+			TeamH int `json:"team_h"`
+			TeamA int `json:"team_a"`
+		} `json:"fixtures"`
+	}
+	if err := dec.Decode(&resp); err != nil {
+		return nil, err
+	}
+	out := make([]fixture, 0, len(resp.Fixtures))
+	for _, f := range resp.Fixtures {
+		out = append(out, fixture{
+			ID:    f.ID,
+			Event: gw,
+			TeamH: f.TeamH,
+			TeamA: f.TeamA,
+		})
+	}
+	return out, nil
+}
+
+// computePointsConcededByPosition tallies how many FPL points each team
+// conceded by position over a rolling horizon. Fixtures are sourced from
+// gw/N/live.json rather than bootstrap-static.json because the bootstrap
+// only contains upcoming GW fixtures and lacks historical data.
+func computePointsConcededByPosition(rawRoot string, elements []elementInfo, asOfGW int, horizon int) map[int]map[string]map[int]avgStat {
 	elementTeam := make(map[int]int, len(elements))
 	elementPos := make(map[int]int, len(elements))
 	for _, e := range elements {
@@ -989,6 +1026,10 @@ func computePointsConcededByPosition(rawRoot string, elements []elementInfo, fix
 		if err != nil {
 			continue
 		}
+		gwFixtures, err := loadFixturesFromLive(rawRoot, gw)
+		if err != nil {
+			continue
+		}
 		pointsByTeamPos := make(map[int]map[int]int)
 		for id, stats := range live {
 			team := elementTeam[id]
@@ -1002,7 +1043,7 @@ func computePointsConcededByPosition(rawRoot string, elements []elementInfo, fix
 			pointsByTeamPos[team][pos] += stats.TotalPoints
 		}
 
-		for _, f := range fixturesByGW[gw] {
+		for _, f := range gwFixtures {
 			home := f.TeamH
 			away := f.TeamA
 			homePts := pointsByTeamPos[home]
