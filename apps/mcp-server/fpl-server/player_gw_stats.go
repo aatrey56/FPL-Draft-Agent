@@ -126,14 +126,14 @@ func buildPlayerGWStats(cfg ServerConfig, args PlayerGWStatsArgs) (PlayerGWStats
 		var liveResp struct {
 			Elements map[string]struct {
 				Stats struct {
-					Minutes     int    `json:"minutes"`
-					TotalPoints int    `json:"total_points"`
-					GoalsScored int    `json:"goals_scored"`
-					Assists     int    `json:"assists"`
-					CleanSheets int    `json:"clean_sheets"`
-					BPS         int    `json:"bps"`
-					XG          string `json:"expected_goals"`
-					XA          string `json:"expected_assists"`
+					Minutes     int     `json:"minutes"`
+					TotalPoints int     `json:"total_points"`
+					GoalsScored int     `json:"goals_scored"`
+					Assists     int     `json:"assists"`
+					CleanSheets int     `json:"clean_sheets"`
+					BPS         int     `json:"bps"`
+					XG          float64 `json:"expected_goals"`
+					XA          float64 `json:"expected_assists"`
 				} `json:"stats"`
 			} `json:"elements"`
 		}
@@ -148,8 +148,8 @@ func buildPlayerGWStats(cfg ServerConfig, args PlayerGWStatsArgs) (PlayerGWStats
 		}
 
 		s := data.Stats
-		xg := parseFloat(s.XG)
-		xa := parseFloat(s.XA)
+		xg := s.XG
+		xa := s.XA
 
 		entry := PlayerGWEntry{
 			Gameweek:    gw,

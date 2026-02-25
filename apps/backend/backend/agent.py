@@ -105,7 +105,7 @@ class Agent:
             "who dropped", ("position", "targeted"), ("position", "popular"),
             "popular adds", "popular drops",
         ],
-        "head_to_head": ["head to head", " h2h ", "record against"],
+        "head_to_head": ["head to head", "h2h", "record against"],
         "manager_season": [
             "season stats", "season history", "season record",
             "how have i done", "overall record", "weekly scores",
@@ -131,7 +131,7 @@ class Agent:
         "standings": ["standings", "table"],
         "league_summary": ["league summary", ("summary", "league")],
         "transactions": ["transactions", "trades", ("waivers", "summary")],
-        "lineup": ["lineup efficiency", "bench points", "bench"],
+        "lineup": ["lineup efficiency", "bench points"],
         "strength": ["strength of schedule", "schedule difficulty"],
         "ownership": ["ownership", "scarcity"],
         "matchup_summary": [

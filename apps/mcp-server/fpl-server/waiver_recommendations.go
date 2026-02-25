@@ -313,8 +313,8 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 	}
 
 	seasonWeight, recentWeight := horizonWeights(h)
-	concededSeason := computePointsConcededByPosition(cfg.RawRoot, bootstrap, fixturesByGW, asOfGW, asOfGW)
-	concededRecent := computePointsConcededByPosition(cfg.RawRoot, bootstrap, fixturesByGW, asOfGW, h)
+	concededSeason := computePointsConcededByPosition(cfg.RawRoot, bootstrap, asOfGW, asOfGW)
+	concededRecent := computePointsConcededByPosition(cfg.RawRoot, bootstrap, asOfGW, h)
 
 	everOwnersByElement, err := buildEverOwners(cfg, args.LeagueID)
 	if err != nil {
@@ -971,7 +971,80 @@ func asFloat(v any) float64 {
 	return asNumber(v)
 }
 
-func computePointsConcededByPosition(rawRoot string, elements []elementInfo, fixturesByGW map[int][]fixture, asOfGW int, horizon int) map[int]map[string]map[int]avgStat {
+// liveGWData holds the element stats and fixtures decoded from a single
+// gw/N/live.json read, avoiding a second file-open for callers that need both.
+type liveGWData struct {
+	Stats    map[int]liveStats
+	Fixtures []fixture
+}
+
+// loadLiveGWData reads gw/N/live.json once and returns both element stats and
+// fixture pairings. Use this instead of calling loadLiveStats and
+// loadFixturesFromLive separately inside the same loop iteration.
+func loadLiveGWData(rawRoot string, gw int) (liveGWData, error) {
+	path := filepath.Join(rawRoot, "gw", strconv.Itoa(gw), "live.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return liveGWData{}, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber() // required: elements are decoded into map[string]any
+	var resp struct {
+		Elements map[string]struct {
+			Stats map[string]any `json:"stats"`
+		} `json:"elements"`
+		Fixtures []struct {
+			ID    int `json:"id"`
+			TeamH int `json:"team_h"`
+			TeamA int `json:"team_a"`
+		} `json:"fixtures"`
+	}
+	if err := dec.Decode(&resp); err != nil {
+		return liveGWData{}, err
+	}
+
+	stats := make(map[int]liveStats, len(resp.Elements))
+	for k, v := range resp.Elements {
+		id, err := strconv.Atoi(k)
+		if err != nil {
+			continue
+		}
+		stats[id] = liveStats{
+			Minutes:     int(asNumber(v.Stats["minutes"])),
+			TotalPoints: int(asNumber(v.Stats["total_points"])),
+			XG:          asFloat(v.Stats["expected_goals"]),
+		}
+	}
+
+	fixtures := make([]fixture, 0, len(resp.Fixtures))
+	for _, f := range resp.Fixtures {
+		fixtures = append(fixtures, fixture{
+			ID:    f.ID,
+			Event: gw,
+			TeamH: f.TeamH,
+			TeamA: f.TeamA,
+		})
+	}
+
+	return liveGWData{Stats: stats, Fixtures: fixtures}, nil
+}
+
+// loadFixturesFromLive loads the fixtures array embedded in gw/N/live.json.
+// Bootstrap-static.json only contains upcoming fixtures, so historical GW
+// fixture pairings must be sourced from each gameweek's live file instead.
+func loadFixturesFromLive(rawRoot string, gw int) ([]fixture, error) {
+	data, err := loadLiveGWData(rawRoot, gw)
+	if err != nil {
+		return nil, err
+	}
+	return data.Fixtures, nil
+}
+
+// computePointsConcededByPosition tallies how many FPL points each team
+// conceded by position over a rolling horizon. Fixtures are sourced from
+// gw/N/live.json rather than bootstrap-static.json because the bootstrap
+// only contains upcoming GW fixtures and lacks historical data.
+func computePointsConcededByPosition(rawRoot string, elements []elementInfo, asOfGW int, horizon int) map[int]map[string]map[int]avgStat {
 	elementTeam := make(map[int]int, len(elements))
 	elementPos := make(map[int]int, len(elements))
 	for _, e := range elements {
@@ -985,12 +1058,13 @@ func computePointsConcededByPosition(rawRoot string, elements []elementInfo, fix
 	}
 	conceded := make(map[int]map[string]map[int]avgStat)
 	for gw := start; gw <= asOfGW; gw++ {
-		live, err := loadLiveStats(rawRoot, gw)
+		// Single file read supplies both element stats and fixture pairings.
+		gwData, err := loadLiveGWData(rawRoot, gw)
 		if err != nil {
 			continue
 		}
 		pointsByTeamPos := make(map[int]map[int]int)
-		for id, stats := range live {
+		for id, stats := range gwData.Stats {
 			team := elementTeam[id]
 			pos := elementPos[id]
 			if team == 0 || pos == 0 {
@@ -1002,7 +1076,7 @@ func computePointsConcededByPosition(rawRoot string, elements []elementInfo, fix
 			pointsByTeamPos[team][pos] += stats.TotalPoints
 		}
 
-		for _, f := range fixturesByGW[gw] {
+		for _, f := range gwData.Fixtures {
 			home := f.TeamH
 			away := f.TeamA
 			homePts := pointsByTeamPos[home]

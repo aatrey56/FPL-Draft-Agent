@@ -134,6 +134,9 @@ func buildManagerSeason(cfg ServerConfig, args ManagerSeasonArgs) (ManagerSeason
 		oppName := nameByEntry[oppEntryID]
 		result := resultFromScore(score, oppScore)
 
+		if !m.Finished {
+			continue
+		}
 		gw := SeasonGameweek{
 			Gameweek:      m.Event,
 			Score:         score,
@@ -145,25 +148,23 @@ func buildManagerSeason(cfg ServerConfig, args ManagerSeasonArgs) (ManagerSeason
 		}
 		gameweeks = append(gameweeks, gw)
 
-		if m.Finished {
-			totalPts += score
-			finishedCount++
-			switch result {
-			case "W":
-				record.Wins++
-			case "D":
-				record.Draws++
-			case "L":
-				record.Losses++
-			}
-			if score > highestPts {
-				highestPts = score
-				highestGW = m.Event
-			}
-			if score < lowestPts {
-				lowestPts = score
-				lowestGW = m.Event
-			}
+		totalPts += score
+		finishedCount++
+		switch result {
+		case "W":
+			record.Wins++
+		case "D":
+			record.Draws++
+		case "L":
+			record.Losses++
+		}
+		if score > highestPts {
+			highestPts = score
+			highestGW = m.Event
+		}
+		if score < lowestPts {
+			lowestPts = score
+			lowestGW = m.Event
 		}
 	}
 

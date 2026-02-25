@@ -175,8 +175,8 @@ func buildFixtureDifficulty(cfg ServerConfig, args FixtureDifficultyArgs) (Fixtu
 	}
 
 	seasonWeight, recentWeight := horizonWeights(h)
-	concededSeason := computePointsConcededByPosition(cfg.RawRoot, elements, fixturesByGW, asOfGW, asOfGW)
-	concededRecent := computePointsConcededByPosition(cfg.RawRoot, elements, fixturesByGW, asOfGW, h)
+	concededSeason := computePointsConcededByPosition(cfg.RawRoot, elements, asOfGW, asOfGW)
+	concededRecent := computePointsConcededByPosition(cfg.RawRoot, elements, asOfGW, h)
 
 	fixtureList := fixturesByGW[nextGW]
 	contexts := buildFixtureContexts(fixtureList, teamShort)
