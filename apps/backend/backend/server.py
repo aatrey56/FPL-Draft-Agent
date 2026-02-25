@@ -4,6 +4,7 @@ import os
 import shlex
 import subprocess
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -32,6 +33,17 @@ os.makedirs(SETTINGS.reports_dir, exist_ok=True)
 _CACHE_SCHEDULER: Optional[BackgroundScheduler] = None
 _CHAT_SESSIONS: Dict[str, Agent] = {}
 
+# ── Refresh state ──────────────────────────────────────────────────────────────
+# A single lock prevents concurrent refresh runs (startup + manual trigger).
+# _REFRESH_STATUS is written under the lock and read freely by status endpoints.
+_REFRESH_LOCK: threading.Lock = threading.Lock()
+_REFRESH_STATUS: Dict[str, Any] = {
+    "state": "idle",           # "idle" | "running" | "error"
+    "started_at": None,        # float (epoch) when current/last run began
+    "last_completed": None,    # float (epoch) of last successful completion
+    "last_error": None,        # str error message, or None if last run succeeded
+}
+
 @asynccontextmanager
 async def _lifespan(application: FastAPI) -> AsyncIterator[None]:  # type: ignore[misc]
     """FastAPI lifespan handler: start services on startup, clean up on shutdown.
@@ -41,8 +53,11 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:  # type: ignor
     # ── Startup ────────────────────────────────────────────────────────────────
     ensure_go_server()
     _start_cache_scheduler()
+    # Always run a full data refresh in the background on every startup so that
+    # GW live scores and transactions are current the moment the UI is usable.
+    # CACHE_REFRESH_ON_START=false can opt out (e.g. CI, offline dev).
     if SETTINGS.refresh_on_start:
-        threading.Thread(target=run_cache_refresh, daemon=True).start()
+        threading.Thread(target=run_startup_refresh, daemon=True).start()
 
     yield  # application runs here
 
@@ -69,7 +84,31 @@ def _mcp() -> MCPClient:
     return MCPClient(SETTINGS.mcp_url, SETTINGS.mcp_api_key)
 
 
-def _cache_refresh_cmd() -> List[str]:
+def _startup_refresh_cmd() -> List[str]:
+    """Build the command for the on-startup full refresh.
+
+    Always uses ``--refresh=all`` so every endpoint is re-fetched regardless of
+    whether a local file already exists.  ``--fast`` is intentionally omitted:
+    the fast mode only fetches missing files, so stale GW live scores and
+    transactions would never be updated after a restart.
+
+    Override with ``CACHE_REFRESH_CMD_STARTUP`` if you need a custom command
+    (e.g. a pre-built binary path or extra flags).
+    """
+    if SETTINGS.refresh_cmd_startup:
+        return shlex.split(SETTINGS.refresh_cmd_startup)
+    return shlex.split(
+        f"go run ./apps/mcp-server/cmd/dev --refresh=all --league {SETTINGS.league_id}"
+    )
+
+
+def _scheduled_refresh_cmd() -> List[str]:
+    """Build the command for the daily scheduled refresh.
+
+    Uses ``--refresh=scheduled --refresh-now`` so the time-window gate is
+    bypassed.  Respects ``CACHE_REFRESH_FAST`` (defaults ``true``) for quick
+    incremental daily updates.  Override entirely with ``CACHE_REFRESH_CMD``.
+    """
     if SETTINGS.refresh_cmd:
         return shlex.split(SETTINGS.refresh_cmd)
     cmd = f"go run ./apps/mcp-server/cmd/dev --refresh=scheduled --refresh-now --league {SETTINGS.league_id}"
@@ -78,9 +117,14 @@ def _cache_refresh_cmd() -> List[str]:
     return shlex.split(cmd)
 
 
-def run_cache_refresh() -> None:
-    cmd = _cache_refresh_cmd()
+def _run_refresh(cmd: List[str], label: str) -> None:
+    """Execute *cmd* under the refresh lock, updating ``_REFRESH_STATUS``."""
+    if not _REFRESH_LOCK.acquire(blocking=False):
+        print(f"[{label}] another refresh is already running — skipping")
+        return
     try:
+        _REFRESH_STATUS.update({"state": "running", "started_at": time.time(), "last_error": None})
+        print(f"[{label}] starting: {' '.join(cmd)}")
         proc = subprocess.run(
             cmd,
             cwd=SETTINGS.repo_root,
@@ -89,17 +133,59 @@ def run_cache_refresh() -> None:
             check=False,
         )
         if proc.returncode != 0:
-            print("[cache-refresh] failed", proc.returncode)
-            if proc.stdout:
-                print(proc.stdout)
-            if proc.stderr:
-                print(proc.stderr)
+            err = (proc.stderr or proc.stdout or "").strip()
+            _REFRESH_STATUS.update({"state": "error", "last_error": err})
+            print(f"[{label}] failed (rc={proc.returncode}): {err}")
         else:
-            print("[cache-refresh] complete")
-            if proc.stdout:
-                print(proc.stdout)
+            _REFRESH_STATUS.update({"state": "idle", "last_completed": time.time(), "last_error": None})
+            print(f"[{label}] complete")
     except Exception as exc:
-        print(f"[cache-refresh] error: {exc}")
+        _REFRESH_STATUS.update({"state": "error", "last_error": str(exc)})
+        print(f"[{label}] error: {exc}")
+    finally:
+        _REFRESH_LOCK.release()
+
+
+def run_startup_refresh() -> None:
+    """Full refresh run in a background daemon thread on every backend startup.
+
+    Ensures GW live data, transactions, and bootstrap are always current the
+    moment the Web UI becomes usable.  Uses ``--refresh=all`` (no ``--fast``).
+    """
+    _run_refresh(_startup_refresh_cmd(), "startup-refresh")
+
+
+def run_cache_refresh() -> None:
+    """Incremental refresh used by the daily APScheduler job."""
+    _run_refresh(_scheduled_refresh_cmd(), "cache-refresh")
+
+
+@app.get("/api/refresh/status")
+def get_refresh_status() -> Dict[str, Any]:
+    """Return the current data-refresh state.
+
+    Returns:
+        Dict with keys:
+        - ``state``: ``"idle"`` | ``"running"`` | ``"error"``
+        - ``started_at``: epoch float of when the current/last run began, or ``None``
+        - ``last_completed``: epoch float of last successful completion, or ``None``
+        - ``last_error``: error message string if the last run failed, or ``None``
+    """
+    return dict(_REFRESH_STATUS)
+
+
+@app.post("/api/refresh")
+def trigger_refresh() -> Dict[str, Any]:
+    """Manually trigger a full data refresh in the background.
+
+    Returns immediately with ``{"ok": true}`` if the refresh was queued, or
+    ``{"ok": false, "message": "..."}`` if one is already running.
+    """
+    if not _REFRESH_LOCK.acquire(blocking=False):
+        return {"ok": False, "message": "a refresh is already in progress"}
+    _REFRESH_LOCK.release()
+    threading.Thread(target=run_startup_refresh, daemon=True).start()
+    return {"ok": True, "message": "full refresh started in background"}
 
 
 def _parse_refresh_time() -> tuple[int, int]:
