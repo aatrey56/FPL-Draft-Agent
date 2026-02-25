@@ -542,7 +542,12 @@ func buildPlayerForm(meta map[int]PlayerMeta, ledgerOut model.DraftLedger, trans
 		}
 		risk := 1 - minutesPct
 		own := ownership[id]
-		ownPct := float64(own) / float64(len(entryIDs))
+		// Guard against empty league (len==0) which would produce NaN/+Inf that
+		// json.Marshal cannot serialise, causing a runtime error.
+		var ownPct float64
+		if len(entryIDs) > 0 {
+			ownPct = float64(own) / float64(len(entryIDs))
+		}
 		players = append(players, PlayerForm{
 			Element:      id,
 			Name:         m.Name,

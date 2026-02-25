@@ -238,7 +238,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             payload = _parse_chat_payload(raw)
             msg = payload.get("message", "")
             await ws.send_text(json.dumps({"type": "user", "message": msg}))
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, agent.run, msg, 4, payload)
             for ev in result.get("tool_events", []):
                 await ws.send_text(json.dumps({"type": ev["type"], **ev}))
@@ -282,13 +282,19 @@ def run_report(payload: Dict[str, Any]) -> Dict[str, Any]:
     league_id_raw = payload.get("league_id")
     entry_id_raw = payload.get("entry_id")
     entry_name = payload.get("entry_name", "")
-    league_id = int(league_id_raw) if league_id_raw not in (None, "") else 0
-    entry_id = int(entry_id_raw) if entry_id_raw not in (None, "") else 0
+    try:
+        league_id = int(league_id_raw) if league_id_raw not in (None, "") else 0
+        entry_id = int(entry_id_raw) if entry_id_raw not in (None, "") else 0
+    except (ValueError, TypeError):
+        return {"error": "league_id and entry_id must be integers"}
     if league_id == 0:
         return {"error": "league_id is required"}
     if entry_id == 0 and entry_name:
         entry_id = _resolve_entry_id(client, league_id, entry_id, entry_name)
-    gw = int(payload.get("gw", 0))
+    try:
+        gw = int(payload.get("gw", 0) or 0)
+    except (ValueError, TypeError):
+        gw = 0
     waiver_weights = payload.get("waiver_weights") or {}
     xi_weights = payload.get("xi_weights") or {}
     if gw == 0:
