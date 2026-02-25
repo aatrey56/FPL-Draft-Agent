@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -107,7 +108,9 @@ func buildManagerSeason(cfg ServerConfig, args ManagerSeasonArgs) (ManagerSeason
 	record := SeasonRecord{}
 	totalPts := 0
 	highestGW, highestPts := 0, -1
-	lowestGW, lowestPts := 0, 1<<30
+	// math.MaxInt32 is a reliable sentinel for "not yet set"; 1<<30 would silently
+	// break if a manager ever scored more than ~1 billion points.
+	lowestGW, lowestPts := 0, math.MaxInt32
 	finishedCount := 0
 
 	for _, m := range details.Matches {
@@ -176,7 +179,7 @@ func buildManagerSeason(cfg ServerConfig, args ManagerSeasonArgs) (ManagerSeason
 	if highestPts == -1 {
 		highestPts = 0
 	}
-	if lowestPts == 1<<30 {
+	if lowestPts == math.MaxInt32 {
 		lowestPts = 0
 	}
 
