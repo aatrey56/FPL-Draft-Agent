@@ -177,3 +177,44 @@ class TestParseChatPayload:
     def test_empty_string_falls_back(self):
         result = server_module._parse_chat_payload("")
         assert result == {"message": ""}
+
+
+# ---------------------------------------------------------------------------
+# Refresh status + trigger endpoints
+# ---------------------------------------------------------------------------
+
+class TestRefreshEndpoints:
+    """Verify GET /api/refresh/status and POST /api/refresh behaviour."""
+
+    def setup_method(self):
+        """Reset _REFRESH_STATUS to idle before each test."""
+        server_module._REFRESH_STATUS.update({
+            "state": "idle",
+            "started_at": None,
+            "last_completed": None,
+            "last_error": None,
+        })
+
+    def test_status_returns_idle_initially(self):
+        result = server_module.get_refresh_status()
+        assert result["state"] == "idle"
+        assert result["last_completed"] is None
+        assert result["last_error"] is None
+
+    def test_trigger_refresh_starts_thread_and_returns_ok(self):
+        """POST /api/refresh must return ok=true when no refresh is running."""
+        with patch("backend.server.run_startup_refresh") as mock_refresh:
+            result = server_module.trigger_refresh()
+        assert result["ok"] is True
+        assert "started" in result["message"].lower()
+        # run_startup_refresh is called in a daemon thread; give it a moment.
+        import time
+        time.sleep(0.05)
+        mock_refresh.assert_called_once()
+
+    def test_trigger_refresh_blocked_when_running(self):
+        """POST /api/refresh must return ok=false when state is already 'running'."""
+        server_module._REFRESH_STATUS["state"] = "running"
+        result = server_module.trigger_refresh()
+        assert result["ok"] is False
+        assert "already" in result["message"].lower()

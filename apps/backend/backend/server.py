@@ -178,12 +178,16 @@ def get_refresh_status() -> Dict[str, Any]:
 def trigger_refresh() -> Dict[str, Any]:
     """Manually trigger a full data refresh in the background.
 
-    Returns immediately with ``{"ok": true}`` if the refresh was queued, or
+    Returns immediately with ``{"ok": true}`` if the refresh was started, or
     ``{"ok": false, "message": "..."}`` if one is already running.
+
+    Checks ``_REFRESH_STATUS["state"]`` directly rather than acquiring and
+    immediately releasing ``_REFRESH_LOCK``, which would open a TOCTOU window.
+    The lock inside ``_run_refresh`` guarantees that concurrent threads never
+    execute simultaneously regardless of how many are started here.
     """
-    if not _REFRESH_LOCK.acquire(blocking=False):
+    if _REFRESH_STATUS.get("state") == "running":
         return {"ok": False, "message": "a refresh is already in progress"}
-    _REFRESH_LOCK.release()
     threading.Thread(target=run_startup_refresh, daemon=True).start()
     return {"ok": True, "message": "full refresh started in background"}
 
