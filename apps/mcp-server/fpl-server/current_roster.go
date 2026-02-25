@@ -125,7 +125,14 @@ func buildCurrentRoster(cfg ServerConfig, args CurrentRosterArgs) (CurrentRoster
 	starters := make([]RosterPlayerInfo, 0, 11)
 	bench := make([]RosterPlayerInfo, 0, 4)
 	for _, p := range snap.Picks {
-		meta := playerByID[p.Element]
+		// Guard: skip picks referencing an element absent from the bootstrap
+		// (e.g. data freshness gap, mid-season player addition).  A zero-value
+		// struct would produce blank Name/Team and PositionType 0, silently
+		// corrupting the roster output.
+		meta, ok := playerByID[p.Element]
+		if !ok {
+			continue
+		}
 		info := RosterPlayerInfo{
 			Element:      p.Element,
 			Name:         meta.Name,
