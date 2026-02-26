@@ -307,3 +307,109 @@ class TestTryRoute:
         # Should not propagate exception; should return a user-facing error message
         assert result is not None
         assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# Team name resolution: handlers resolve names from text before session
+# defaults (#72, #73, #74)
+# ---------------------------------------------------------------------------
+
+_LEAGUE_ENTRIES = {
+    "teams": [
+        {"entry_id": 100, "entry_name": "Boot Gang", "short_name": "BG"},
+        {"entry_id": 200, "entry_name": "Glock Tua", "short_name": "GT"},
+    ]
+}
+
+_WAIVER_RESULT = {
+    "entry_name": "Boot Gang",
+    "target_gw": 28,
+    "top_adds": [{"name": "Salah", "team": "LIV", "position_type": 3}],
+}
+
+_STREAK_RESULT = {
+    "entry_name": "Boot Gang",
+    "start_win_streak": 2,
+    "current_win_streak": 1,
+    "max_win_streak": 4,
+}
+
+_SCHEDULE_RESULT = {
+    "entry_name": "Boot Gang",
+    "matches": [{"gameweek": 28, "opponent_name": "Glock Tua"}],
+}
+
+
+class TestTeamNameResolution:
+    """Handlers should resolve a team name from user text rather than always
+    falling back to the session's own entry_id."""
+
+    def setup_method(self) -> None:
+        self.mcp = MagicMock()
+        self.mcp.list_tools.return_value = []
+        self.llm = MagicMock()
+        self.llm.available.return_value = False
+
+        with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
+            self.agent = Agent(self.mcp, self.llm)
+
+        # Session defaults point to *Glock Tua* (id=200).
+        self.agent._session["league_id"] = 14204
+        self.agent._session["entry_id"] = 200
+        self.agent._session["entry_name"] = "Glock Tua"
+
+    def _mock_call_tool(self, responses: Dict[str, Any]):
+        """Return different data depending on which MCP tool is called."""
+        def _side_effect(name: str, args: Any = None):
+            return responses.get(name, {})
+        self.mcp.call_tool.side_effect = _side_effect
+
+    def test_waiver_resolves_other_team(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "waiver_recommendations": _WAIVER_RESULT,
+        })
+        result = self.agent._try_route("waiver recs for Boot Gang", [])
+        assert result is not None
+        # Should mention Boot Gang, NOT Glock Tua
+        assert "Boot Gang" in result
+        # The tool should have been called with Boot Gang's entry_id (100)
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "waiver_recommendations"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 100
+
+    def test_waiver_falls_back_to_session_when_no_team_in_text(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "waiver_recommendations": _WAIVER_RESULT,
+        })
+        result = self.agent._try_route("show my waiver recommendations", [])
+        assert result is not None
+        # No team name in text → should use session default (Glock Tua, id=200)
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "waiver_recommendations"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 200
+
+    def test_streak_resolves_other_team(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "manager_streak": _STREAK_RESULT,
+        })
+        result = self.agent._try_route("win streak for Boot Gang", [])
+        assert result is not None
+        assert "Boot Gang" in result
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_streak"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 100
+
+    def test_schedule_resolves_other_team(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "manager_schedule": _SCHEDULE_RESULT,
+        })
+        result = self.agent._try_route("schedule for Boot Gang", [])
+        assert result is not None
+        assert "Boot Gang" in result
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_schedule"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 100
