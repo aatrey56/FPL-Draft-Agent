@@ -602,14 +602,21 @@ class Agent:
     ]
 
     def _is_greeting(self, text: str) -> bool:
-        """Return True if *text* is a greeting or simple small-talk phrase."""
+        """Return True if *text* is a greeting or simple small-talk phrase.
+
+        Uses exact matching against ``_GREETING_PATTERNS`` and, for very short
+        messages (1-2 words), checks whether the *first word* is a known
+        greeting.  This avoids false positives where FPL queries like
+        "hi salah stats" or "highlights gw27" would previously match because
+        ``startswith`` treated "hi" as a prefix of the whole string.
+        """
         lower = text.lower().strip().rstrip("!?.,")
-        # Exact match first (e.g. "hello" or "hey")
+        # Exact match against known patterns (handles multi-word phrases too)
         if lower in self._GREETING_PATTERNS:
             return True
-        # Short messages (≤4 words) that start with a greeting word
+        # Short messages (1-2 words) where the first word is a greeting
         words = lower.split()
-        if len(words) <= 4 and any(lower.startswith(g) for g in self._GREETING_PATTERNS):
+        if len(words) <= 2 and words and words[0] in self._GREETING_PATTERNS:
             return True
         return False
 
