@@ -381,3 +381,45 @@ class TestSimpleToolRenderers:
         assert "Boot Gang" in result
         assert "avg opp rank" in result
         assert "data is ready" not in result
+
+    def test_strength_of_schedule_routes_to_correct_tool(self) -> None:
+        """'strength of schedule' must route to strength_of_schedule, not schedule handler."""
+        self.mcp.call_tool.return_value = {
+            "league_id": 14204,
+            "gameweek": 27,
+            "entries": [
+                {
+                    "entry_name": "Boot Gang",
+                    "future_opponent_avg_rank": 3.2,
+                    "future_opponents_top_half": 2,
+                    "future_opponents_bottom_half": 3,
+                },
+            ],
+        }
+        self.agent._try_route("strength of schedule next 5 gws", [])
+        tool_name = self.mcp.call_tool.call_args[0][0]
+        assert tool_name == "strength_of_schedule", (
+            f"Expected 'strength_of_schedule' but routed to '{tool_name}'. "
+            "Check that the 'strength' intent is tested before 'schedule' in _try_route()."
+        )
+
+    def test_schedule_difficulty_routes_to_strength_tool(self) -> None:
+        """'schedule difficulty' must route to strength_of_schedule, not schedule handler."""
+        self.mcp.call_tool.return_value = {
+            "league_id": 14204,
+            "gameweek": 27,
+            "entries": [
+                {
+                    "entry_name": "Glock Tua",
+                    "future_opponent_avg_rank": 5.8,
+                    "future_opponents_top_half": 4,
+                    "future_opponents_bottom_half": 1,
+                },
+            ],
+        }
+        self.agent._try_route("schedule difficulty", [])
+        tool_name = self.mcp.call_tool.call_args[0][0]
+        assert tool_name == "strength_of_schedule", (
+            f"Expected 'strength_of_schedule' but routed to '{tool_name}'. "
+            "'schedule difficulty' starts with 'schedule' — the strength check must come first."
+        )
