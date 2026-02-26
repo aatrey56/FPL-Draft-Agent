@@ -273,7 +273,7 @@ class Agent:
                     self._append_history("assistant", err_msg)
                     return {"content": err_msg, "tool_events": tool_events}
                 tool_events.append({"type": "tool_result", "name": name, "result": result})
-                if name == "league_summary" and isinstance(result, dict):
+                if name == "league_summary" and isinstance(result, dict) and "error" not in result:
                     content = render_league_summary_md(result, self.llm)
                     if user_message:
                         self._append_history("user", user_message)
@@ -1167,12 +1167,11 @@ class Agent:
         gw = self._extract_gw(text)
         if gw is None:
             gw = self._default_gw()
-        args: Dict[str, Any] = {"league_id": league_id}
-        if gw is not None:
-            args["gw"] = gw
+        args: Dict[str, Any] = {"league_id": league_id, "gw": gw or 0}
         result = self._call_tool(tool_events, "league_summary", args)
-        if not isinstance(result, dict):
-            return "League summary is unavailable right now."
+        if not isinstance(result, dict) or "error" in result:
+            err = result.get("error", "") if isinstance(result, dict) else ""
+            return f"League summary is unavailable right now. {err}".strip()
         return render_league_summary_md(result, self.llm)
 
     def _handle_lineup_efficiency(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
