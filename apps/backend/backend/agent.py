@@ -623,6 +623,10 @@ class Agent:
             return self._handle_streak(text, tool_events)
         if self._looks_like("win_list", lower):
             return self._handle_wins_list(text, tool_events)
+        # Check "strength" before "schedule" because "strength of schedule"
+        # contains "schedule" and would be misrouted otherwise.
+        if self._looks_like("strength", lower):
+            return self._handle_strength_of_schedule(text, tool_events)
         if self._looks_like("schedule", lower):
             return self._handle_schedule(text, tool_events)
         if self._looks_like("fixtures", lower):
@@ -637,14 +641,12 @@ class Agent:
             return self._handle_transactions(text, tool_events)
         if self._looks_like("lineup", lower):
             return self._handle_lineup_efficiency(text, tool_events)
-        if self._looks_like("strength", lower):
-            return self._handle_simple_tool(text, tool_events, "strength_of_schedule", "Strength of schedule")
         if self._looks_like("ownership", lower):
-            return self._handle_simple_tool(text, tool_events, "ownership_scarcity", "Ownership scarcity")
+            return self._handle_ownership_scarcity(text, tool_events)
         if self._looks_like("matchup_summary", lower):
             return self._handle_matchup_summary(text, tool_events)
         if "league entries" in lower or "all teams" in lower:
-            return self._handle_simple_tool(text, tool_events, "league_entries", "League teams")
+            return self._handle_league_entries(text, tool_events)
 
         league_id = self._extract_league_id(text) or self._default_league_id()
         if self._looks_like_team_name_only(text, league_id, tool_events):
@@ -1555,6 +1557,95 @@ class Agent:
         if result:
             return f"{title} data is ready. Ask for a specific team or detail if you want a summary."
         return f"{title} data is unavailable."
+
+    def _handle_league_entries(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+        """Render the list of teams in the league (#77)."""
+        league_id = self._extract_league_id(text) or self._default_league_id()
+        result = self._call_tool(tool_events, "league_entries", {"league_id": league_id})
+        if not isinstance(result, dict):
+            return "League entries data is unavailable right now."
+        teams = result.get("teams", [])
+        if not teams:
+            return "No teams found in this league."
+        lines = [f"League teams ({len(teams)}):"]
+        for t in teams:
+            name = t.get("entry_name") or "Unknown"
+            short = t.get("short_name") or ""
+            entry_id = t.get("entry_id", "")
+            if short:
+                lines.append(f"- {name} ({short}) — ID {entry_id}")
+            else:
+                lines.append(f"- {name} — ID {entry_id}")
+        return "\n".join(lines)
+
+    def _handle_ownership_scarcity(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+        """Render ownership/scarcity breakdown by position (#78)."""
+        league_id = self._extract_league_id(text) or self._default_league_id()
+        gw = self._extract_gw(text)
+        if gw is None:
+            gw = self._default_gw()
+        args: Dict[str, Any] = {"league_id": league_id, "gw": gw if gw is not None else 0}
+        result = self._call_tool(tool_events, "ownership_scarcity", args)
+        if not isinstance(result, dict):
+            return "Ownership scarcity data is unavailable right now."
+
+        gw_label = result.get("gameweek") or gw or "current"
+        lines = [f"Ownership scarcity (GW{gw_label}):"]
+
+        owned = result.get("owned_totals") or {}
+        unowned = result.get("unowned_totals") or {}
+        if owned or unowned:
+            lines.append(f"  Owned: GK {owned.get('gk', 0)}, DEF {owned.get('def', 0)}, "
+                         f"MID {owned.get('mid', 0)}, FWD {owned.get('fwd', 0)} "
+                         f"(total {owned.get('total', 0)})")
+            lines.append(f"  Free agents: GK {unowned.get('gk', 0)}, DEF {unowned.get('def', 0)}, "
+                         f"MID {unowned.get('mid', 0)}, FWD {unowned.get('fwd', 0)} "
+                         f"(total {unowned.get('total', 0)})")
+
+        hoarders = result.get("hoarders") or {}
+        if hoarders:
+            lines.append("Position hoarders:")
+            for pos, entries in hoarders.items():
+                if entries:
+                    names = ", ".join(
+                        f"{h.get('entry_name', '?')} ({h.get('count', 0)})"
+                        for h in entries[:3]
+                    )
+                    lines.append(f"  {pos.upper()}: {names}")
+        return "\n".join(lines)
+
+    def _handle_strength_of_schedule(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+        """Render strength-of-schedule rankings (#79)."""
+        league_id = self._extract_league_id(text) or self._default_league_id()
+        gw = self._extract_gw(text)
+        if gw is None:
+            gw = self._default_gw()
+        horizon = self._extract_horizon(text) or 5
+        args: Dict[str, Any] = {"league_id": league_id, "horizon": horizon}
+        if gw is not None:
+            args["as_of_gw"] = gw
+        result = self._call_tool(tool_events, "strength_of_schedule", args)
+        if not isinstance(result, dict):
+            return "Strength of schedule data is unavailable right now."
+
+        entries = result.get("entries", [])
+        if not entries:
+            return "No strength of schedule data available."
+
+        gw_label = result.get("gameweek") or gw or "current"
+        lines = [f"Strength of schedule (as of GW{gw_label}, next {horizon} GWs):"]
+        # Sort by easiest future schedule (lowest future_opponent_avg_rank = easier)
+        sorted_entries = sorted(entries, key=lambda e: e.get("future_opponent_avg_rank", 99))
+        for i, e in enumerate(sorted_entries, 1):
+            name = e.get("entry_name") or "Unknown"
+            fut_rank = e.get("future_opponent_avg_rank", 0)
+            fut_top = e.get("future_opponents_top_half", 0)
+            fut_bot = e.get("future_opponents_bottom_half", 0)
+            lines.append(
+                f"{i}. {name} — avg opp rank {fut_rank:.1f} "
+                f"({fut_top} top-half, {fut_bot} bottom-half)"
+            )
+        return "\n".join(lines)
 
     def _load_element_map(self) -> Dict[int, str]:
         if self._element_name_cache is not None:
