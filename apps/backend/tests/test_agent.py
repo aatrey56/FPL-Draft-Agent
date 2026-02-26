@@ -307,3 +307,56 @@ class TestTryRoute:
         # Should not propagate exception; should return a user-facing error message
         assert result is not None
         assert isinstance(result, str)
+
+    def test_greeting_hello_returns_fast(self) -> None:
+        """Greetings should be answered without calling any tools (issue #71)."""
+        result = self.agent._try_route("hello", [])
+        assert result is not None
+        assert "FPL" in result
+        self.mcp.call_tool.assert_not_called()
+
+    def test_greeting_hey_returns_fast(self) -> None:
+        result = self.agent._try_route("hey!", [])
+        assert result is not None
+        self.mcp.call_tool.assert_not_called()
+
+    def test_greeting_thanks_returns_fast(self) -> None:
+        result = self.agent._try_route("thanks", [])
+        assert result is not None
+        self.mcp.call_tool.assert_not_called()
+
+    def test_greeting_does_not_match_fpl_queries(self) -> None:
+        """Ensure 'hi' inside FPL queries doesn't trigger greeting."""
+        result = self.agent._try_route("show standings table", [])
+        # Should route to standings, not greeting
+        assert result is not None
+        assert "FPL Draft assistant" not in result
+
+
+# ---------------------------------------------------------------------------
+# _sanitize_error
+# ---------------------------------------------------------------------------
+
+class TestSanitizeError:
+    def setup_method(self) -> None:
+        self.agent = _make_agent()
+
+    def test_strips_file_path_with_gw(self) -> None:
+        """Go 'open data/raw/gw/99/live.json: no such file...' → user-friendly (issue #89)."""
+        raw = "open data/raw/gw/99/live.json: no such file or directory"
+        result = self.agent._sanitize_error(raw)
+        assert "data/raw" not in result
+        assert "GW99" in result
+
+    def test_strips_generic_file_path(self) -> None:
+        raw = "open data/derived/summary/league_summary.json: no such file or directory"
+        result = self.agent._sanitize_error(raw)
+        assert "data/derived" not in result
+
+    def test_passes_through_non_path_errors(self) -> None:
+        raw = "connection refused"
+        result = self.agent._sanitize_error(raw)
+        assert result == "connection refused"
+
+    def test_empty_string_passthrough(self) -> None:
+        assert self.agent._sanitize_error("") == ""

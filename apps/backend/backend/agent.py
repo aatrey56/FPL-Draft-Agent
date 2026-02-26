@@ -593,6 +593,26 @@ class Agent:
         docs = self._rag.search(text, k=3)
         return format_rag_docs(docs)
 
+    # Common greetings and small-talk patterns that should get a friendly
+    # response without calling any tools.
+    _GREETING_PATTERNS: List[str] = [
+        "hello", "hi", "hey", "howdy", "yo", "sup", "good morning",
+        "good afternoon", "good evening", "what's up", "whats up",
+        "how are you", "thanks", "thank you", "cheers", "bye", "goodbye",
+    ]
+
+    def _is_greeting(self, text: str) -> bool:
+        """Return True if *text* is a greeting or simple small-talk phrase."""
+        lower = text.lower().strip().rstrip("!?.,")
+        # Exact match first (e.g. "hello" or "hey")
+        if lower in self._GREETING_PATTERNS:
+            return True
+        # Short messages (≤4 words) that start with a greeting word
+        words = lower.split()
+        if len(words) <= 4 and any(lower.startswith(g) for g in self._GREETING_PATTERNS):
+            return True
+        return False
+
     def _try_route(self, user_message: str, tool_events: List[Dict[str, Any]]) -> Optional[str]:
         text = user_message.strip()
         if not text:
@@ -601,6 +621,14 @@ class Agent:
         if pending is not None:
             return pending
         lower = text.lower()
+
+        # ---- Greetings / small-talk — respond without calling any tools ----
+        if self._is_greeting(lower):
+            return (
+                "Hey! I'm your FPL Draft assistant. "
+                "Ask me about league standings, waiver picks, matchups, "
+                "player stats, schedules, and more."
+            )
 
         # ---- New tools (higher priority — check before broad existing patterns) ----
         if self._looks_like("draft_picks", lower):
@@ -656,15 +684,44 @@ class Agent:
 
         return None
 
+    @staticmethod
+    def _sanitize_error(msg: str) -> str:
+        """Strip internal file paths and Go-level detail from error messages.
+
+        The Go MCP server may include raw ``os.Open`` error strings that leak
+        file-system layout (e.g.  ``open data/raw/gw/99/live.json: no such
+        file or directory``).  This helper rewrites them into user-friendly
+        messages while preserving the essential information.
+        """
+        # Pattern: "open <path>: no such file or directory"
+        m = re.search(r"open\s+\S+:\s*no such file or directory", msg)
+        if m:
+            # Try to extract GW number from the path
+            gw_m = re.search(r"/gw/(\d+)/", msg)
+            if gw_m:
+                return f"No data available for GW{gw_m.group(1)}. The data may not have been fetched yet."
+            return "The requested data file was not found. Try refreshing your data."
+        # Generic: strip anything that looks like a file-system path
+        cleaned = re.sub(r"(?:open|read|stat)\s+\S+\.json:\s*", "", msg).strip()
+        return cleaned or msg
+
     def _call_tool(self, tool_events: List[Dict[str, Any]], name: str, args: Dict[str, Any]) -> Any:
+        """Call an MCP tool and return its result, or an ``{"error": ...}`` dict on failure.
+
+        Error messages from the Go server are sanitised to remove internal file
+        paths before being stored in the result.
+        """
         self._note_tool_use(name, args)
         tool_events.append({"type": "tool_call", "name": name, "arguments": args})
         try:
             result = self.mcp.call_tool(name, args)
         except Exception as exc:
-            err_msg = str(exc)
+            err_msg = self._sanitize_error(str(exc))
             tool_events.append({"type": "tool_error", "name": name, "error": err_msg})
             return {"error": err_msg}
+        # Sanitise errors that arrive inside the result dict
+        if isinstance(result, dict) and "error" in result:
+            result["error"] = self._sanitize_error(str(result["error"]))
         tool_events.append({"type": "tool_result", "name": name, "result": result})
         return result
 
