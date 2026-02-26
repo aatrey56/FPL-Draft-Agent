@@ -307,3 +307,77 @@ class TestTryRoute:
         # Should not propagate exception; should return a user-facing error message
         assert result is not None
         assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# Dedicated tool renderers (#77, #78, #79)
+# ---------------------------------------------------------------------------
+
+class TestSimpleToolRenderers:
+    """Verify that league_entries, ownership_scarcity, and
+    strength_of_schedule return formatted output, not generic 'data is ready'."""
+
+    def setup_method(self) -> None:
+        self.mcp = MagicMock()
+        self.mcp.list_tools.return_value = []
+        self.llm = MagicMock()
+        self.llm.available.return_value = False
+
+        with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
+            self.agent = Agent(self.mcp, self.llm)
+
+        self.agent._session["league_id"] = 14204
+        self.agent._session["entry_id"] = 286192
+
+    def test_league_entries_renders_team_list(self) -> None:
+        self.mcp.call_tool.return_value = {
+            "league_id": 14204,
+            "teams": [
+                {"entry_id": 100, "entry_name": "Boot Gang", "short_name": "BG"},
+                {"entry_id": 200, "entry_name": "Glock Tua", "short_name": "GT"},
+            ],
+        }
+        result = self.agent._try_route("show all teams", [])
+        assert result is not None
+        assert "Boot Gang" in result
+        assert "Glock Tua" in result
+        assert "data is ready" not in result
+
+    def test_ownership_scarcity_renders_breakdown(self) -> None:
+        self.mcp.call_tool.return_value = {
+            "league_id": 14204,
+            "gameweek": 27,
+            "owned_totals": {"gk": 10, "def": 40, "mid": 40, "fwd": 20, "total": 110},
+            "unowned_totals": {"gk": 5, "def": 10, "mid": 15, "fwd": 5, "total": 35},
+            "hoarders": {"mid": [{"entry_name": "Boot Gang", "count": 8}]},
+        }
+        result = self.agent._try_route("player ownership %", [])
+        assert result is not None
+        assert "Owned" in result
+        assert "Free agents" in result
+        assert "data is ready" not in result
+
+    def test_strength_of_schedule_renders_rankings(self) -> None:
+        self.mcp.call_tool.return_value = {
+            "league_id": 14204,
+            "gameweek": 27,
+            "entries": [
+                {
+                    "entry_name": "Boot Gang",
+                    "future_opponent_avg_rank": 3.2,
+                    "future_opponents_top_half": 2,
+                    "future_opponents_bottom_half": 3,
+                },
+                {
+                    "entry_name": "Glock Tua",
+                    "future_opponent_avg_rank": 5.8,
+                    "future_opponents_top_half": 4,
+                    "future_opponents_bottom_half": 1,
+                },
+            ],
+        }
+        result = self.agent._try_route("strength of schedule next 5 gws", [])
+        assert result is not None
+        assert "Boot Gang" in result
+        assert "avg opp rank" in result
+        assert "data is ready" not in result
