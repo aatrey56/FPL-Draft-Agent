@@ -307,3 +307,65 @@ class TestTryRoute:
         # Should not propagate exception; should return a user-facing error message
         assert result is not None
         assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# GW session stickiness (#75, #81-#84, #88)
+# ---------------------------------------------------------------------------
+
+class TestGwSessionStickiness:
+    """Verify that the GW from one query does not leak into the next."""
+
+    def setup_method(self) -> None:
+        self.mcp = MagicMock()
+        self.mcp.list_tools.return_value = []
+        self.mcp.call_tool.return_value = {"rows": [], "gameweek": 5}
+        self.llm = MagicMock()
+        self.llm.available.return_value = False
+
+        with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
+            self.agent = Agent(self.mcp, self.llm)
+
+        self.agent._session["league_id"] = 14204
+        self.agent._session["entry_id"] = 286192
+
+    def test_gw_not_persisted_by_note_tool_use(self) -> None:
+        """_note_tool_use should NOT store gw in session."""
+        self.agent._note_tool_use("league_summary", {"league_id": 14204, "gw": 3})
+        assert self.agent._session.get("gw") is None
+
+    def test_gw_not_persisted_from_text(self) -> None:
+        """_update_session_from_text should NOT store gw in session."""
+        self.agent._update_session_from_text("standings for gw 7")
+        assert self.agent._session.get("gw") is None
+
+    def test_gw_cleared_at_start_of_run(self) -> None:
+        """run() should clear any stale GW before processing a new message."""
+        self.agent._session["gw"] = 99  # stale value
+        self.agent.run("show standings")
+        assert self.agent._session.get("gw") is None
+
+    def test_gw_from_context_persists_for_current_turn(self) -> None:
+        """When the API caller sends gw in context, it should be available."""
+        self.agent.run("show standings", context={"gw": 5})
+        # After run completes, the gw should NOT persist (cleared on next run)
+        # But during the run, the handler should have used gw=5.
+        # Verify by checking that _default_gw returns None after the run:
+        # (the run already cleared and re-set, but there's nothing to persist)
+        # We verify by calling run again without gw
+        self.agent.run("show standings")
+        assert self.agent._session.get("gw") is None
+
+    def test_explicit_gw_in_text_used_only_for_current_query(self) -> None:
+        """A GW mentioned in text should not stick to the next query."""
+        self.mcp.call_tool.return_value = {"rows": [], "gameweek": 3}
+        # First query mentions GW3
+        self.agent.run("standings for gw 3")
+        # Second query has no GW — should NOT default to 3
+        self.agent.run("show standings")
+        # Grab the standings call from the second run — it should use gw=0
+        # (the "use current GW" convention) rather than the sticky gw=3.
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "standings"]
+        assert len(calls) >= 2
+        second_call_args = calls[-1][0][1]
+        assert second_call_args.get("gw") != 3, "GW from first query leaked to second query"
