@@ -413,3 +413,24 @@ class TestTeamNameResolution:
         calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_schedule"]
         assert len(calls) == 1
         assert calls[0][0][1]["entry_id"] == 100
+
+    def test_wins_list_resolves_other_team(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "manager_schedule": {
+                "entry_name": "Boot Gang",
+                "matches": [
+                    {"gameweek": 5, "finished": True, "result": "W"},
+                    {"gameweek": 6, "finished": True, "result": "L"},
+                    {"gameweek": 7, "finished": True, "result": "W"},
+                ],
+            },
+        })
+        result = self.agent._try_route("wins each week for Boot Gang", [])
+        assert result is not None
+        assert "Boot Gang" in result
+        # The handler should have called manager_schedule with Boot Gang's
+        # entry_id (100), not the session default (200).
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_schedule"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 100
