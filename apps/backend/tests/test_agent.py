@@ -431,3 +431,30 @@ class TestRoutingBugs:
         call_args = self.mcp.call_tool.call_args
         tool_args = call_args[0][1]  # second positional arg is the args dict
         assert tool_args.get("player_name") == "Saka"
+
+
+# ---------------------------------------------------------------------------
+# _has_league helper
+# ---------------------------------------------------------------------------
+
+class TestHasLeague:
+    """Verify _has_league returns False when league_id is 0 (not configured)."""
+
+    def test_has_league_false_when_zero(self) -> None:
+        agent = _make_agent()
+        agent._session["league_id"] = None
+        with patch("backend.agent.SETTINGS") as mock_settings:
+            mock_settings.league_id = 0
+            assert agent._has_league() is False
+
+    def test_has_league_true_when_set(self) -> None:
+        agent = _make_agent()
+        agent._session["league_id"] = 14204
+        assert agent._has_league() is True
+
+    def test_has_league_true_from_settings(self) -> None:
+        agent = _make_agent()
+        agent._session["league_id"] = None
+        with patch("backend.agent.SETTINGS") as mock_settings:
+            mock_settings.league_id = 14204
+            assert agent._has_league() is True

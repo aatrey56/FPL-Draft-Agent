@@ -183,6 +183,33 @@ class TestParseChatPayload:
 # Refresh status + trigger endpoints
 # ---------------------------------------------------------------------------
 
+class TestRefreshSkippedNoLeague:
+    """Verify refresh is skipped when league_id=0."""
+
+    def test_startup_refresh_cmd_empty_when_no_league(self):
+        with patch.object(server_module, "SETTINGS") as mock_settings:
+            mock_settings.refresh_cmd_startup = ""
+            mock_settings.league_id = 0
+            cmd = server_module._startup_refresh_cmd()
+        assert cmd == []
+
+    def test_startup_refresh_cmd_populated_when_league_set(self):
+        with patch.object(server_module, "SETTINGS") as mock_settings:
+            mock_settings.refresh_cmd_startup = ""
+            mock_settings.league_id = 14204
+            cmd = server_module._startup_refresh_cmd()
+        assert len(cmd) > 0
+        assert "14204" in " ".join(cmd)
+
+    def test_run_startup_refresh_skips_when_no_league(self, capsys):
+        with patch.object(server_module, "SETTINGS") as mock_settings:
+            mock_settings.refresh_cmd_startup = ""
+            mock_settings.league_id = 0
+            server_module.run_startup_refresh()
+        captured = capsys.readouterr()
+        assert "skipped" in captured.out.lower()
+
+
 class TestRefreshEndpoints:
     """Verify GET /api/refresh/status and POST /api/refresh behaviour."""
 

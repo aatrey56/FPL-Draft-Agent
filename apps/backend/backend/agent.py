@@ -141,6 +141,10 @@ class Agent:
         ],
     }
 
+    def _has_league(self) -> bool:
+        """Return True if a real FPL Draft league is configured (league_id > 0)."""
+        return self._default_league_id() > 0
+
     def _looks_like(self, intent: str, text: str) -> bool:
         """Return True if *text* matches any pattern for *intent*."""
         for pattern in self._INTENT_KEYWORDS.get(intent, []):

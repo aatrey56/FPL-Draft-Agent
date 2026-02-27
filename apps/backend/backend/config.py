@@ -86,8 +86,8 @@ class Settings:
     data_rel: str = _DATA_DIR_REL
     web_dir: str = _WEB_DIR_ABS
     timezone: str = os.getenv("REPORTS_TZ", "America/New_York")
-    league_id: int = field(default_factory=lambda: _require_int_env("LEAGUE_ID"))
-    entry_id: int = field(default_factory=lambda: _require_int_env("ENTRY_ID"))
+    league_id: int = field(default_factory=lambda: int(os.getenv("LEAGUE_ID", "0") or "0"))
+    entry_id: int = field(default_factory=lambda: int(os.getenv("ENTRY_ID", "0") or "0"))
     start_go_server: bool = os.getenv("START_GO_SERVER", "true").lower() in ("1", "true", "yes")
     go_server_cmd: str = os.getenv("GO_SERVER_CMD", "go run ./apps/mcp-server/fpl-server --addr :8080 --path /mcp")
     refresh_cmd: str = os.getenv("CACHE_REFRESH_CMD", "")

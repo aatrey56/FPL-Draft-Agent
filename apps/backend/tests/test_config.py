@@ -23,18 +23,18 @@ def test_settings_defaults_are_populated(monkeypatch) -> None:
     assert settings.entry_id == 22222
 
 
-def test_settings_missing_league_id_raises(monkeypatch) -> None:
+def test_settings_missing_league_id_defaults_to_zero(monkeypatch) -> None:
     monkeypatch.delenv("LEAGUE_ID", raising=False)
     monkeypatch.setenv("ENTRY_ID", "22222")
-    with pytest.raises(ValueError, match="LEAGUE_ID"):
-        Settings()
+    settings = Settings()
+    assert settings.league_id == 0
 
 
-def test_settings_missing_entry_id_raises(monkeypatch) -> None:
+def test_settings_missing_entry_id_defaults_to_zero(monkeypatch) -> None:
     monkeypatch.setenv("LEAGUE_ID", "11111")
     monkeypatch.delenv("ENTRY_ID", raising=False)
-    with pytest.raises(ValueError, match="ENTRY_ID"):
-        Settings()
+    settings = Settings()
+    assert settings.entry_id == 0
 
 
 def test_require_int_env_valid(monkeypatch) -> None:

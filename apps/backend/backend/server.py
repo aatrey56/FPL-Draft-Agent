@@ -97,6 +97,8 @@ def _startup_refresh_cmd() -> List[str]:
     """
     if SETTINGS.refresh_cmd_startup:
         return shlex.split(SETTINGS.refresh_cmd_startup)
+    if not SETTINGS.league_id:
+        return []  # no league configured — skip refresh
     return shlex.split(
         f"go run ./apps/mcp-server/cmd/dev --refresh=all --league {SETTINGS.league_id}"
     )
@@ -152,7 +154,11 @@ def run_startup_refresh() -> None:
     Ensures GW live data, transactions, and bootstrap are always current the
     moment the Web UI becomes usable.  Uses ``--refresh=all`` (no ``--fast``).
     """
-    _run_refresh(_startup_refresh_cmd(), "startup-refresh")
+    cmd = _startup_refresh_cmd()
+    if not cmd:
+        print("[startup-refresh] skipped — no league configured")
+        return
+    _run_refresh(cmd, "startup-refresh")
 
 
 def run_cache_refresh() -> None:
@@ -205,6 +211,8 @@ def _start_cache_scheduler() -> None:
     global _CACHE_SCHEDULER
     if not SETTINGS.refresh_daily:
         return
+    if not SETTINGS.league_id:
+        return  # no league — nothing to schedule
     if _CACHE_SCHEDULER:
         return
     hour, minute = _parse_refresh_time()
