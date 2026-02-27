@@ -458,3 +458,109 @@ class TestHasLeague:
         with patch("backend.agent.SETTINGS") as mock_settings:
             mock_settings.league_id = 14204
             assert agent._has_league() is True
+
+
+# ---------------------------------------------------------------------------
+# EPL summary routing + rendering
+# ---------------------------------------------------------------------------
+
+class TestEPLSummary:
+    """Verify EPL keywords route correctly and renderer produces markdown."""
+
+    def setup_method(self) -> None:
+        self.mcp = MagicMock()
+        self.mcp.list_tools.return_value = []
+        self.llm = MagicMock()
+        self.llm.available.return_value = False
+        with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
+            self.agent = Agent(self.mcp, self.llm)
+
+    def test_epl_keywords_route_to_epl_handler(self) -> None:
+        """'premier league summary' should call epl_fixtures and epl_standings."""
+        self.mcp.call_tool.return_value = {
+            "gameweek": 27,
+            "fixtures": [
+                {"home_short": "ARS", "away_short": "CHE", "home_score": 2,
+                 "away_score": 1, "finished": True, "started": True},
+            ],
+            "standings": [],
+        }
+        result = self.agent._try_route("premier league summary", [])
+        assert result is not None
+        assert "Premier League" in result
+
+        # Verify epl_fixtures was called
+        tool_names = [c[0][0] for c in self.mcp.call_tool.call_args_list]
+        assert "epl_fixtures" in tool_names
+
+    def test_epl_keyword_matches(self) -> None:
+        """Various EPL keywords should all match the epl_summary intent."""
+        for phrase in [
+            "premier league", "epl summary", "epl standings",
+            "prem results", "pl standings", "premier league results",
+        ]:
+            assert self.agent._looks_like("epl_summary", phrase), f"'{phrase}' should match"
+
+    def test_league_summary_without_league_routes_to_epl(self) -> None:
+        """'league summary' without league config should fall back to EPL."""
+        self.agent._session["league_id"] = None
+        self.mcp.call_tool.return_value = {
+            "gameweek": 25, "fixtures": [], "standings": [],
+        }
+        with patch("backend.agent.SETTINGS") as mock_settings:
+            mock_settings.league_id = 0
+            mock_settings.entry_id = 0
+            result = self.agent._try_route("league summary", [])
+        assert result is not None
+        # Should have called EPL tools, not league_summary
+        tool_names = [c[0][0] for c in self.mcp.call_tool.call_args_list]
+        assert "epl_fixtures" in tool_names or "epl_standings" in tool_names
+
+    def test_league_summary_with_league_routes_to_fpl(self) -> None:
+        """'league summary' with league config should use FPL Draft summary."""
+        self.agent._session["league_id"] = 14204
+        self.mcp.call_tool.return_value = {
+            "entries": [], "gameweek": 27, "matches": [],
+        }
+        result = self.agent._try_route("league summary", [])
+        assert result is not None
+        # Should have called league_summary, not epl_fixtures
+        tool_names = [c[0][0] for c in self.mcp.call_tool.call_args_list]
+        assert "league_summary" in tool_names
+
+    def test_render_epl_summary_fixtures_and_standings(self) -> None:
+        """Renderer should produce fixture results + standings table."""
+        agent = _make_agent()
+        fixtures = {
+            "gameweek": 27,
+            "fixtures": [
+                {"home_short": "ARS", "away_short": "CHE",
+                 "home_score": 2, "away_score": 1,
+                 "finished": True, "started": True},
+                {"home_short": "LIV", "away_short": "MCI",
+                 "home_score": 1, "away_score": 0,
+                 "finished": False, "started": True},
+            ],
+        }
+        standings = {
+            "as_of_gw": 27,
+            "standings": [
+                {"pos": 1, "short": "ARS", "played": 27, "won": 20,
+                 "drawn": 4, "lost": 3, "gf": 55, "ga": 20, "gd": 35, "points": 64},
+            ],
+        }
+        result = agent._render_epl_summary(fixtures, standings)
+        assert "GW27" in result
+        assert "ARS 2 - 1 CHE ✓" in result
+        assert "LIV 1 - 0 MCI ⚽" in result
+        assert "| Pos | Team |" in result
+        assert "| 1 | ARS" in result
+
+    def test_render_epl_summary_graceful_on_error(self) -> None:
+        """Renderer should degrade gracefully when either tool fails."""
+        agent = _make_agent()
+        result = agent._render_epl_summary(
+            {"error": "connection refused"},
+            {"error": "connection refused"},
+        )
+        assert "unavailable" in result.lower()

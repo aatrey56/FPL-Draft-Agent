@@ -58,6 +58,10 @@ Available tools and when to use them:
   Use for: "Salah stats", "how many points has X scored each week", "player stats", "X points per gameweek", "weekly breakdown for X".
 - head_to_head: H2H record and match history between two managers.
   Use for: "head to head", "h2h", "record against", "how many times have I beaten X".
+- epl_fixtures: Premier League fixture results for a specific gameweek.
+  Use for: "premier league results", "EPL results", "prem results", "PL fixtures".
+- epl_standings: Current Premier League season standings table.
+  Use for: "premier league standings", "EPL standings", "prem table", "PL table".
 
 Important routing guidance:
 - For "who does X play" / "schedule" / "upcoming match" → manager_schedule.
@@ -138,6 +142,13 @@ class Agent:
         "matchup_summary": [
             (" vs ", "summary"), (" vs ", "recap"),
             (" vs. ", "summary"), (" vs. ", "recap"),
+        ],
+        "epl_summary": [
+            "premier league summary", "premier league standings",
+            "premier league results", "premier league",
+            "epl summary", "epl standings", "epl results", "epl",
+            "prem summary", "prem standings", "prem results",
+            "prem league", "pl summary", "pl standings",
         ],
     }
 
@@ -444,6 +455,12 @@ class Agent:
             out.setdefault("league_id", league_id)
             allowed = {"league_id", "entry_id_a", "entry_name_a", "entry_id_b", "entry_name_b"}
             out = {k: v for k, v in out.items() if k in allowed}
+        if name == "epl_fixtures":
+            out.setdefault("gw", 0)
+            allowed = {"gw"}
+            out = {k: v for k, v in out.items() if k in allowed}
+        if name == "epl_standings":
+            out = {}
         return out
 
     def _default_league_id(self) -> int:
@@ -649,8 +666,14 @@ class Agent:
             return self._handle_player_form(text, tool_events)
         if self._looks_like("standings", lower):
             return self._handle_simple_tool(text, tool_events, "standings", "Standings")
+        # EPL keywords must be checked BEFORE league_summary because
+        # "premier league summary" contains "league summary" as a substring.
+        if self._looks_like("epl_summary", lower):
+            return self._handle_epl_summary(text, tool_events)
         if self._looks_like("league_summary", lower):
-            return self._handle_league_summary(text, tool_events)
+            if self._has_league():
+                return self._handle_league_summary(text, tool_events)
+            return self._handle_epl_summary(text, tool_events)
         if self._looks_like("transactions", lower):
             return self._handle_transactions(text, tool_events)
         if self._looks_like("lineup", lower):
@@ -1575,6 +1598,63 @@ class Agent:
             if not (waiver_in or waiver_out or free_in or free_out or trade_in or trade_out):
                 lines.append("  No transactions.")
             lines.append("")
+        return "\n".join(lines)
+
+    def _handle_epl_summary(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+        """Handle EPL Premier League summary: fixtures + standings."""
+        gw = self._extract_gw(text)
+        fixtures_result = self._call_tool(
+            tool_events, "epl_fixtures", {"gw": gw if gw is not None else 0}
+        )
+        standings_result = self._call_tool(tool_events, "epl_standings", {})
+        return self._render_epl_summary(fixtures_result, standings_result)
+
+    def _render_epl_summary(
+        self, fixtures_result: Any, standings_result: Any
+    ) -> str:
+        """Render combined EPL fixtures + standings as markdown."""
+        lines: List[str] = []
+
+        # ── Fixtures ──
+        if isinstance(fixtures_result, dict) and not fixtures_result.get("error"):
+            gw = fixtures_result.get("gameweek", "?")
+            lines.append(f"**Premier League — GW{gw} Results**")
+            fixtures = fixtures_result.get("fixtures", [])
+            if not fixtures:
+                lines.append("No fixtures found for this gameweek.")
+            for f in fixtures:
+                home = f.get("home_short", "???")
+                away = f.get("away_short", "???")
+                hs = f.get("home_score")
+                a_s = f.get("away_score")
+                if f.get("finished"):
+                    lines.append(f"  {home} {hs} - {a_s} {away} ✓")
+                elif f.get("started"):
+                    lines.append(f"  {home} {hs} - {a_s} {away} ⚽")
+                else:
+                    lines.append(f"  {home} vs {away}")
+            lines.append("")
+        else:
+            lines.append("Fixture results are unavailable right now.")
+            lines.append("")
+
+        # ── Standings ──
+        if isinstance(standings_result, dict) and not standings_result.get("error"):
+            as_of = standings_result.get("as_of_gw", "?")
+            lines.append(f"**Premier League Standings (as of GW{as_of})**")
+            lines.append("| Pos | Team | P | W | D | L | GF | GA | GD | Pts |")
+            lines.append("|-----|------|---|---|---|---|----|----|-----|-----|")
+            for row in standings_result.get("standings", []):
+                lines.append(
+                    f"| {row.get('pos', '')} | {row.get('short', '')} "
+                    f"| {row.get('played', '')} | {row.get('won', '')} "
+                    f"| {row.get('drawn', '')} | {row.get('lost', '')} "
+                    f"| {row.get('gf', '')} | {row.get('ga', '')} "
+                    f"| {row.get('gd', '')} | {row.get('points', '')} |"
+                )
+        else:
+            lines.append("Standings data is unavailable right now.")
+
         return "\n".join(lines)
 
     def _handle_simple_tool(self, text: str, tool_events: List[Dict[str, Any]], tool: str, title: str) -> str:
