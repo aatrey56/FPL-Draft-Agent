@@ -59,8 +59,8 @@ func writeGameJSON(t *testing.T, dir string, currentEvent int) {
 	writeJSON(t, filepath.Join(dir, "game", "game.json"), map[string]any{"current_event": currentEvent})
 }
 
-// writeLeagueDetails writes league/{leagueID}/details.json.
-func writeLeagueDetails(t *testing.T, dir string, leagueID int, entries []any, matches []any) {
+// writeLeagueDetailsFixture writes league/{leagueID}/details.json.
+func writeLeagueDetailsFixture(t *testing.T, dir string, leagueID int, entries []any, matches []any) {
 	t.Helper()
 	writeJSON(t, filepath.Join(dir, fmt.Sprintf("league/%d/details.json", leagueID)), map[string]any{
 		"league_entries": entries,
@@ -97,7 +97,7 @@ func TestBuildCurrentRoster(t *testing.T) {
 		dir, cfg := tmpCfg(t)
 		writeBootstrap(t, dir)
 		writeGameJSON(t, dir, 26)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		writePicks(t, dir, 200, 26, 15) // positions 1-15; 1-11=starters, 12-15=bench
 
 		entryID := 200
@@ -127,7 +127,7 @@ func TestBuildCurrentRoster(t *testing.T) {
 		dir, cfg := tmpCfg(t)
 		writeBootstrap(t, dir)
 		writeGameJSON(t, dir, 26)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		writePicks(t, dir, 200, 26, 1)
 
 		name := "Alpha FC"
@@ -147,7 +147,7 @@ func TestBuildCurrentRoster(t *testing.T) {
 		dir, cfg := tmpCfg(t)
 		writeBootstrap(t, dir)
 		writeGameJSON(t, dir, 26)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		writePicks(t, dir, 200, 26, 1)
 
 		name := "AFC" // short name for Alpha FC
@@ -170,7 +170,7 @@ func TestBuildCurrentRoster(t *testing.T) {
 
 	t.Run("EntryNameNotFound", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		name := "Unknown FC"
 		_, err := buildCurrentRoster(cfg, CurrentRosterArgs{LeagueID: 100, EntryName: &name})
 		if err == nil {
@@ -180,7 +180,7 @@ func TestBuildCurrentRoster(t *testing.T) {
 
 	t.Run("NoEntryIdentifier", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		_, err := buildCurrentRoster(cfg, CurrentRosterArgs{LeagueID: 100})
 		if err == nil {
 			t.Fatal("expected error when neither entry_id nor entry_name supplied")
@@ -288,7 +288,7 @@ func TestBuildHeadToHead(t *testing.T) {
 
 	t.Run("WDLAccumulation", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
-		writeLeagueDetails(t, dir, 100, twoEntries, []any{
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, []any{
 			// GW1: Alpha(le=1) vs Beta(le=2), Alpha wins 50-40.
 			map[string]any{"event": 1, "finished": true, "league_entry_1": 1, "league_entry_1_points": 50, "league_entry_2": 2, "league_entry_2_points": 40},
 			// GW2: Beta(le=2) vs Alpha(le=1), Alpha still wins 60-55 (Alpha is entry_2).
@@ -322,7 +322,7 @@ func TestBuildHeadToHead(t *testing.T) {
 	t.Run("ScoreAssignmentWhenAIsEntry2", func(t *testing.T) {
 		// Verify scores are correctly swapped when A is league_entry_2.
 		dir, cfg := tmpCfg(t)
-		writeLeagueDetails(t, dir, 100, twoEntries, []any{
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, []any{
 			// Alpha (le=1) is entry_2 in this match (Beta is entry_1).
 			map[string]any{"event": 1, "finished": true, "league_entry_1": 2, "league_entry_1_points": 40, "league_entry_2": 1, "league_entry_2_points": 70},
 		})
@@ -351,7 +351,7 @@ func TestBuildHeadToHead(t *testing.T) {
 	t.Run("ChronologicalSort", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
 		// Write matches intentionally out of order.
-		writeLeagueDetails(t, dir, 100, twoEntries, []any{
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, []any{
 			map[string]any{"event": 5, "finished": true, "league_entry_1": 1, "league_entry_1_points": 50, "league_entry_2": 2, "league_entry_2_points": 40},
 			map[string]any{"event": 2, "finished": true, "league_entry_1": 2, "league_entry_1_points": 60, "league_entry_2": 1, "league_entry_2_points": 55},
 			map[string]any{"event": 3, "finished": true, "league_entry_1": 1, "league_entry_1_points": 45, "league_entry_2": 2, "league_entry_2_points": 50},
@@ -371,7 +371,7 @@ func TestBuildHeadToHead(t *testing.T) {
 
 	t.Run("ResolveByName", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
-		writeLeagueDetails(t, dir, 100, twoEntries, []any{
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, []any{
 			map[string]any{"event": 1, "finished": true, "league_entry_1": 1, "league_entry_1_points": 60, "league_entry_2": 2, "league_entry_2_points": 50},
 		})
 		nameA, nameB := "Alpha FC", "Beta FC"
@@ -394,7 +394,7 @@ func TestBuildHeadToHead(t *testing.T) {
 
 	t.Run("EntryNameNotFound", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		name := "Unknown FC"
 		_, err := buildHeadToHead(cfg, HeadToHeadArgs{LeagueID: 100, EntryNameA: &name})
 		if err == nil {
@@ -404,7 +404,7 @@ func TestBuildHeadToHead(t *testing.T) {
 
 	t.Run("UnfinishedMatchNotCounted", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
-		writeLeagueDetails(t, dir, 100, twoEntries, []any{
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, []any{
 			// Unfinished — should not affect W/D/L record.
 			map[string]any{"event": 1, "finished": false, "league_entry_1": 1, "league_entry_1_points": 70, "league_entry_2": 2, "league_entry_2_points": 50},
 		})
@@ -416,8 +416,10 @@ func TestBuildHeadToHead(t *testing.T) {
 		if out.TeamA.Wins != 0 || out.TeamA.Draws != 0 || out.TeamA.Losses != 0 {
 			t.Errorf("unfinished match should not count in record: A=%+v", out.TeamA)
 		}
-		if len(out.Matches) != 1 {
-			t.Errorf("match should still appear in list: len=%d", len(out.Matches))
+		// Unfinished matches are filtered from the output list; only
+		// completed matches appear so callers only see real results.
+		if len(out.Matches) != 0 {
+			t.Errorf("unfinished match should not appear in list: len=%d", len(out.Matches))
 		}
 	})
 }
@@ -432,7 +434,7 @@ func TestBuildManagerSeason(t *testing.T) {
 
 	t.Run("RecordHighLowAvg", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
-		writeLeagueDetails(t, dir, 100, twoEntries, []any{
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, []any{
 			// GW1: Alpha(le=1) wins 80-60.
 			map[string]any{"event": 1, "finished": true, "league_entry_1": 1, "league_entry_1_points": 80, "league_entry_2": 2, "league_entry_2_points": 60},
 			// GW2: Alpha(le=2) loses 70-45.
@@ -470,7 +472,7 @@ func TestBuildManagerSeason(t *testing.T) {
 	t.Run("ChronologicalSort", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
 		// Matches stored out of order.
-		writeLeagueDetails(t, dir, 100, twoEntries, []any{
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, []any{
 			map[string]any{"event": 5, "finished": true, "league_entry_1": 1, "league_entry_1_points": 60, "league_entry_2": 2, "league_entry_2_points": 50},
 			map[string]any{"event": 2, "finished": true, "league_entry_1": 1, "league_entry_1_points": 55, "league_entry_2": 2, "league_entry_2_points": 60},
 		})
@@ -488,7 +490,7 @@ func TestBuildManagerSeason(t *testing.T) {
 
 	t.Run("ResolveByName", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
-		writeLeagueDetails(t, dir, 100, twoEntries, []any{
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, []any{
 			map[string]any{"event": 1, "finished": true, "league_entry_1": 1, "league_entry_1_points": 70, "league_entry_2": 2, "league_entry_2_points": 50},
 		})
 		name := "Alpha FC"
@@ -504,7 +506,7 @@ func TestBuildManagerSeason(t *testing.T) {
 	t.Run("NoFinishedMatches", func(t *testing.T) {
 		// All high/low/avg fields should default to zero when no finished matches exist.
 		dir, cfg := tmpCfg(t)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		entryID := 200
 		out, err := buildManagerSeason(cfg, ManagerSeasonArgs{LeagueID: 100, EntryID: &entryID})
 		if err != nil {
@@ -525,10 +527,64 @@ func TestBuildManagerSeason(t *testing.T) {
 
 	t.Run("MissingEntryIdentifier", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		_, err := buildManagerSeason(cfg, ManagerSeasonArgs{LeagueID: 100})
 		if err == nil {
 			t.Fatal("expected error when neither entry_id nor entry_name supplied")
+		}
+	})
+
+	// Regression: unfinished future matches must not appear in the Gameweeks list
+	// (previously all 38 GWs including unplayed ones were returned with score=0, result=D).
+	t.Run("UnfinishedMatchesExcludedFromGameweeksList", func(t *testing.T) {
+		dir, cfg := tmpCfg(t)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, []any{
+			map[string]any{"event": 1, "finished": true, "league_entry_1": 1, "league_entry_1_points": 60, "league_entry_2": 2, "league_entry_2_points": 50},
+			map[string]any{"event": 2, "finished": false, "league_entry_1": 1, "league_entry_1_points": 0, "league_entry_2": 2, "league_entry_2_points": 0},
+		})
+		entryID := 200
+		out, err := buildManagerSeason(cfg, ManagerSeasonArgs{LeagueID: 100, EntryID: &entryID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Only GW1 (finished) should appear; GW2 (unfinished/future) must be excluded.
+		if len(out.Gameweeks) != 1 {
+			t.Errorf("expected 1 finished gameweek in list, got %d", len(out.Gameweeks))
+		}
+		if len(out.Gameweeks) > 0 && out.Gameweeks[0].Gameweek != 1 {
+			t.Errorf("expected GW1 in list, got GW%d", out.Gameweeks[0].Gameweek)
+		}
+	})
+
+	// Edge case: all matches are unfinished (e.g. pre-season or brand-new league).
+	// Sentinel values for highestPts/lowestPts must be zeroed out so no garbage
+	// values appear in the JSON output.
+	t.Run("AllUnfinishedProducesEmptyOutput", func(t *testing.T) {
+		dir, cfg := tmpCfg(t)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, []any{
+			map[string]any{"event": 1, "finished": false, "league_entry_1": 1, "league_entry_1_points": 0, "league_entry_2": 2, "league_entry_2_points": 0},
+			map[string]any{"event": 2, "finished": false, "league_entry_1": 1, "league_entry_1_points": 0, "league_entry_2": 2, "league_entry_2_points": 0},
+		})
+		entryID := 200
+		out, err := buildManagerSeason(cfg, ManagerSeasonArgs{LeagueID: 100, EntryID: &entryID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Gameweeks) != 0 {
+			t.Errorf("expected 0 gameweeks, got %d", len(out.Gameweeks))
+		}
+		if out.Record.Wins != 0 || out.Record.Draws != 0 || out.Record.Losses != 0 {
+			t.Errorf("expected 0-0-0 record, got %+v", out.Record)
+		}
+		// Sentinel guards must zero out highestPts/lowestPts when no GW is finished.
+		if out.HighestPts != 0 {
+			t.Errorf("HighestPts=%d want 0 when all matches are unfinished", out.HighestPts)
+		}
+		if out.LowestPts != 0 {
+			t.Errorf("LowestPts=%d want 0 when all matches are unfinished", out.LowestPts)
+		}
+		if out.AvgScore != 0.0 {
+			t.Errorf("AvgScore=%f want 0.0 when all matches are unfinished", out.AvgScore)
 		}
 	})
 }
@@ -560,7 +616,8 @@ func TestParseFloat(t *testing.T) {
 
 func TestBuildPlayerGWStats(t *testing.T) {
 	// liveEntry builds the per-element live stats object.
-	liveEntry := func(pts int, xg, xa string) map[string]any {
+	// expected_goals and expected_assists are float64, matching the FPL API response.
+	liveEntry := func(pts int, xg, xa float64) map[string]any {
 		return map[string]any{
 			"stats": map[string]any{
 				"minutes": 90, "total_points": pts,
@@ -576,7 +633,7 @@ func TestBuildPlayerGWStats(t *testing.T) {
 		writeGameJSON(t, dir, 3)
 		for gw := 1; gw <= 3; gw++ {
 			writeJSON(t, filepath.Join(dir, fmt.Sprintf("gw/%d/live.json", gw)), map[string]any{
-				"elements": map[string]any{"1": liveEntry(gw*4, "0.5", "0.3")},
+				"elements": map[string]any{"1": liveEntry(gw*4, 0.5, 0.3)},
 			})
 		}
 		name := "Salah"
@@ -606,7 +663,7 @@ func TestBuildPlayerGWStats(t *testing.T) {
 		writeBootstrap(t, dir)
 		writeGameJSON(t, dir, 1)
 		writeJSON(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
-			"elements": map[string]any{"3": liveEntry(6, "0.1", "0.6")},
+			"elements": map[string]any{"3": liveEntry(6, 0.1, 0.6)},
 		})
 		name := "Arnold"
 		out, err := buildPlayerGWStats(cfg, PlayerGWStatsArgs{PlayerName: &name})
@@ -624,7 +681,7 @@ func TestBuildPlayerGWStats(t *testing.T) {
 		writeBootstrap(t, dir)
 		for gw := 1; gw <= 5; gw++ {
 			writeJSON(t, filepath.Join(dir, fmt.Sprintf("gw/%d/live.json", gw)), map[string]any{
-				"elements": map[string]any{"1": liveEntry(gw*3, "0.0", "0.0")},
+				"elements": map[string]any{"1": liveEntry(gw*3, 0.0, 0.0)},
 			})
 		}
 		startGW, endGW := 2, 3
@@ -645,12 +702,12 @@ func TestBuildPlayerGWStats(t *testing.T) {
 		}
 	})
 
-	t.Run("XGParsedFromString", func(t *testing.T) {
+	t.Run("XGAndXAAsFloat64", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
 		writeBootstrap(t, dir)
 		writeGameJSON(t, dir, 1)
 		writeJSON(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
-			"elements": map[string]any{"1": liveEntry(10, "0.75", "0.50")},
+			"elements": map[string]any{"1": liveEntry(10, 0.75, 0.50)},
 		})
 		id := 1
 		gw := 1
@@ -746,7 +803,7 @@ func TestBuildTransactionAnalysis(t *testing.T) {
 	t.Run("FiltersUnapprovedTransactions", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
 		writeBootstrap(t, dir)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		writeJSON(t, filepath.Join(dir, "league/100/transactions.json"), map[string]any{
 			"transactions": []any{
 				// Approved waiver → included.
@@ -771,7 +828,7 @@ func TestBuildTransactionAnalysis(t *testing.T) {
 	t.Run("FreeAgentTransactionIncluded", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
 		writeBootstrap(t, dir)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		writeJSON(t, filepath.Join(dir, "league/100/transactions.json"), map[string]any{
 			"transactions": []any{
 				// kind="f" (free agent) should be included.
@@ -791,7 +848,7 @@ func TestBuildTransactionAnalysis(t *testing.T) {
 		// Add Salah (MID=3), drop Haaland (FWD=4).
 		dir, cfg := tmpCfg(t)
 		writeBootstrap(t, dir)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		writeJSON(t, filepath.Join(dir, "league/100/transactions.json"), map[string]any{
 			"transactions": []any{
 				map[string]any{"entry": 200, "element_in": 1, "element_out": 2, "event": 26, "kind": "f", "result": "a"},
@@ -816,7 +873,7 @@ func TestBuildTransactionAnalysis(t *testing.T) {
 		// Salah added by both teams; Haaland added once.
 		dir, cfg := tmpCfg(t)
 		writeBootstrap(t, dir)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		writeJSON(t, filepath.Join(dir, "league/100/transactions.json"), map[string]any{
 			"transactions": []any{
 				map[string]any{"entry": 200, "element_in": 1, "element_out": 3, "event": 26, "kind": "w", "result": "a"},
@@ -842,7 +899,7 @@ func TestBuildTransactionAnalysis(t *testing.T) {
 	t.Run("ManagerActivityGroupedByEntry", func(t *testing.T) {
 		dir, cfg := tmpCfg(t)
 		writeBootstrap(t, dir)
-		writeLeagueDetails(t, dir, 100, twoEntries, nil)
+		writeLeagueDetailsFixture(t, dir, 100, twoEntries, nil)
 		writeJSON(t, filepath.Join(dir, "league/100/transactions.json"), map[string]any{
 			"transactions": []any{
 				map[string]any{"entry": 200, "element_in": 1, "element_out": 2, "event": 26, "kind": "w", "result": "a"},

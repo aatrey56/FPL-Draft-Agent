@@ -14,13 +14,13 @@ type LiveStats struct {
 	TotalPoints int `json:"total_points"`
 }
 
+// PlayerPoints holds the per-player scoring breakdown for one gameweek.
+// FPL Draft has no captain mechanic, so points are always raw (no multiplier).
 type PlayerPoints struct {
-	Element    int `json:"element"`
-	Position   int `json:"position"`
-	Minutes    int `json:"minutes"`
-	Points     int `json:"points"`
-	Multiplier int `json:"multiplier"`
-	Total      int `json:"total"`
+	Element  int `json:"element"`
+	Position int `json:"position"`
+	Minutes  int `json:"minutes"`
+	Points   int `json:"points"`
 }
 
 type Result struct {
@@ -42,15 +42,13 @@ func BuildResult(leagueID int, entryID int, gw int, snap *ledger.EntrySnapshot, 
 		}
 		live := liveByElement[p.Element]
 		pp := PlayerPoints{
-			Element:    p.Element,
-			Position:   p.Position,
-			Minutes:    live.Minutes,
-			Points:     live.TotalPoints,
-			Multiplier: p.Multiplier,
-			Total:      live.TotalPoints * p.Multiplier,
+			Element:  p.Element,
+			Position: p.Position,
+			Minutes:  live.Minutes,
+			Points:   live.TotalPoints,
 		}
 		players = append(players, pp)
-		total += pp.Total
+		total += pp.Points
 	}
 
 	return &Result{

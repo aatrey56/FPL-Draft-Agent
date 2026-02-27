@@ -24,6 +24,9 @@ def _current_gw(client: MCPClient) -> int:
 
 
 def run_tuesday_reports() -> None:
+    if not SETTINGS.league_id or not SETTINGS.entry_id:
+        print("[scheduler] skipping Tuesday reports — no league/entry configured")
+        return
     client = MCPClient(SETTINGS.mcp_url, SETTINGS.mcp_api_key)
     llm = LLMClient()
     league_id = SETTINGS.league_id
@@ -35,6 +38,9 @@ def run_tuesday_reports() -> None:
 
 
 def run_friday_reports() -> None:
+    if not SETTINGS.league_id or not SETTINGS.entry_id:
+        print("[scheduler] skipping Friday reports — no league/entry configured")
+        return
     client = MCPClient(SETTINGS.mcp_url, SETTINGS.mcp_api_key)
     llm = LLMClient()
     league_id = SETTINGS.league_id

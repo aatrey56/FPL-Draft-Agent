@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 
 from dotenv import load_dotenv
@@ -42,6 +42,25 @@ def _resolve_dir(raw: str, repo_root: str) -> tuple[str, str]:
     return abs_path, value
 
 
+def _require_int_env(key: str) -> int:
+    """Read a required integer environment variable.
+
+    Raises ValueError at startup if the variable is unset or not a valid integer,
+    so misconfiguration is caught immediately rather than silently producing
+    results for the wrong league or manager.
+    """
+    value = os.getenv(key, "").strip()
+    if not value:
+        raise ValueError(
+            f"{key} environment variable is required but not set. "
+            f"Add it to your .env file (e.g. {key}=12345)."
+        )
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(f"{key} must be an integer, got: {value!r}") from None
+
+
 # Load .env from repo root if present
 load_dotenv(os.path.join(_INITIAL_ROOT, ".env"))
 
@@ -67,14 +86,21 @@ class Settings:
     data_rel: str = _DATA_DIR_REL
     web_dir: str = _WEB_DIR_ABS
     timezone: str = os.getenv("REPORTS_TZ", "America/New_York")
-    league_id: int = int(os.getenv("LEAGUE_ID", "14204"))
-    entry_id: int = int(os.getenv("ENTRY_ID", "286192"))
+    league_id: int = field(default_factory=lambda: int(os.getenv("LEAGUE_ID", "0") or "0"))
+    entry_id: int = field(default_factory=lambda: int(os.getenv("ENTRY_ID", "0") or "0"))
     start_go_server: bool = os.getenv("START_GO_SERVER", "true").lower() in ("1", "true", "yes")
     go_server_cmd: str = os.getenv("GO_SERVER_CMD", "go run ./apps/mcp-server/fpl-server --addr :8080 --path /mcp")
     refresh_cmd: str = os.getenv("CACHE_REFRESH_CMD", "")
+    # Optional override for the startup-specific refresh command.  If set, this
+    # command is used instead of the auto-generated `--refresh=all` command when
+    # the backend starts.  Leave unset to use the safe default (full refresh).
+    refresh_cmd_startup: str = os.getenv("CACHE_REFRESH_CMD_STARTUP", "")
     refresh_on_start: bool = os.getenv("CACHE_REFRESH_ON_START", "true").lower() in ("1", "true", "yes")
     refresh_daily: bool = os.getenv("CACHE_REFRESH_DAILY", "true").lower() in ("1", "true", "yes")
     refresh_time: str = os.getenv("CACHE_REFRESH_TIME", "19:00")
+    # CACHE_REFRESH_FAST only applies to the *daily scheduled* refresh.
+    # The startup refresh always does a full fetch (--refresh=all) regardless of
+    # this flag so that stale GW live data is never served after a restart.
     refresh_fast: bool = os.getenv("CACHE_REFRESH_FAST", "true").lower() in ("1", "true", "yes")
 
 
