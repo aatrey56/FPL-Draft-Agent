@@ -664,12 +664,13 @@ class Agent:
             return self._handle_fixtures(text, tool_events)
         if self._looks_like("player_form", lower):
             return self._handle_player_form(text, tool_events)
-        if self._looks_like("standings", lower):
-            return self._handle_simple_tool(text, tool_events, "standings", "Standings")
-        # EPL keywords must be checked BEFORE league_summary because
-        # "premier league summary" contains "league summary" as a substring.
+        # EPL keywords must be checked BEFORE standings and league_summary
+        # because "prem standings" contains "standings" and
+        # "premier league summary" contains "league summary" as substrings.
         if self._looks_like("epl_summary", lower):
             return self._handle_epl_summary(text, tool_events)
+        if self._looks_like("standings", lower):
+            return self._handle_simple_tool(text, tool_events, "standings", "Standings")
         if self._looks_like("league_summary", lower):
             if self._has_league():
                 return self._handle_league_summary(text, tool_events)
