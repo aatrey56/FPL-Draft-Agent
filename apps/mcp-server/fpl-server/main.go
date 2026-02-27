@@ -445,6 +445,11 @@ func main() {
 		return toolJSONBytes(b), nil, nil
 	})
 
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "game_status",
+		Description: "Current game state: GW progress, deadlines (waivers/trades/lineup lock), fixture status, points finality",
+	}, gameStatusHandler(cfg))
+
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
 	}, &mcp.StreamableHTTPOptions{JSONResponse: true})
@@ -738,6 +743,16 @@ func toolJSON(res []byte, err error) (*mcp.CallToolResult, any, error) {
 		return toolError(err), nil, nil
 	}
 	return toolJSONBytes(res), nil, nil
+}
+
+// toolMarshal JSON-encodes v and returns a tool result. If marshaling fails
+// the error is surfaced as a structured tool error.
+func toolMarshal(v any) (*mcp.CallToolResult, any, error) {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return toolError(fmt.Errorf("marshal response: %w", err)), nil, nil
+	}
+	return toolJSONBytes(b), nil, nil
 }
 
 func toolJSONBytes(res []byte) *mcp.CallToolResult {
