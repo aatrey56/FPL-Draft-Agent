@@ -62,6 +62,8 @@ Available tools and when to use them:
   Use for: "premier league results", "EPL results", "prem results", "PL fixtures".
 - epl_standings: Current Premier League season standings table.
   Use for: "premier league standings", "EPL standings", "prem table", "PL table".
+- game_status: Current game state — GW progress, deadlines (waivers/trades/lineup lock), fixture status, points finality.
+  Use for: "when are waivers due", "when's the next game", "are points final", "when does free agency end".
 
 Important routing guidance:
 - For "who does X play" / "schedule" / "upcoming match" → manager_schedule.
@@ -73,6 +75,7 @@ Important routing guidance:
 - For "what positions/players did people add/drop this week" → transaction_analysis.
 - For "how has player X done each week" / "player X stats by gameweek" → player_gw_stats.
 - For "head to head" / "h2h" / "record against" → head_to_head.
+- For "when are waivers due" / "next deadline" / "are points official" / "when's the next game" → game_status.
 - Never output element IDs. Always use player names.
 - If required arguments are missing or ambiguous, ask a follow-up using action=final.
 - Never pass null values in arguments. Omit missing fields instead.
@@ -84,6 +87,13 @@ Example tool calls:
 {"action":"tool","name":"transaction_analysis","arguments":{"league_id":14204,"gw":0}}
 {"action":"tool","name":"player_gw_stats","arguments":{"player_name":"Salah"}}
 {"action":"tool","name":"head_to_head","arguments":{"league_id":14204,"entry_name_a":"Team A","entry_name_b":"Team B"}}
+
+Temporal awareness rules:
+- A "Game Status" section is injected into every prompt with real-time deadlines and fixture progress.
+- When discussing points, note whether they are FINAL or LIVE (unofficial, subject to change).
+- If asked about deadlines, use the times from Game Status — do not guess.
+- All times shown to the user should be in their local timezone (already converted in Game Status).
+- "Free agency" runs from when waivers are processed until the next GW deadline (lineup lock).
 """
 
 
@@ -149,6 +159,15 @@ class Agent:
             "epl summary", "epl standings", "epl results", "epl",
             "prem summary", "prem standings", "prem results",
             "prem league", "pl summary", "pl standings",
+        ],
+        "game_status": [
+            "when are waivers", "waivers due", "waiver deadline",
+            "when's the next game", "next game", "next kickoff",
+            "when does the gameweek", "next deadline", "lineup lock",
+            "are points final", "are points official", "points finalized",
+            "is the gameweek finished", "is the gw done", "gw finished",
+            "free agency", "when does free agency",
+            "game status", "when does gw",
         ],
     }
 
@@ -226,6 +245,9 @@ class Agent:
         tools = self.mcp.list_tools()
         tool_list = "\n".join([f"- {t.name}: {t.description}" for t in tools])
         prompt_parts: List[str] = [f"Available tools:\n{tool_list}\n", self._render_session_context()]
+        game_context = self._fetch_game_context()
+        if game_context:
+            prompt_parts.append(game_context)
         history_block = self._render_history()
         if history_block:
             prompt_parts.append(history_block)
@@ -461,6 +483,8 @@ class Agent:
             out = {k: v for k, v in out.items() if k in allowed}
         if name == "epl_standings":
             out = {}
+        if name == "game_status":
+            out = {}
         return out
 
     def _default_league_id(self) -> int:
@@ -634,6 +658,8 @@ class Agent:
         lower = text.lower()
 
         # ---- New tools (higher priority — check before broad existing patterns) ----
+        if self._looks_like("game_status", lower):
+            return self._handle_game_status(text, tool_events)
         if self._looks_like("draft_picks", lower):
             return self._handle_draft_picks(text, tool_events)
         if self._looks_like("player_gw_stats", lower):
@@ -1670,6 +1696,155 @@ class Agent:
         if result:
             return f"{title} data is ready. Ask for a specific team or detail if you want a summary."
         return f"{title} data is unavailable."
+
+    # ---- game_status tool integration ----
+
+    def _handle_game_status(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+        """Fast-path handler for game status queries."""
+        result = self._call_tool(tool_events, "game_status", {})
+        if not isinstance(result, dict):
+            return "Game status is unavailable right now."
+        return self._render_game_status_response(result)
+
+    def _render_game_status_response(self, data: Dict[str, Any]) -> str:
+        """Format game_status tool result into a user-friendly markdown response."""
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(SETTINGS.timezone)
+        now = datetime.now(tz)
+
+        def _fmt_time(iso: str) -> str:
+            """Convert UTC ISO string to local time like 'Fri Feb 27 at 01:30 PM EST'."""
+            if not iso:
+                return "N/A"
+            try:
+                dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
+                return dt.strftime("%a %b %d at %I:%M %p %Z")
+            except (ValueError, TypeError):
+                return iso
+
+        def _countdown(iso: str) -> str:
+            """Return a human-readable countdown like '3d 2h from now' or '1h ago'."""
+            if not iso:
+                return ""
+            try:
+                dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
+                delta = dt - now
+                total_seconds = int(delta.total_seconds())
+                if total_seconds < 0:
+                    total_seconds = abs(total_seconds)
+                    suffix = "ago"
+                else:
+                    suffix = "from now"
+                days = total_seconds // 86400
+                hours = (total_seconds % 86400) // 3600
+                minutes = (total_seconds % 3600) // 60
+                parts = []
+                if days:
+                    parts.append(f"{days}d")
+                if hours:
+                    parts.append(f"{hours}h")
+                if minutes and not days:
+                    parts.append(f"{minutes}m")
+                return f" ({' '.join(parts)} {suffix})" if parts else ""
+            except (ValueError, TypeError):
+                return ""
+
+        gw = data.get("current_gw", "?")
+        points = data.get("points_status", "unknown")
+        finished = data.get("current_gw_finished", False)
+        fixtures = data.get("current_gw_fixtures", {})
+        waivers_processed = data.get("waivers_processed", False)
+
+        lines = [f"**Gameweek {gw} — Points: {points.upper()}**"]
+
+        if points == "live":
+            total = fixtures.get("total", 0)
+            started = fixtures.get("started", 0)
+            fin = fixtures.get("finished", 0)
+            lines.append(f"Fixtures: {fin} finished, {started - fin} in progress, {total - started} upcoming")
+        elif points == "final":
+            lines.append("All fixtures complete. Points are official.")
+        else:
+            total = fixtures.get("total", 0)
+            if total:
+                lines.append(f"{total} fixtures scheduled, none started yet.")
+
+        lines.append("")
+        lines.append("**Upcoming Deadlines**")
+        deadline = data.get("next_deadline", "")
+        waivers_due = data.get("next_waivers_due", "")
+        trades_due = data.get("next_trades_due", "")
+        kickoff = data.get("next_gw_first_kickoff", "")
+        next_gw = data.get("next_gw", "?")
+
+        lines.append(f"- Trades due: {_fmt_time(trades_due)}{_countdown(trades_due)}")
+        lines.append(f"- Waivers due: {_fmt_time(waivers_due)}{_countdown(waivers_due)}")
+        lines.append(f"- GW{next_gw} deadline (lineup lock): {_fmt_time(deadline)}{_countdown(deadline)}")
+        if kickoff:
+            lines.append(f"- First kickoff: {_fmt_time(kickoff)}{_countdown(kickoff)}")
+
+        lines.append("")
+        if waivers_processed:
+            lines.append("Waivers: processed (free agency open)")
+        else:
+            lines.append("Waivers: pending")
+
+        return "\n".join(lines)
+
+    def _fetch_game_context(self) -> str:
+        """Fetch game_status and return a terse text block for the LLM system prompt.
+
+        Returns empty string on failure so the agent degrades gracefully.
+        """
+        try:
+            result = self.mcp.call_tool("game_status", {})
+        except Exception:
+            return ""
+        if not isinstance(result, dict):
+            return ""
+        return self._render_game_context(result)
+
+    def _render_game_context(self, data: Dict[str, Any]) -> str:
+        """Convert game_status result into a terse context block for LLM prompt injection."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(SETTINGS.timezone)
+        now = datetime.now(tz)
+
+        def _short(iso: str) -> str:
+            if not iso:
+                return "N/A"
+            try:
+                dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
+                return dt.strftime("%a %b %d at %I:%M %p %Z")
+            except (ValueError, TypeError):
+                return iso
+
+        gw = data.get("current_gw", "?")
+        points = data.get("points_status", "unknown")
+        next_gw = data.get("next_gw", "?")
+        waivers_processed = data.get("waivers_processed", False)
+
+        lines = [
+            "Game Status:",
+            f"Current time: {now.strftime('%a %b %d, %Y %I:%M %p %Z')}",
+            f"Current GW: {gw}",
+            f"Points: {points.capitalize()}",
+            f"Next GW deadline (lineup lock): {_short(data.get('next_deadline', ''))}",
+            f"Waivers due: {_short(data.get('next_waivers_due', ''))}",
+            f"Trades due: {_short(data.get('next_trades_due', ''))}",
+        ]
+        kickoff = data.get("next_gw_first_kickoff", "")
+        if kickoff:
+            lines.append(f"GW{next_gw} first kickoff: {_short(kickoff)}")
+        if waivers_processed:
+            lines.append("Waivers: processed (free agency open)")
+        else:
+            lines.append("Waivers: pending")
+        return "\n".join(lines)
 
     def _load_element_map(self) -> Dict[int, str]:
         if self._element_name_cache is not None:

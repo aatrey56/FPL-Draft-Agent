@@ -564,3 +564,67 @@ class TestEPLSummary:
             {"error": "connection refused"},
         )
         assert "unavailable" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Game Status routing and handler
+# ---------------------------------------------------------------------------
+
+class TestGameStatusRouting:
+    """Tests for the game_status tool integration in the agent."""
+
+    def setup_method(self) -> None:
+        self.mcp = MagicMock()
+        self.mcp.list_tools.return_value = []
+        self.mcp.call_tool.return_value = {
+            "current_gw": 28,
+            "current_gw_finished": False,
+            "next_gw": 29,
+            "waivers_processed": True,
+            "processing_status": "n",
+            "next_deadline": "2026-03-07T18:30:00Z",
+            "next_waivers_due": "2026-03-06T18:30:00Z",
+            "next_trades_due": "2026-03-05T18:30:00Z",
+            "next_gw_first_kickoff": "2026-03-07T20:00:00Z",
+            "current_gw_fixtures": {"total": 10, "started": 3, "finished": 1},
+            "points_status": "live",
+        }
+        llm = MagicMock()
+        llm.available.return_value = False
+        with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
+            self.agent = Agent(self.mcp, llm)
+
+    def test_looks_like_waivers_due(self) -> None:
+        assert self.agent._looks_like("game_status", "when are waivers due")
+
+    def test_looks_like_next_deadline(self) -> None:
+        assert self.agent._looks_like("game_status", "next deadline")
+
+    def test_looks_like_no_false_positive_standings(self) -> None:
+        assert not self.agent._looks_like("game_status", "show standings")
+
+    def test_handle_game_status_returns_deadline_info(self) -> None:
+        result = self.agent._handle_game_status("when are waivers due", [])
+        assert "Gameweek 28" in result
+        assert "LIVE" in result
+        assert "Waivers due:" in result
+        assert "free agency open" in result
+
+    def test_apply_defaults_game_status(self) -> None:
+        out = self.agent._apply_defaults("game_status", {"league_id": 999})
+        assert out == {}
+
+    def test_fetch_game_context_returns_empty_on_failure(self) -> None:
+        self.mcp.call_tool.side_effect = Exception("connection refused")
+        result = self.agent._fetch_game_context()
+        assert result == ""
+
+    def test_game_status_routes_before_waiver(self) -> None:
+        """'waiver deadline' should match game_status, not waiver."""
+        tool_events: List[Dict[str, Any]] = []
+        result = self.agent._try_route("waiver deadline", tool_events)
+        assert result is not None
+        # Should have called game_status, not waiver_recommendations
+        tool_names = [e["name"] for e in tool_events if e.get("type") == "tool_call"]
+        assert "game_status" in tool_names
+        assert "waiver_recommendations" not in tool_names
