@@ -307,3 +307,138 @@ class TestTryRoute:
         # Should not propagate exception; should return a user-facing error message
         assert result is not None
         assert isinstance(result, str)
+
+    def test_greeting_hello_returns_fast(self) -> None:
+        """Greetings should be answered without calling any tools (issue #71)."""
+        result = self.agent._try_route("hello", [])
+        assert result is not None
+        assert "FPL" in result
+        self.mcp.call_tool.assert_not_called()
+
+    def test_greeting_hey_returns_fast(self) -> None:
+        result = self.agent._try_route("hey!", [])
+        assert result is not None
+        self.mcp.call_tool.assert_not_called()
+
+    def test_greeting_thanks_returns_fast(self) -> None:
+        result = self.agent._try_route("thanks", [])
+        assert result is not None
+        self.mcp.call_tool.assert_not_called()
+
+    def test_greeting_does_not_match_fpl_queries(self) -> None:
+        """Ensure 'hi' inside FPL queries doesn't trigger greeting."""
+        result = self.agent._try_route("show standings table", [])
+        # Should route to standings, not greeting
+        assert result is not None
+        assert "FPL Draft assistant" not in result
+
+    def test_greeting_hi_there_returns_fast(self) -> None:
+        """Two-word message starting with greeting word should match."""
+        result = self.agent._try_route("hi there", [])
+        assert result is not None
+        assert "FPL Draft assistant" in result
+        self.mcp.call_tool.assert_not_called()
+
+    def test_hi_salah_stats_not_greeting(self) -> None:
+        """'hi salah stats' is a 3-word FPL query, not a greeting (issue #91)."""
+        result = self.agent._try_route("hi salah stats", [])
+        # Should NOT be intercepted as a greeting
+        assert result is None or "FPL Draft assistant" not in (result or "")
+
+    def test_highlights_gw27_not_greeting(self) -> None:
+        """'highlights gw27' must not match because 'hi' is a prefix of 'highlights' (issue #91)."""
+        result = self.agent._try_route("highlights gw27", [])
+        assert result is None or "FPL Draft assistant" not in (result or "")
+
+    def test_hey_show_me_standings_not_greeting(self) -> None:
+        """'hey show me standings' is a 4-word FPL query, not a greeting (issue #91)."""
+        result = self.agent._try_route("hey show me standings", [])
+        # Should route to standings, not greeting
+        assert result is None or "FPL Draft assistant" not in (result or "")
+
+    def test_history_of_trades_not_greeting(self) -> None:
+        """'history of trades' must not match — 'hi' is a prefix of 'history' (issue #91)."""
+        result = self.agent._try_route("history of trades", [])
+        assert result is None or "FPL Draft assistant" not in (result or "")
+
+
+# ---------------------------------------------------------------------------
+# _is_greeting (unit tests)
+# ---------------------------------------------------------------------------
+
+class TestIsGreeting:
+    """Direct tests for the _is_greeting method (issue #91)."""
+
+    def setup_method(self) -> None:
+        self.agent = _make_agent()
+
+    # ---- should match ----
+
+    def test_hi(self) -> None:
+        assert self.agent._is_greeting("hi") is True
+
+    def test_hello(self) -> None:
+        assert self.agent._is_greeting("hello") is True
+
+    def test_hi_there(self) -> None:
+        assert self.agent._is_greeting("hi there") is True
+
+    def test_hey_with_punctuation(self) -> None:
+        assert self.agent._is_greeting("hey!") is True
+
+    def test_thanks(self) -> None:
+        assert self.agent._is_greeting("thanks") is True
+
+    def test_good_morning(self) -> None:
+        assert self.agent._is_greeting("good morning") is True
+
+    def test_yo_mate(self) -> None:
+        """Two-word greeting where first word is a known greeting."""
+        assert self.agent._is_greeting("yo mate") is True
+
+    # ---- should NOT match ----
+
+    def test_hi_salah_stats(self) -> None:
+        assert self.agent._is_greeting("hi salah stats") is False
+
+    def test_highlights_gw27(self) -> None:
+        assert self.agent._is_greeting("highlights gw27") is False
+
+    def test_hey_show_me_standings(self) -> None:
+        assert self.agent._is_greeting("hey show me standings") is False
+
+    def test_history_of_trades(self) -> None:
+        assert self.agent._is_greeting("history of trades") is False
+
+    def test_hello_what_are_standings(self) -> None:
+        """Multi-word message even starting with greeting should not match."""
+        assert self.agent._is_greeting("hello what are the standings") is False
+
+
+# ---------------------------------------------------------------------------
+# _sanitize_error
+# ---------------------------------------------------------------------------
+
+class TestSanitizeError:
+    def setup_method(self) -> None:
+        self.agent = _make_agent()
+
+    def test_strips_file_path_with_gw(self) -> None:
+        """Go 'open data/raw/gw/99/live.json: no such file...' → user-friendly (issue #89)."""
+        raw = "open data/raw/gw/99/live.json: no such file or directory"
+        result = self.agent._sanitize_error(raw)
+        assert "data/raw" not in result
+        assert "GW99" in result
+
+    def test_strips_generic_file_path(self) -> None:
+        raw = "open data/derived/summary/league_summary.json: no such file or directory"
+        result = self.agent._sanitize_error(raw)
+        assert "data/derived" not in result
+
+    def test_passes_through_non_path_errors(self) -> None:
+        raw = "connection refused"
+        result = self.agent._sanitize_error(raw)
+        assert result == "connection refused"
+
+    def test_empty_string_passthrough(self) -> None:
+        assert self.agent._sanitize_error("") == ""
