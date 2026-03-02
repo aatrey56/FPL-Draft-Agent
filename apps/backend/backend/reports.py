@@ -330,7 +330,7 @@ def _load_points_map(league_id: int, entry_id: int, gw: int) -> Dict[int, float]
     out: Dict[int, float] = {}
     for p in payload.get("players", []):
         try:
-            out[int(p.get("element"))] = float(p.get("total", 0) or 0)
+            out[int(p.get("element"))] = float(p.get("points") or p.get("total") or 0)
         except Exception:
             continue
     return out
@@ -360,7 +360,9 @@ def _best_starter(entry: Dict[str, Any], points: Dict[int, float]) -> str:
 
 
 def _simple_league_md(summary: Dict[str, Any]) -> str:
-    lines = [f"# League Summary GW{summary.get('gameweek')}"]
+    gw = summary.get("gameweek")
+    gw_label = f"GW{gw}" if gw is not None else "(unknown GW)"
+    lines = [f"# League Summary {gw_label}"]
     lines.append("")
     lines.append("| Matchup | Score | Result | Best Starters |")
     lines.append("|---|---:|:---:|:---|")

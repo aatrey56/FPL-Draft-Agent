@@ -1,6 +1,7 @@
 """Tests for backend.agent — intent routing, parameter extraction, _apply_defaults,
 and handler responses with a mocked MCP client."""
 
+import json
 import sys
 import types
 from typing import Any, Dict, List
@@ -23,6 +24,7 @@ if not hasattr(sys.modules["openai"], "OpenAI"):
 
 from backend.agent import Agent  # noqa: E402
 from backend.constants import GW_PATTERN, POSITION_TYPE_LABELS  # noqa: E402
+from backend.reports import _load_points_map, _simple_league_md  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -781,3 +783,174 @@ class TestSimpleToolRenderers:
         result = self.agent._try_route("strength of schedule next 5 gws", [])
         assert result is not None
         assert "unavailable" in result.lower()
+# Regression tests for league summary bug fixes (#90)
+# ---------------------------------------------------------------------------
+
+class TestLeagueSummaryBugFixes:
+    """Regression tests for the three bugs fixed in PR #90:
+
+    1. _load_points_map read 'total' instead of 'points' key
+    2. _simple_league_md rendered 'GWNone' when gameweek was None
+    3. _handle_league_summary crashed on error dicts instead of surfacing them
+    """
+
+    def test_load_points_map_uses_points_key(self, tmp_path: Any) -> None:
+        """_load_points_map must read the 'points' key from each player entry.
+
+        Before the fix, only the 'total' key was read, so player points files
+        using the canonical 'points' key silently returned 0.0 for every player.
+        """
+        # Build the nested directory structure that _load_points_map expects:
+        # <data_dir>/derived/points/<league_id>/entry/<entry_id>/gw/<gw>.json
+        gw_dir = tmp_path / "derived" / "points" / "100" / "entry" / "200" / "gw"
+        gw_dir.mkdir(parents=True)
+        payload = {
+            "players": [
+                {"element": 10, "points": 42},
+                {"element": 20, "points": 7},
+            ]
+        }
+        (gw_dir / "5.json").write_text(json.dumps(payload))
+
+        with patch("backend.reports.SETTINGS") as mock_settings:
+            mock_settings.data_dir = str(tmp_path)
+            result = _load_points_map(league_id=100, entry_id=200, gw=5)
+
+        assert result[10] == 42.0, f"expected 42.0 for element 10, got {result.get(10)}"
+        assert result[20] == 7.0, f"expected 7.0 for element 20, got {result.get(20)}"
+
+    def test_load_points_map_falls_back_to_total_key(self, tmp_path: Any) -> None:
+        """_load_points_map must fall back to 'total' when 'points' is absent.
+
+        This ensures backwards compatibility with older cached data files that
+        only have the 'total' key.
+        """
+        gw_dir = tmp_path / "derived" / "points" / "100" / "entry" / "200" / "gw"
+        gw_dir.mkdir(parents=True)
+        payload = {
+            "players": [
+                {"element": 10, "total": 35},
+                {"element": 20, "total": 12},
+            ]
+        }
+        (gw_dir / "5.json").write_text(json.dumps(payload))
+
+        with patch("backend.reports.SETTINGS") as mock_settings:
+            mock_settings.data_dir = str(tmp_path)
+            result = _load_points_map(league_id=100, entry_id=200, gw=5)
+
+        assert result[10] == 35.0, f"expected 35.0 for element 10, got {result.get(10)}"
+        assert result[20] == 12.0, f"expected 12.0 for element 20, got {result.get(20)}"
+
+    def test_simple_league_md_none_gameweek(self) -> None:
+        """_simple_league_md must render '(unknown GW)' when gameweek is None.
+
+        Before the fix, it rendered 'GWNone' via unguarded f-string interpolation.
+        """
+        summary: Dict[str, Any] = {
+            "gameweek": None,
+            "entries": [],
+        }
+        result = _simple_league_md(summary)
+        assert "(unknown GW)" in result, f"expected '(unknown GW)' in output, got: {result!r}"
+        assert "GWNone" not in result, f"'GWNone' must not appear in output, got: {result!r}"
+
+    def test_handle_league_summary_error_propagation(self) -> None:
+        """When the MCP tool returns an error dict, the handler must surface the
+        error message to the user instead of crashing or rendering broken Markdown.
+        """
+        error_response = {"error": "file not found"}
+        agent = _make_agent(mcp_return=error_response)
+        agent._session["league_id"] = 14204
+
+        tool_events: List[Dict[str, Any]] = []
+        result = agent._handle_league_summary("show league summary", tool_events)
+
+        assert isinstance(result, str)
+        assert "unavailable" in result.lower(), (
+            f"expected 'unavailable' in error response, got: {result!r}"
+        )
+        assert "file not found" in result, (
+            f"expected error text 'file not found' in response, got: {result!r}"
+        )
+
+    def test_llm_path_guard_skips_render_on_error_dict(self) -> None:
+        """When the LLM calls league_summary and the tool returns an error dict,
+        the guard at chat() line ~276 must prevent render_league_summary_md from
+        being called.  Instead the error should be passed back to the LLM loop
+        as a tool result string so it can produce a graceful final answer.
+        """
+        mcp = MagicMock()
+        mcp.list_tools.return_value = []
+        mcp.call_tool.return_value = {"error": "no data available"}
+
+        llm = MagicMock()
+        llm.available.return_value = True
+
+        # First LLM call: emit a tool invocation for league_summary.
+        # Second LLM call: emit a final answer after seeing the error.
+        llm.generate.side_effect = [
+            json.dumps({
+                "action": "tool",
+                "name": "league_summary",
+                "arguments": {"league_id": 14204, "gw": 5},
+            }),
+            json.dumps({
+                "action": "final",
+                "content": "Sorry, league summary data is not available.",
+            }),
+        ]
+
+        with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
+            agent = Agent(mcp, llm)
+
+        agent._session["league_id"] = 14204
+
+        # Patch _try_route to return None so the LLM loop is entered
+        # (otherwise the fast-path router handles "league summary" directly).
+        # Patch _try_route to return None so the LLM loop is entered.
+        with patch.object(agent, "_try_route", return_value=None), \
+             patch("backend.agent.render_league_summary_md") as mock_render:
+            result = agent.run("show league summary")
+
+        # render_league_summary_md must NOT have been called because the
+        # guard `"error" not in result` should have prevented it.
+        mock_render.assert_not_called()
+
+        # The LLM loop should still produce a response (the LLM's final answer).
+        # The run loop should still produce a response (the LLM's final answer).
+        assert isinstance(result, dict)
+        assert "content" in result
+
+    def test_handle_league_summary_sends_gw_zero_when_no_gw_set(self) -> None:
+        """When no gameweek is in session or text, _handle_league_summary must
+        send gw=0 to mcp.call_tool so the Go tool uses the current gameweek.
+
+        This tests the `args = {"league_id": league_id, "gw": gw or 0}` change.
+        """
+        mcp = MagicMock()
+        mcp.list_tools.return_value = []
+        mcp.call_tool.return_value = {"entries": [], "gameweek": 0, "matches": []}
+
+        llm = MagicMock()
+        llm.available.return_value = False
+
+        with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
+            agent = Agent(mcp, llm)
+
+        agent._session["league_id"] = 14204
+        # Explicitly ensure no GW is set in session
+        agent._session["gw"] = None
+
+        tool_events: List[Dict[str, Any]] = []
+        agent._handle_league_summary("show league summary", tool_events)
+
+        # Verify mcp.call_tool was called with gw=0
+        mcp.call_tool.assert_called_once()
+        call_args = mcp.call_tool.call_args[0]
+        tool_name = call_args[0]
+        tool_args = call_args[1]
+        assert tool_name == "league_summary"
+        assert tool_args["gw"] == 0, (
+            f"expected gw=0 when no gameweek is set, got gw={tool_args.get('gw')}"
+        )
