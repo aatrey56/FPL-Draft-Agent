@@ -943,14 +943,21 @@ class Agent:
         gw = self._extract_gw(text)
         if gw is None:
             gw = self._default_gw()
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
-        team_name = team_name_override or self._default_entry_name()
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
 
-        if not entry_id:
+        # Resolve team name from text before session fallback.
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("roster", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team's roster would you like? Please provide a team name or entry ID."
 
@@ -982,16 +989,29 @@ class Agent:
                 lines.append(f"  {p.get('position_slot', '')}) {name} ({team}, {pos})")
         return "\n".join(lines)
 
-    def _handle_draft_picks(self, text: str, tool_events: List[Dict[str, Any]]) -> Optional[str]:
+    def _handle_draft_picks(
+        self,
+        text: str,
+        tool_events: List[Dict[str, Any]],
+        entry_id_override: Optional[int] = None,
+        team_name_override: Optional[str] = None,
+    ) -> Optional[str]:
         league_id = self._extract_league_id(text) or self._default_league_id()
-        entry_id = self._extract_entry_id(text) or self._default_entry_id()
-        team_name = self._default_entry_name()
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
 
-        if not entry_id:
+        # Resolve team name from text before session fallback.
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 # Can't set pending for draft since it's not in pending handler — fall through to LLM.
                 return None
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
 
         # Extract optional round filter (e.g. "round 1", "rd 3").
         round_filter: Optional[int] = None
@@ -1036,14 +1056,21 @@ class Agent:
         team_name_override: Optional[str] = None,
     ) -> str:
         league_id = self._extract_league_id(text) or self._default_league_id()
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
-        team_name = team_name_override or self._default_entry_name()
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
 
-        if not entry_id:
+        # Resolve team name from text before session fallback.
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("season", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team's season history would you like? Please provide a team name or entry ID."
 
@@ -1277,16 +1304,31 @@ class Agent:
             return f"League summary is unavailable right now. {err}".strip()
         return render_league_summary_md(result, self.llm)
 
-    def _handle_lineup_efficiency(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+    def _handle_lineup_efficiency(
+        self,
+        text: str,
+        tool_events: List[Dict[str, Any]],
+        entry_id_override: Optional[int] = None,
+        team_name_override: Optional[str] = None,
+    ) -> str:
         league_id = self._extract_league_id(text) or self._default_league_id()
         gw = self._extract_gw(text)
         if gw is None:
             gw = self._default_gw()
-        entry_id = self._extract_entry_id(text) or self._default_entry_id()
-        if not entry_id:
-            entry_id, _, multiple = self._resolve_team(league_id, text, tool_events)
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
+
+        # Resolve team name from text before session fallback.
+        if not entry_id and not team_name:
+            entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         args: Dict[str, Any] = {"league_id": league_id, "gw": gw if gw is not None else 0}
         result = self._call_tool(tool_events, "lineup_efficiency", args)
         if not isinstance(result, dict):
@@ -1358,14 +1400,24 @@ class Agent:
         if gw is None:
             gw = self._default_gw()
         horizon = self._extract_horizon(text)
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
 
-        team_name = team_name_override or self._default_entry_name()
-        if not entry_id:
+        # Try resolving a team name from the text before falling back to
+        # session defaults.  This ensures "waiver recs for Boot Gang" queries
+        # the named team rather than silently returning the user's own team.
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("waiver", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        # Fall back to session defaults only when no team was identified.
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team should I run waivers for? Please provide a team name or entry ID."
 
@@ -1422,14 +1474,21 @@ class Agent:
         if gw is None:
             gw = self._default_gw()
         horizon = self._extract_horizon(text) or 5
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
 
-        team_name = team_name_override or self._default_entry_name()
-        if not entry_id:
+        # Resolve team name from text before session fallback (#74).
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("schedule", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team do you want the schedule for?"
 
@@ -1511,13 +1570,21 @@ class Agent:
         team_name_override: Optional[str] = None,
     ) -> str:
         league_id = self._extract_league_id(text) or self._default_league_id()
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
-        team_name = team_name_override or self._default_entry_name()
-        if not entry_id:
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
+
+        # Resolve team name from text before session fallback (#73).
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("streak", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team should I check for win streaks?"
         args: Dict[str, Any] = {"league_id": league_id, "entry_id": entry_id}
@@ -1541,13 +1608,21 @@ class Agent:
         team_name_override: Optional[str] = None,
     ) -> str:
         league_id = self._extract_league_id(text) or self._default_league_id()
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
-        team_name = team_name_override or self._default_entry_name()
-        if not entry_id:
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
+
+        # Resolve team name from text before session fallback.
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("wins", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team do you want win weeks for?"
 
