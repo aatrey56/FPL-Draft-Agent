@@ -908,6 +908,7 @@ class TestLeagueSummaryBugFixes:
 
         # Patch _try_route to return None so the LLM loop is entered
         # (otherwise the fast-path router handles "league summary" directly).
+        # Patch _try_route to return None so the LLM loop is entered.
         with patch.object(agent, "_try_route", return_value=None), \
              patch("backend.agent.render_league_summary_md") as mock_render:
             result = agent.run("show league summary")
@@ -917,6 +918,7 @@ class TestLeagueSummaryBugFixes:
         mock_render.assert_not_called()
 
         # The LLM loop should still produce a response (the LLM's final answer).
+        # The run loop should still produce a response (the LLM's final answer).
         assert isinstance(result, dict)
         assert "content" in result
 
