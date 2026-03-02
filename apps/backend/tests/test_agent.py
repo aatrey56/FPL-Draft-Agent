@@ -1091,3 +1091,176 @@ class TestHandlerTeamNameResolution:
         calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_schedule"]
         assert len(calls) == 1
         assert calls[0][0][1]["entry_id"] == 100
+
+    # ---- current_roster resolution ----
+
+    def test_current_roster_resolves_other_team(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "current_roster": {
+                "entry_name": "Boot Gang", "gameweek": 28,
+                "starters": [], "bench": [],
+            },
+        })
+        result = self.agent._try_route("current roster for Boot Gang", [])
+        assert result is not None
+        assert "Boot Gang" in result
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "current_roster"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 100
+
+    def test_current_roster_falls_back_to_session(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "current_roster": {
+                "entry_name": "Glock Tua", "gameweek": 28,
+                "starters": [], "bench": [],
+            },
+        })
+        result = self.agent._try_route("show my team", [])
+        assert result is not None
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "current_roster"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 200
+
+    # ---- draft_picks resolution ----
+
+    def test_draft_picks_resolves_other_team(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "draft_picks": {
+                "filtered_by": "Boot Gang",
+                "picks": [
+                    {"round": 1, "pick": 1, "entry_name": "Boot Gang",
+                     "player_name": "Salah", "team": "LIV", "position_type": 3},
+                ],
+            },
+        })
+        result = self.agent._try_route("draft picks for Boot Gang", [])
+        assert result is not None
+        assert "Boot Gang" in result
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "draft_picks"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 100
+
+    def test_draft_picks_falls_back_to_session(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "draft_picks": {
+                "filtered_by": "Glock Tua",
+                "picks": [
+                    {"round": 1, "pick": 2, "entry_name": "Glock Tua",
+                     "player_name": "Haaland", "team": "MCI", "position_type": 4},
+                ],
+            },
+        })
+        result = self.agent._try_route("who did we draft", [])
+        assert result is not None
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "draft_picks"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 200
+
+    # ---- manager_season resolution ----
+
+    def test_manager_season_resolves_other_team(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "manager_season": {
+                "entry_name": "Boot Gang",
+                "gameweeks": [],
+                "record": {"wins": 5, "draws": 2, "losses": 3},
+            },
+        })
+        result = self.agent._try_route("season stats for Boot Gang", [])
+        assert result is not None
+        assert "Boot Gang" in result
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_season"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 100
+
+    def test_manager_season_falls_back_to_session(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "manager_season": {
+                "entry_name": "Glock Tua",
+                "gameweeks": [],
+                "record": {"wins": 3, "draws": 1, "losses": 6},
+            },
+        })
+        result = self.agent._try_route("show me my season stats", [])
+        assert result is not None
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_season"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 200
+
+    # ---- lineup_efficiency resolution ----
+
+    def test_lineup_efficiency_resolves_other_team(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "lineup_efficiency": {
+                "gameweek": 28,
+                "entries": [
+                    {"entry_id": 100, "entry_name": "Boot Gang",
+                     "bench_points": 10, "zero_minute_starters": 0},
+                ],
+            },
+        })
+        result = self.agent._try_route("lineup efficiency for Boot Gang", [])
+        assert result is not None
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "lineup_efficiency"]
+        assert len(calls) == 1
+
+    def test_lineup_efficiency_falls_back_to_session(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "lineup_efficiency": {
+                "gameweek": 28,
+                "entries": [
+                    {"entry_id": 200, "entry_name": "Glock Tua",
+                     "bench_points": 5, "zero_minute_starters": 1},
+                ],
+            },
+        })
+        result = self.agent._try_route("bench points", [])
+        assert result is not None
+
+    # ---- fallback tests for schedule, streak, wins_list ----
+
+    def test_schedule_falls_back_to_session(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "manager_schedule": _SCHEDULE_RESULT,
+        })
+        result = self.agent._try_route("my schedule", [])
+        assert result is not None
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_schedule"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 200
+
+    def test_streak_falls_back_to_session(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "manager_streak": _STREAK_RESULT,
+        })
+        result = self.agent._try_route("win streak", [])
+        assert result is not None
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_streak"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 200
+
+    def test_wins_list_falls_back_to_session(self) -> None:
+        self._mock_call_tool({
+            "league_entries": _LEAGUE_ENTRIES,
+            "manager_schedule": {
+                "entry_name": "Glock Tua",
+                "matches": [
+                    {"gameweek": 5, "finished": True, "result": "W"},
+                ],
+            },
+        })
+        result = self.agent._try_route("wins each week", [])
+        assert result is not None
+        calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_schedule"]
+        assert len(calls) == 1
+        assert calls[0][0][1]["entry_id"] == 200
