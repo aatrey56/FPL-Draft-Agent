@@ -204,6 +204,10 @@ class Agent:
         """
         user_message = (user_message or "").strip()
         context = context or {}
+        # Clear per-turn GW so it doesn't leak across conversation turns.
+        # The GW will be re-set only if the frontend's context dict or the
+        # user's text explicitly specifies one.
+        self._session.pop("gw", None)
         self._update_session_from_context(context)
         self._update_session_from_text(user_message)
 
@@ -501,17 +505,28 @@ class Agent:
                 pass
 
     def _update_session_from_text(self, text: str) -> None:
+        """Extract league/entry IDs from the user's message and persist them.
+
+        GW is intentionally NOT persisted here — it is extracted per-query
+        inside each handler to avoid cross-turn stickiness (#75).
+        """
         league_id = self._extract_league_id(text)
         if league_id:
             self._session["league_id"] = league_id
         entry_id = self._extract_entry_id(text)
         if entry_id:
             self._session["entry_id"] = entry_id
-        gw = self._extract_gw(text)
-        if gw is not None:
-            self._session["gw"] = gw
 
     def _note_tool_use(self, name: str, args: Dict[str, Any]) -> None:
+        """Record the last-used tool and persist stable session keys.
+
+        **GW is intentionally NOT cached here.**  Persisting the GW from every
+        tool call caused "GW stickiness" — after "standings for GW3", all
+        subsequent queries would silently default to GW3 instead of the current
+        gameweek (#75, #81-#84, #88).  The GW is now per-query only: it comes
+        from the user's text or from the ``context`` dict provided by the API
+        caller, never from a previous tool invocation.
+        """
         self._session["last_tool"] = name
         league_id = args.get("league_id")
         if league_id:
@@ -528,14 +543,6 @@ class Agent:
         entry_name = args.get("entry_name")
         if entry_name:
             self._session["entry_name"] = str(entry_name)
-        gw = args.get("gw")
-        if gw is None:
-            gw = args.get("as_of_gw")
-        if gw is not None:
-            try:
-                self._session["gw"] = int(gw)
-            except Exception:
-                pass
 
     def _append_history(self, role: str, content: str) -> None:
         text = (content or "").strip()
