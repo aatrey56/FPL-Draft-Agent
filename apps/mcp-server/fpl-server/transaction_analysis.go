@@ -75,12 +75,12 @@ func buildTransactionAnalysis(cfg ServerConfig, args TransactionAnalysisArgs) (T
 	}
 	var txResp struct {
 		Transactions []struct {
-			Entry     int    `json:"entry"`
-			ElementIn int    `json:"element_in"`
-			ElementOut int   `json:"element_out"`
-			Event     int    `json:"event"`
-			Kind      string `json:"kind"`
-			Result    string `json:"result"`
+			Entry      int    `json:"entry"`
+			ElementIn  int    `json:"element_in"`
+			ElementOut int    `json:"element_out"`
+			Event      int    `json:"event"`
+			Kind       string `json:"kind"`
+			Result     string `json:"result"`
 		} `json:"transactions"`
 	}
 	if err := json.Unmarshal(txRaw, &txResp); err != nil {
