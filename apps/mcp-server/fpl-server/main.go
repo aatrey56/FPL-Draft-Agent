@@ -435,6 +435,11 @@ func main() {
 		return toolMarshal(out)
 	})
 
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "game_status",
+		Description: "Current game state: GW progress, deadlines (waivers/trades/lineup lock), fixture status, points finality",
+	}, gameStatusHandler(cfg))
+
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
 	}, &mcp.StreamableHTTPOptions{JSONResponse: true})
