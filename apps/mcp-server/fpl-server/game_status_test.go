@@ -2,18 +2,8 @@ package main
 
 import (
 	"path/filepath"
-	"strconv"
 	"testing"
 )
-
-// writeLiveFixtures writes gw/{gw}/live.json with the given fixtures.
-func writeLiveFixtures(t *testing.T, dir string, gw int, fixtures []any) {
-	t.Helper()
-	writeJSON(t, filepath.Join(dir, "gw", strconv.Itoa(gw), "live.json"), map[string]any{
-		"elements": map[string]any{},
-		"fixtures": fixtures,
-	})
-}
 
 // writeFullGameJSON writes game/game.json with all status fields.
 func writeFullGameJSON(t *testing.T, dir string, current int, finished bool, next int, waiversProcessed bool, processingStatus string) {
