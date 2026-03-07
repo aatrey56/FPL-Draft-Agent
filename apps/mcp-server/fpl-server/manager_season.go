@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -107,7 +108,9 @@ func buildManagerSeason(cfg ServerConfig, args ManagerSeasonArgs) (ManagerSeason
 	record := SeasonRecord{}
 	totalPts := 0
 	highestGW, highestPts := 0, -1
-	lowestGW, lowestPts := 0, 1<<30
+	// math.MaxInt32 is a reliable sentinel for "not yet set"; 1<<30 would silently
+	// break if a manager ever scored more than ~1 billion points.
+	lowestGW, lowestPts := 0, math.MaxInt32
 	finishedCount := 0
 
 	for _, m := range details.Matches {
@@ -131,6 +134,9 @@ func buildManagerSeason(cfg ServerConfig, args ManagerSeasonArgs) (ManagerSeason
 		oppName := nameByEntry[oppEntryID]
 		result := resultFromScore(score, oppScore)
 
+		if !m.Finished {
+			continue
+		}
 		gw := SeasonGameweek{
 			Gameweek:      m.Event,
 			Score:         score,
@@ -142,25 +148,23 @@ func buildManagerSeason(cfg ServerConfig, args ManagerSeasonArgs) (ManagerSeason
 		}
 		gameweeks = append(gameweeks, gw)
 
-		if m.Finished {
-			totalPts += score
-			finishedCount++
-			switch result {
-			case "W":
-				record.Wins++
-			case "D":
-				record.Draws++
-			case "L":
-				record.Losses++
-			}
-			if score > highestPts {
-				highestPts = score
-				highestGW = m.Event
-			}
-			if score < lowestPts {
-				lowestPts = score
-				lowestGW = m.Event
-			}
+		totalPts += score
+		finishedCount++
+		switch result {
+		case "W":
+			record.Wins++
+		case "D":
+			record.Draws++
+		case "L":
+			record.Losses++
+		}
+		if score > highestPts {
+			highestPts = score
+			highestGW = m.Event
+		}
+		if score < lowestPts {
+			lowestPts = score
+			lowestGW = m.Event
 		}
 	}
 
@@ -176,7 +180,7 @@ func buildManagerSeason(cfg ServerConfig, args ManagerSeasonArgs) (ManagerSeason
 	if highestPts == -1 {
 		highestPts = 0
 	}
-	if lowestPts == 1<<30 {
+	if lowestPts == math.MaxInt32 {
 		lowestPts = 0
 	}
 

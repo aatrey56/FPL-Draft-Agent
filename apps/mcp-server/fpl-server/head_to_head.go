@@ -125,6 +125,9 @@ func buildHeadToHead(cfg ServerConfig, args HeadToHeadArgs) (HeadToHeadOutput, e
 
 		resultA := resultFromScore(scoreA, scoreB)
 
+		if !m.Finished {
+			continue
+		}
 		h2h := H2HMatch{
 			Gameweek: m.Event,
 			ScoreA:   scoreA,
@@ -134,18 +137,16 @@ func buildHeadToHead(cfg ServerConfig, args HeadToHeadArgs) (HeadToHeadOutput, e
 		}
 		matches = append(matches, h2h)
 
-		if m.Finished {
-			switch resultA {
-			case "W":
-				recordA.Wins++
-				recordB.Losses++
-			case "L":
-				recordA.Losses++
-				recordB.Wins++
-			case "D":
-				recordA.Draws++
-				recordB.Draws++
-			}
+		switch resultA {
+		case "W":
+			recordA.Wins++
+			recordB.Losses++
+		case "L":
+			recordA.Losses++
+			recordB.Wins++
+		case "D":
+			recordA.Draws++
+			recordB.Draws++
 		}
 	}
 

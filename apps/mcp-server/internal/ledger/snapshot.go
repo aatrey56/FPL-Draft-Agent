@@ -13,12 +13,12 @@ type EntryEventRaw struct {
 	Subs         []EntrySub      `json:"subs"`
 }
 
+// EntryPick is one player in a draft lineup. FPL Draft has no captain
+// mechanic — every player scores their raw points. The is_captain,
+// is_vice_captain, and multiplier fields sent by the FPL API are ignored.
 type EntryPick struct {
-	Element       int  `json:"element"`
-	IsCaptain     bool `json:"is_captain"`
-	IsViceCaptain bool `json:"is_vice_captain"`
-	Multiplier    int  `json:"multiplier"`
-	Position      int  `json:"position"`
+	Element  int `json:"element"`
+	Position int `json:"position"`
 }
 
 type EntrySub struct {

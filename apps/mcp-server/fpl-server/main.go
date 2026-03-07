@@ -302,8 +302,7 @@ func main() {
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return toolJSONBytes(b), nil, nil
+		return toolMarshal(out)
 	})
 
 	addTool(server, &registry, &mcp.Tool{
@@ -345,8 +344,7 @@ func main() {
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return toolJSONBytes(b), nil, nil
+		return toolMarshal(out)
 	})
 
 	addTool(server, &registry, &mcp.Tool{
@@ -357,8 +355,7 @@ func main() {
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return toolJSONBytes(b), nil, nil
+		return toolMarshal(out)
 	})
 
 	addTool(server, &registry, &mcp.Tool{
@@ -369,8 +366,7 @@ func main() {
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return toolJSONBytes(b), nil, nil
+		return toolMarshal(out)
 	})
 
 	addTool(server, &registry, &mcp.Tool{
@@ -381,8 +377,7 @@ func main() {
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return toolJSONBytes(b), nil, nil
+		return toolMarshal(out)
 	})
 
 	addTool(server, &registry, &mcp.Tool{
@@ -393,8 +388,7 @@ func main() {
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return toolJSONBytes(b), nil, nil
+		return toolMarshal(out)
 	})
 
 	addTool(server, &registry, &mcp.Tool{
@@ -405,8 +399,7 @@ func main() {
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return toolJSONBytes(b), nil, nil
+		return toolMarshal(out)
 	})
 
 	addTool(server, &registry, &mcp.Tool{
@@ -417,8 +410,7 @@ func main() {
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return toolJSONBytes(b), nil, nil
+		return toolMarshal(out)
 	})
 
 	addTool(server, &registry, &mcp.Tool{
@@ -429,8 +421,7 @@ func main() {
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return toolJSONBytes(b), nil, nil
+		return toolMarshal(out)
 	})
 
 	addTool(server, &registry, &mcp.Tool{
@@ -441,8 +432,7 @@ func main() {
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return toolJSONBytes(b), nil, nil
+		return toolMarshal(out)
 	})
 
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
@@ -484,7 +474,11 @@ func main() {
 
 	http.HandleFunc("/tools", withAuth(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		b, _ := json.MarshalIndent(map[string]any{"tools": registry}, "", "  ")
+		b, err := json.MarshalIndent(map[string]any{"tools": registry}, "", "  ")
+		if err != nil {
+			http.Error(w, `{"error":"failed to marshal tool list"}`, http.StatusInternalServerError)
+			return
+		}
 		w.Write(b)
 	}))
 
@@ -738,6 +732,17 @@ func toolJSON(res []byte, err error) (*mcp.CallToolResult, any, error) {
 		return toolError(err), nil, nil
 	}
 	return toolJSONBytes(res), nil, nil
+}
+
+// toolMarshal JSON-encodes v and returns a tool result. If marshaling fails
+// (e.g. due to an un-serializable field type), the error is surfaced as a
+// structured tool error rather than silently returning an empty body.
+func toolMarshal(v any) (*mcp.CallToolResult, any, error) {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return toolError(fmt.Errorf("marshal response: %w", err)), nil, nil
+	}
+	return toolJSONBytes(b), nil, nil
 }
 
 func toolJSONBytes(res []byte) *mcp.CallToolResult {

@@ -196,14 +196,23 @@ type TransactionsSummary struct {
 	Entries        []EntryTransactions `json:"entries"`
 }
 
+// NegativeBenchContributor identifies a bench player whose deduction makes
+// bench_points negative, so callers can surface the responsible player.
+type NegativeBenchContributor struct {
+	Element int    `json:"element"`
+	Name    string `json:"name"`
+	Points  int    `json:"points"`
+}
+
 type LineupEfficiencyEntry struct {
-	EntryID                int    `json:"entry_id"`
-	EntryName              string `json:"entry_name"`
-	BenchPoints            int    `json:"bench_points"`
-	BenchPointsPlayed      int    `json:"bench_points_played"`
-	ZeroMinuteStarters     []int  `json:"zero_minute_starters"`
-	ZeroMinuteStarterCount int    `json:"zero_minute_starter_count"`
-	MissingSnapshot        bool   `json:"missing_snapshot"`
+	EntryID                   int                        `json:"entry_id"`
+	EntryName                 string                     `json:"entry_name"`
+	BenchPoints               int                        `json:"bench_points"`
+	BenchPointsPlayed         int                        `json:"bench_points_played"`
+	ZeroMinuteStarters        []int                      `json:"zero_minute_starters"`
+	ZeroMinuteStarterCount    int                        `json:"zero_minute_starter_count"`
+	NegativeBenchContributors []NegativeBenchContributor `json:"negative_bench_contributors,omitempty"`
+	MissingSnapshot           bool                       `json:"missing_snapshot"`
 }
 
 type LineupEfficiencySummary struct {
@@ -444,7 +453,7 @@ func BuildLeagueSummaries(st *store.JSONStore, derivedRoot string, leagueID int,
 			return err
 		}
 
-		lineup := buildLineupEfficiency(leagueID, gw, entryIDs, entryNameByID, snapshotsByEntry, liveByElement)
+		lineup := buildLineupEfficiency(leagueID, gw, entryIDs, entryNameByID, snapshotsByEntry, liveByElement, meta)
 		outLineup := filepath.Join(derivedRoot, fmt.Sprintf("summary/lineup_efficiency/%d/gw/%d.json", leagueID, gw))
 		if err := writeJSON(outLineup, lineup); err != nil {
 			return err
@@ -542,7 +551,12 @@ func buildPlayerForm(meta map[int]PlayerMeta, ledgerOut model.DraftLedger, trans
 		}
 		risk := 1 - minutesPct
 		own := ownership[id]
-		ownPct := float64(own) / float64(len(entryIDs))
+		// Guard against empty league (len==0) which would produce NaN/+Inf that
+		// json.Marshal cannot serialise, causing a runtime error.
+		var ownPct float64
+		if len(entryIDs) > 0 {
+			ownPct = float64(own) / float64(len(entryIDs))
+		}
 		players = append(players, PlayerForm{
 			Element:      id,
 			Name:         m.Name,
@@ -689,7 +703,7 @@ func computePoints(meta map[int]PlayerMeta, snap *ledger.EntrySnapshot, liveByEl
 	pos := PositionPoints{}
 	for _, p := range snap.Picks {
 		stats := liveByElement[p.Element]
-		total := stats.TotalPoints * p.Multiplier
+		total := stats.TotalPoints
 		if p.Position <= 11 {
 			starter += total
 			switch meta[p.Element].PositionType {
@@ -1028,7 +1042,7 @@ func BuildTransactionsSummary(st *store.JSONStore, derivedRoot string, leagueID 
 	return writeJSON(outTx, txSummary)
 }
 
-func buildLineupEfficiency(leagueID int, gw int, entryIDs []int, entryNameByID map[int]string, snapshots map[int]*ledger.EntrySnapshot, liveByElement map[int]points.LiveStats) LineupEfficiencySummary {
+func buildLineupEfficiency(leagueID int, gw int, entryIDs []int, entryNameByID map[int]string, snapshots map[int]*ledger.EntrySnapshot, liveByElement map[int]points.LiveStats, meta map[int]PlayerMeta) LineupEfficiencySummary {
 	out := LineupEfficiencySummary{
 		LeagueID:       leagueID,
 		Gameweek:       gw,
@@ -1048,6 +1062,7 @@ func buildLineupEfficiency(leagueID int, gw int, entryIDs []int, entryNameByID m
 		benchPoints := 0
 		benchPointsPlayed := 0
 		zeroMinuteStarters := make([]int, 0)
+		negContribs := make([]NegativeBenchContributor, 0)
 
 		for _, p := range snap.Picks {
 			stats := liveByElement[p.Element]
@@ -1060,17 +1075,28 @@ func buildLineupEfficiency(leagueID int, gw int, entryIDs []int, entryNameByID m
 				if stats.Minutes > 0 {
 					benchPointsPlayed += stats.TotalPoints
 				}
+				if stats.TotalPoints < 0 {
+					negContribs = append(negContribs, NegativeBenchContributor{
+						Element: p.Element,
+						Name:    meta[p.Element].Name,
+						Points:  stats.TotalPoints,
+					})
+				}
 			}
 		}
 
-		out.Entries = append(out.Entries, LineupEfficiencyEntry{
+		entry := LineupEfficiencyEntry{
 			EntryID:                entryID,
 			EntryName:              entryNameByID[entryID],
 			BenchPoints:            benchPoints,
 			BenchPointsPlayed:      benchPointsPlayed,
 			ZeroMinuteStarters:     zeroMinuteStarters,
 			ZeroMinuteStarterCount: len(zeroMinuteStarters),
-		})
+		}
+		if len(negContribs) > 0 {
+			entry.NegativeBenchContributors = negContribs
+		}
+		out.Entries = append(out.Entries, entry)
 	}
 	return out
 }

@@ -4,8 +4,10 @@ import os
 import shlex
 import subprocess
 import threading
+import time
 import uuid
-from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -31,7 +33,42 @@ os.makedirs(SETTINGS.reports_dir, exist_ok=True)
 _CACHE_SCHEDULER: Optional[BackgroundScheduler] = None
 _CHAT_SESSIONS: Dict[str, Agent] = {}
 
-app = FastAPI()
+# ── Refresh state ──────────────────────────────────────────────────────────────
+# A single lock prevents concurrent refresh runs (startup + manual trigger).
+# _REFRESH_STATUS is written under the lock and read freely by status endpoints.
+_REFRESH_LOCK: threading.Lock = threading.Lock()
+_REFRESH_STATUS: Dict[str, Any] = {
+    "state": "idle",           # "idle" | "running" | "error"
+    "started_at": None,        # float (epoch) when current/last run began
+    "last_completed": None,    # float (epoch) of last successful completion
+    "last_error": None,        # str error message, or None if last run succeeded
+}
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI) -> AsyncIterator[None]:  # type: ignore[misc]
+    """FastAPI lifespan handler: start services on startup, clean up on shutdown.
+
+    Replaces the deprecated ``@app.on_event("startup"/"shutdown")`` decorators.
+    """
+    # ── Startup ────────────────────────────────────────────────────────────────
+    ensure_go_server()
+    _start_cache_scheduler()
+    # Always run a full data refresh in the background on every startup so that
+    # GW live scores and transactions are current the moment the UI is usable.
+    # CACHE_REFRESH_ON_START=false can opt out (e.g. CI, offline dev).
+    if SETTINGS.refresh_on_start:
+        threading.Thread(target=run_startup_refresh, daemon=True).start()
+
+    yield  # application runs here
+
+    # ── Shutdown ───────────────────────────────────────────────────────────────
+    global _CACHE_SCHEDULER
+    if _CACHE_SCHEDULER:
+        _CACHE_SCHEDULER.shutdown()
+        _CACHE_SCHEDULER = None
+
+
+app = FastAPI(lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -47,7 +84,33 @@ def _mcp() -> MCPClient:
     return MCPClient(SETTINGS.mcp_url, SETTINGS.mcp_api_key)
 
 
-def _cache_refresh_cmd() -> List[str]:
+def _startup_refresh_cmd() -> List[str]:
+    """Build the command for the on-startup full refresh.
+
+    Always uses ``--refresh=all`` so every endpoint is re-fetched regardless of
+    whether a local file already exists.  ``--fast`` is intentionally omitted:
+    the fast mode only fetches missing files, so stale GW live scores and
+    transactions would never be updated after a restart.
+
+    Override with ``CACHE_REFRESH_CMD_STARTUP`` if you need a custom command
+    (e.g. a pre-built binary path or extra flags).
+    """
+    if SETTINGS.refresh_cmd_startup:
+        return shlex.split(SETTINGS.refresh_cmd_startup)
+    if not SETTINGS.league_id:
+        return []  # no league configured — skip refresh
+    return shlex.split(
+        f"go run ./apps/mcp-server/cmd/dev --refresh=all --league {SETTINGS.league_id}"
+    )
+
+
+def _scheduled_refresh_cmd() -> List[str]:
+    """Build the command for the daily scheduled refresh.
+
+    Uses ``--refresh=scheduled --refresh-now`` so the time-window gate is
+    bypassed.  Respects ``CACHE_REFRESH_FAST`` (defaults ``true``) for quick
+    incremental daily updates.  Override entirely with ``CACHE_REFRESH_CMD``.
+    """
     if SETTINGS.refresh_cmd:
         return shlex.split(SETTINGS.refresh_cmd)
     cmd = f"go run ./apps/mcp-server/cmd/dev --refresh=scheduled --refresh-now --league {SETTINGS.league_id}"
@@ -56,9 +119,14 @@ def _cache_refresh_cmd() -> List[str]:
     return shlex.split(cmd)
 
 
-def run_cache_refresh() -> None:
-    cmd = _cache_refresh_cmd()
+def _run_refresh(cmd: List[str], label: str) -> None:
+    """Execute *cmd* under the refresh lock, updating ``_REFRESH_STATUS``."""
+    if not _REFRESH_LOCK.acquire(blocking=False):
+        print(f"[{label}] another refresh is already running — skipping")
+        return
     try:
+        _REFRESH_STATUS.update({"state": "running", "started_at": time.time(), "last_error": None})
+        print(f"[{label}] starting: {' '.join(cmd)}")
         proc = subprocess.run(
             cmd,
             cwd=SETTINGS.repo_root,
@@ -67,17 +135,67 @@ def run_cache_refresh() -> None:
             check=False,
         )
         if proc.returncode != 0:
-            print("[cache-refresh] failed", proc.returncode)
-            if proc.stdout:
-                print(proc.stdout)
-            if proc.stderr:
-                print(proc.stderr)
+            err = (proc.stderr or proc.stdout or "").strip()
+            _REFRESH_STATUS.update({"state": "error", "last_error": err})
+            print(f"[{label}] failed (rc={proc.returncode}): {err}")
         else:
-            print("[cache-refresh] complete")
-            if proc.stdout:
-                print(proc.stdout)
+            _REFRESH_STATUS.update({"state": "idle", "last_completed": time.time(), "last_error": None})
+            print(f"[{label}] complete")
     except Exception as exc:
-        print(f"[cache-refresh] error: {exc}")
+        _REFRESH_STATUS.update({"state": "error", "last_error": str(exc)})
+        print(f"[{label}] error: {exc}")
+    finally:
+        _REFRESH_LOCK.release()
+
+
+def run_startup_refresh() -> None:
+    """Full refresh run in a background daemon thread on every backend startup.
+
+    Ensures GW live data, transactions, and bootstrap are always current the
+    moment the Web UI becomes usable.  Uses ``--refresh=all`` (no ``--fast``).
+    """
+    cmd = _startup_refresh_cmd()
+    if not cmd:
+        print("[startup-refresh] skipped — no league configured")
+        return
+    _run_refresh(cmd, "startup-refresh")
+
+
+def run_cache_refresh() -> None:
+    """Incremental refresh used by the daily APScheduler job."""
+    _run_refresh(_scheduled_refresh_cmd(), "cache-refresh")
+
+
+@app.get("/api/refresh/status")
+def get_refresh_status() -> Dict[str, Any]:
+    """Return the current data-refresh state.
+
+    Returns:
+        Dict with keys:
+        - ``state``: ``"idle"`` | ``"running"`` | ``"error"``
+        - ``started_at``: epoch float of when the current/last run began, or ``None``
+        - ``last_completed``: epoch float of last successful completion, or ``None``
+        - ``last_error``: error message string if the last run failed, or ``None``
+    """
+    return dict(_REFRESH_STATUS)
+
+
+@app.post("/api/refresh")
+def trigger_refresh() -> Dict[str, Any]:
+    """Manually trigger a full data refresh in the background.
+
+    Returns immediately with ``{"ok": true}`` if the refresh was started, or
+    ``{"ok": false, "message": "..."}`` if one is already running.
+
+    Checks ``_REFRESH_STATUS["state"]`` directly rather than acquiring and
+    immediately releasing ``_REFRESH_LOCK``, which would open a TOCTOU window.
+    The lock inside ``_run_refresh`` guarantees that concurrent threads never
+    execute simultaneously regardless of how many are started here.
+    """
+    if _REFRESH_STATUS.get("state") == "running":
+        return {"ok": False, "message": "a refresh is already in progress"}
+    threading.Thread(target=run_startup_refresh, daemon=True).start()
+    return {"ok": True, "message": "full refresh started in background"}
 
 
 def _parse_refresh_time() -> tuple[int, int]:
@@ -93,6 +211,8 @@ def _start_cache_scheduler() -> None:
     global _CACHE_SCHEDULER
     if not SETTINGS.refresh_daily:
         return
+    if not SETTINGS.league_id:
+        return  # no league — nothing to schedule
     if _CACHE_SCHEDULER:
         return
     hour, minute = _parse_refresh_time()
@@ -112,21 +232,6 @@ def _parse_chat_payload(raw: str) -> Dict[str, Any]:
         pass
     return {"message": raw}
 
-
-@app.on_event("startup")
-def _startup() -> None:
-    ensure_go_server()
-    _start_cache_scheduler()
-    if SETTINGS.refresh_on_start:
-        threading.Thread(target=run_cache_refresh, daemon=True).start()
-
-
-@app.on_event("shutdown")
-def _shutdown() -> None:
-    global _CACHE_SCHEDULER
-    if _CACHE_SCHEDULER:
-        _CACHE_SCHEDULER.shutdown()
-        _CACHE_SCHEDULER = None
 
 
 @app.get("/health")
@@ -231,7 +336,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             payload = _parse_chat_payload(raw)
             msg = payload.get("message", "")
             await ws.send_text(json.dumps({"type": "user", "message": msg}))
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, agent.run, msg, 4, payload)
             for ev in result.get("tool_events", []):
                 await ws.send_text(json.dumps({"type": ev["type"], **ev}))
@@ -242,6 +347,8 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
 def _current_gw(client: MCPClient, league_id: int) -> int:
     summary = client.call_tool("league_summary", {"league_id": league_id, "gw": 0})
+    if not isinstance(summary, dict):
+        return 0
     return int(summary.get("gameweek", 0) or 0)
 
 
@@ -273,13 +380,19 @@ def run_report(payload: Dict[str, Any]) -> Dict[str, Any]:
     league_id_raw = payload.get("league_id")
     entry_id_raw = payload.get("entry_id")
     entry_name = payload.get("entry_name", "")
-    league_id = int(league_id_raw) if league_id_raw not in (None, "") else 0
-    entry_id = int(entry_id_raw) if entry_id_raw not in (None, "") else 0
+    try:
+        league_id = int(league_id_raw) if league_id_raw not in (None, "") else 0
+        entry_id = int(entry_id_raw) if entry_id_raw not in (None, "") else 0
+    except (ValueError, TypeError):
+        return {"error": "league_id and entry_id must be integers"}
     if league_id == 0:
         return {"error": "league_id is required"}
     if entry_id == 0 and entry_name:
         entry_id = _resolve_entry_id(client, league_id, entry_id, entry_name)
-    gw = int(payload.get("gw", 0))
+    try:
+        gw = int(payload.get("gw", 0) or 0)
+    except (ValueError, TypeError):
+        gw = 0
     waiver_weights = payload.get("waiver_weights") or {}
     xi_weights = payload.get("xi_weights") or {}
     if gw == 0:

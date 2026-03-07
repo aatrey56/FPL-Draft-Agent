@@ -307,3 +307,154 @@ class TestTryRoute:
         # Should not propagate exception; should return a user-facing error message
         assert result is not None
         assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# PR6: Routing bugs — entry_id fallback, draft round, who won, player name
+# ---------------------------------------------------------------------------
+
+class TestRoutingBugs:
+    """Tests for bug fixes #76, #80, #85, #86, #87."""
+
+    def setup_method(self) -> None:
+        self.mcp = MagicMock()
+        self.mcp.list_tools.return_value = []
+        self.llm = MagicMock()
+        self.llm.available.return_value = False
+        with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
+            self.agent = Agent(self.mcp, self.llm)
+
+    # ---- #76: _default_entry_id falls back to SETTINGS.entry_id ----
+
+    def test_default_entry_id_falls_back_to_settings(self) -> None:
+        """When session has no entry_id, _default_entry_id returns SETTINGS.entry_id."""
+        self.agent._session["entry_id"] = None
+        with patch("backend.agent.SETTINGS") as mock_settings:
+            mock_settings.entry_id = 42
+            result = self.agent._default_entry_id()
+        assert result == 42
+
+    def test_default_entry_id_session_takes_priority(self) -> None:
+        """Session entry_id should take priority over SETTINGS."""
+        self.agent._session["entry_id"] = 100
+        result = self.agent._default_entry_id()
+        assert result == 100
+
+    def test_current_roster_uses_settings_fallback(self) -> None:
+        """'my team' should work even without session entry_id (#76)."""
+        self.agent._session["league_id"] = 14204
+        self.agent._session["entry_id"] = None
+        self.mcp.call_tool.return_value = {
+            "entry_name": "My Team", "gameweek": 5,
+            "starters": [], "bench": [],
+        }
+        with patch("backend.agent.SETTINGS") as mock_settings:
+            mock_settings.entry_id = 99
+            mock_settings.league_id = 14204
+            result = self.agent._try_route("show my team", [])
+        assert result is not None
+        assert "unavailable" not in result.lower()
+
+    # ---- #80: draft_picks round filter ----
+
+    def test_draft_picks_filters_by_round(self) -> None:
+        """'who did we draft in round 1' should only show round 1 picks (#80)."""
+        self.agent._session["league_id"] = 14204
+        self.agent._session["entry_id"] = 100
+        self.mcp.call_tool.return_value = {
+            "filtered_by": "My Team",
+            "picks": [
+                {"round": 1, "pick": 3, "entry_name": "Me", "player_name": "Salah", "team": "LIV", "position_type": 3},
+                {"round": 2, "pick": 14, "entry_name": "Me", "player_name": "Rice", "team": "ARS", "position_type": 3},
+                {"round": 3, "pick": 19, "entry_name": "Me", "player_name": "Saka", "team": "ARS", "position_type": 3},
+            ],
+        }
+        result = self.agent._try_route("who did we draft in round 1", [])
+        assert result is not None
+        assert "Salah" in result
+        assert "Rice" not in result  # round 2 — should be filtered out
+        assert "round 1" in result.lower()
+
+    def test_draft_picks_no_round_shows_all(self) -> None:
+        """Without a round mention, all picks should be shown."""
+        self.agent._session["league_id"] = 14204
+        self.agent._session["entry_id"] = 100
+        self.mcp.call_tool.return_value = {
+            "filtered_by": "My Team",
+            "picks": [
+                {"round": 1, "pick": 3, "entry_name": "Me", "player_name": "Salah", "team": "LIV", "position_type": 3},
+                {"round": 2, "pick": 14, "entry_name": "Me", "player_name": "Rice", "team": "ARS", "position_type": 3},
+            ],
+        }
+        result = self.agent._try_route("who did we draft", [])
+        assert result is not None
+        assert "Salah" in result
+        assert "Rice" in result
+
+    # ---- #85: "who won GW27" routes to league_summary ----
+
+    def test_who_won_gw_routes_to_league_summary(self) -> None:
+        """'who won GW27' should route to league_summary, not win_list (#85)."""
+        self.agent._session["league_id"] = 14204
+        self.mcp.call_tool.return_value = {
+            "entries": [], "gameweek": 27, "matches": [],
+        }
+        result = self.agent._try_route("who won gw27", [])
+        # Verify it called league_summary, not win_list
+        call_args = self.mcp.call_tool.call_args
+        assert call_args is not None
+        tool_name = call_args[0][0]
+        assert tool_name == "league_summary"
+
+    # ---- #86: "wins each gameweek" matches win_list ----
+
+    def test_wins_each_gameweek_matches_win_list(self) -> None:
+        """'wins each gameweek' should route to win_list (#86)."""
+        assert self.agent._looks_like("win_list", "wins each gameweek")
+
+    def test_wins_each_still_matches(self) -> None:
+        """The ('wins', 'each') tuple keyword should match."""
+        assert self.agent._looks_like("win_list", "my wins each week")
+
+    # ---- #87: "for" prefix stripped from player name ----
+
+    def test_player_name_for_prefix_stripped(self) -> None:
+        """'gameweek points for Saka' should extract 'Saka', not 'for Saka' (#87)."""
+        self.agent._session["league_id"] = 14204
+        self.mcp.call_tool.return_value = {
+            "player_name": "Saka", "team": "ARS", "position_type": 3,
+            "total_points": 50, "avg_points": 5.0, "gameweeks": [],
+        }
+        result = self.agent._try_route("gameweek points for Saka", [])
+        assert result is not None
+        # The tool should have been called with player_name="Saka" not "for Saka"
+        call_args = self.mcp.call_tool.call_args
+        tool_args = call_args[0][1]  # second positional arg is the args dict
+        assert tool_args.get("player_name") == "Saka"
+
+
+# ---------------------------------------------------------------------------
+# _has_league helper
+# ---------------------------------------------------------------------------
+
+class TestHasLeague:
+    """Verify _has_league returns False when league_id is 0 (not configured)."""
+
+    def test_has_league_false_when_zero(self) -> None:
+        agent = _make_agent()
+        agent._session["league_id"] = None
+        with patch("backend.agent.SETTINGS") as mock_settings:
+            mock_settings.league_id = 0
+            assert agent._has_league() is False
+
+    def test_has_league_true_when_set(self) -> None:
+        agent = _make_agent()
+        agent._session["league_id"] = 14204
+        assert agent._has_league() is True
+
+    def test_has_league_true_from_settings(self) -> None:
+        agent = _make_agent()
+        agent._session["league_id"] = None
+        with patch("backend.agent.SETTINGS") as mock_settings:
+            mock_settings.league_id = 14204
+            assert agent._has_league() is True

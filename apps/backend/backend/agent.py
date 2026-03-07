@@ -105,7 +105,7 @@ class Agent:
             "who dropped", ("position", "targeted"), ("position", "popular"),
             "popular adds", "popular drops",
         ],
-        "head_to_head": ["head to head", " h2h ", "record against"],
+        "head_to_head": ["head to head", "h2h", "record against"],
         "manager_season": [
             "season stats", "season history", "season record",
             "how have i done", "overall record", "weekly scores",
@@ -124,6 +124,7 @@ class Agent:
             ("win", "week"), ("win", "gw"), ("win", "gameweek"),
             ("won", "week"), ("won", "gw"), ("won", "gameweek"),
             ("wins", "week"), ("wins", "gw"), ("wins", "gameweek"),
+            ("wins", "each"),
         ],
         "schedule": ["schedule", ("who does", "play")],
         "fixtures": ["fixtures", "fixture list"],
@@ -131,7 +132,7 @@ class Agent:
         "standings": ["standings", "table"],
         "league_summary": ["league summary", ("summary", "league")],
         "transactions": ["transactions", "trades", ("waivers", "summary")],
-        "lineup": ["lineup efficiency", "bench points", "bench"],
+        "lineup": ["lineup efficiency", "bench points"],
         "strength": ["strength of schedule", "schedule difficulty"],
         "ownership": ["ownership", "scarcity"],
         "matchup_summary": [
@@ -139,6 +140,10 @@ class Agent:
             (" vs. ", "summary"), (" vs. ", "recap"),
         ],
     }
+
+    def _has_league(self) -> bool:
+        """Return True if a real FPL Draft league is configured (league_id > 0)."""
+        return self._default_league_id() > 0
 
     def _looks_like(self, intent: str, text: str) -> bool:
         """Return True if *text* matches any pattern for *intent*."""
@@ -338,7 +343,10 @@ class Agent:
                     out["entry_name"] = entry_name
                 else:
                     out.pop("entry_name", None)
-        league_id = int(out.get("league_id", 0)) if out.get("league_id") is not None else 0
+        try:
+            league_id = int(out.get("league_id") or 0)
+        except (TypeError, ValueError):
+            league_id = 0
         if league_id == 0:
             league_id = self._default_league_id()
         if name in ("waiver_recommendations", "manager_schedule", "manager_streak",
@@ -451,12 +459,21 @@ class Agent:
             return 0
 
     def _default_entry_id(self) -> Optional[int]:
+        """Return the session entry_id, falling back to SETTINGS.entry_id."""
         entry_id = self._session.get("entry_id")
         if entry_id:
             try:
                 return int(entry_id)
             except Exception:
-                return None
+                pass
+        # Fall back to the config-level default so "my team" works even when
+        # the session hasn't been seeded by an explicit entry_id yet.
+        try:
+            cfg_id = int(SETTINGS.entry_id)
+            if cfg_id:
+                return cfg_id
+        except Exception:
+            pass
         return None
 
     def _default_entry_name(self) -> Optional[str]:
@@ -618,6 +635,10 @@ class Agent:
             return self._handle_waiver(text, tool_events)
         if self._looks_like("streak", lower):
             return self._handle_streak(text, tool_events)
+        # "who won GW27" asks about the league winner, not personal win history.
+        # Route to league_summary when "who" + "won" + a GW reference appear together.
+        if "who" in lower and "won" in lower and GW_PATTERN.search(lower):
+            return self._handle_league_summary(text, tool_events)
         if self._looks_like("win_list", lower):
             return self._handle_wins_list(text, tool_events)
         if self._looks_like("schedule", lower):
@@ -903,6 +924,12 @@ class Agent:
                 # Can't set pending for draft since it's not in pending handler — fall through to LLM.
                 return None
 
+        # Extract optional round filter (e.g. "round 1", "rd 3").
+        round_filter: Optional[int] = None
+        round_match = re.search(r"(?:round|rd)\s*(\d+)", text, re.IGNORECASE)
+        if round_match:
+            round_filter = int(round_match.group(1))
+
         args: Dict[str, Any] = {"league_id": league_id}
         if entry_id:
             args["entry_id"] = entry_id
@@ -911,8 +938,13 @@ class Agent:
             return "Draft history is unavailable right now."
 
         picks = result.get("picks", [])
+        # Client-side round filter (Go tool doesn't support it natively).
+        if round_filter is not None:
+            picks = [p for p in picks if p.get("round") == round_filter]
+
         filtered_by = result.get("filtered_by") or ""
-        header = f"Draft picks for **{filtered_by}**:" if filtered_by else "Draft picks (all teams):"
+        round_label = f" (round {round_filter})" if round_filter else ""
+        header = f"Draft picks for **{filtered_by}**{round_label}:" if filtered_by else f"Draft picks (all teams){round_label}:"
         lines = [header]
         for p in picks[:30]:
             manager = p.get("entry_name") or "Unknown"
@@ -923,6 +955,8 @@ class Agent:
             lines.append(f"  Rd{p.get('round')}, Pick{p.get('pick')}: {manager} → {player} ({team}, {pos}){auto}")
         if len(picks) > 30:
             lines.append(f"  ... and {len(picks) - 30} more picks.")
+        if round_filter is not None and not picks:
+            lines.append(f"  No picks found for round {round_filter}.")
         return "\n".join(lines)
 
     def _handle_manager_season(
@@ -1036,6 +1070,9 @@ class Agent:
                        "each gameweek", "per gw", "stats for", "points for", "how many points has",
                        "how has", "done each", "scored each"):
             player_text = re.sub(phrase, "", player_text, flags=re.IGNORECASE).strip()
+
+        # Strip a leading "for" left over after phrase removal (e.g. "gameweek points for Saka").
+        player_text = re.sub(r"^for\s+", "", player_text, flags=re.IGNORECASE).strip()
 
         # Extract potential player name (2-3 word chunk that's not a keyword).
         words = player_text.split()

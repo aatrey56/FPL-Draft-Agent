@@ -343,3 +343,178 @@ Quality > volume.
 Clarity > cleverness.
 
 End.
+
+---
+
+# 12. Architecture
+
+## 12.1 Repository Layout
+
+```
+fpl-draft-mcp/
+├── apps/
+│   ├── mcp-server/          # Go MCP server (port 8080)
+│   │   └── fpl-server/
+│   │       ├── main.go                  # Entry point, tool registration
+│   │       ├── bootstrap.go             # Loads FPL bootstrap JSON
+│   │       ├── waiver.go                # Waiver scoring logic
+│   │       ├── fixture_difficulty.go    # FDR calculations
+│   │       ├── head_to_head.go          # H2H record tool
+│   │       ├── manager_season.go        # Season stats tool
+│   │       ├── player_gw_stats.go       # Per-GW player stats tool
+│   │       ├── current_roster.go        # Active roster tool
+│   │       ├── draft_picks.go           # Draft history tool
+│   │       ├── transaction_analysis.go  # Transaction ranking tool
+│   │       ├── *_test.go                # Go unit tests (no live calls)
+│   │       └── config.go                # ServerConfig struct
+│   └── backend/             # Python FastAPI backend (port 8000)
+│       └── backend/
+│           ├── main.py          # FastAPI app, /chat endpoint
+│           ├── agent.py         # AI agent routing + intent detection
+│           ├── mcp.py           # MCP client (calls Go server)
+│           ├── reports.py       # Report generation (markdown)
+│           ├── rag.py           # RAG index (file-backed)
+│           ├── scheduler.py     # APScheduler for data refresh
+│           ├── constants.py     # Shared constants (GW_PATTERN, POSITION_TYPE_LABELS)
+│           └── config.py        # SETTINGS (env-backed)
+├── data/                    # FPL raw + derived data (gitignored)
+│   ├── raw/                 # API snapshots (bootstrap.json, gw/*/live.json, etc.)
+│   └── derived/
+│       ├── summary/         # league/standings/transactions summaries
+│       └── reports/         # GW markdown reports
+├── CLAUDE.md
+└── README.md
+```
+
+## 12.2 Data Flow
+
+```
+FPL API
+  │
+  ▼
+Scheduler (Python, APScheduler)
+  │  fetches raw JSON → data/raw/
+  │  generates summaries → data/derived/summary/
+  │  generates reports → data/derived/reports/
+  ▼
+Go MCP Server (:8080)
+  │  reads data/raw/ + derived/
+  │  exposes 22 tools via MCP protocol
+  ▼
+Python Agent (backend/agent.py)
+  │  receives user message
+  │  detects intent via _INTENT_KEYWORDS
+  │  calls MCP tools via MCPClient
+  │  augments with RAG context
+  │  calls Claude LLM
+  ▼
+FastAPI /chat endpoint (:8000)
+  │  returns structured response
+  ▼
+User / Frontend
+```
+
+## 12.3 Port Assignments
+
+| Service | Port | Notes |
+|---|---|---|
+| Go MCP Server | 8080 | HTTP, MCP protocol |
+| Python FastAPI | 8000 | HTTP, /chat endpoint |
+| Dolt SQL (Gas Town) | 3307 | Persistent agent state |
+
+---
+
+# 13. Component Boundaries
+
+**What lives in Go (MCP Server):**
+- All file reads from `data/raw/` and `data/derived/`
+- Stateless analytics: FDR scoring, waiver ranking, H2H records, player stats
+- JSON in → JSON out — no side effects, no database, no network calls
+- All MCP tool handlers
+
+**What lives in Python (Backend):**
+- Intent detection and routing (`agent.py`)
+- LLM calls (Claude via `llm.py`)
+- RAG index construction and search (`rag.py`)
+- Scheduling and data refresh (`scheduler.py`)
+- HTTP API surface (`main.py`)
+- Report generation (`reports.py`)
+
+**Crossing the boundary:**
+- Python → Go: HTTP POST to MCP server with tool name + JSON args
+- Go → Python: Never (Go is downstream, Python is orchestrator)
+- The MCP protocol is the only interface between the two
+
+**Rules:**
+- Never add network calls to Go tools (they read local files only)
+- Never add file I/O to agent routing logic (agent calls tools, tools read files)
+- Never share state between tools (each tool invocation is stateless)
+
+---
+
+# 14. Dev Commands
+
+## Go (if `apps/mcp-server/` touched)
+
+```bash
+cd apps/mcp-server
+go fmt ./...
+go vet ./...
+go test ./...
+```
+
+## Python (if `apps/backend/` touched)
+
+```bash
+cd apps/backend
+pytest
+ruff check .
+mypy backend/   # if mypy is configured
+```
+
+## Run Both Servers Locally
+
+```bash
+# Terminal 1 — Go MCP server
+cd apps/mcp-server
+go run ./fpl-server
+
+# Terminal 2 — Python backend
+cd apps/backend
+uvicorn backend.main:app --reload --port 8000
+```
+
+## Test Chat Endpoint
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "show standings", "session_id": "test"}' | jq .
+```
+
+## Data Directories (local dev)
+
+Set in `.env`:
+```
+DATA_DIR=/path/to/data
+REPORTS_DIR=/path/to/data/derived/reports
+MCP_URL=http://localhost:8080
+```
+
+---
+
+# 15. Never (Autonomous Agent Rules)
+
+These rules are non-negotiable for all agents operating in this repo:
+
+- **Never call the live FPL API in tests.** Use fixtures in `t.TempDir()` (Go) or `tmp_path` (pytest).
+- **Never hardcode league IDs, entry IDs, or element IDs** in source code. Pass them as parameters.
+- **Never push directly to `main` or `dev`.** All changes must go through a PR.
+- **Never merge a PR with failing CI** (tests, lint, vet).
+- **Never add a `# type: ignore`** without a comment explaining why it's unavoidable.
+- **Never use `fmt.Sscanf` for float parsing** in Go — use `strconv.ParseFloat`.
+- **Never use insertion sort** — use `sort.Slice` (Go) or sorted() (Python).
+- **Never mutate `_docs` in RAGIndex** outside of `refresh()`.
+- **Never skip `--force-with-lease`** when force-pushing a rebased branch.
+- **Never open more than one PR per issue.**
+- **Never ship without updating this file** if architecture changes.

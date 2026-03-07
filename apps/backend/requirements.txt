@@ -1,6 +1,6 @@
-fastapi==0.115.5
-uvicorn[standard]==0.30.6
-requests==2.32.3
-apscheduler==3.10.4
+fastapi==0.129.0
+uvicorn[standard]==0.40.0
+requests==2.32.5
+apscheduler==3.11.2
 openai==1.63.2
-python-dotenv==1.0.1
+python-dotenv==1.2.1

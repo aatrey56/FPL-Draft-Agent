@@ -1,5 +1,8 @@
 .DS_Store
+# Virtual environments — matched at any depth so nested envs (e.g.
+# apps/backend/.venv) are also ignored.
 .venv/
+**/.venv/
 __pycache__/
 *.pyc
 data/
