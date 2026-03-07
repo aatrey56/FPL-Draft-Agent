@@ -1,0 +1,118 @@
+FPL Draft Agent — Session Summary (Friday, Feb 27, 2026)
+=========================================================
+
+OVERVIEW
+--------
+Implemented two sequential PRs adding optional league config and a new
+EPL Premier League summary feature. Both PRs were coded, tested, pushed,
+and opened on GitHub. A routing bug was discovered and fixed during local
+end-to-end testing.
+
+
+PR #96: chore/optional-league-config (branch: chore/optional-league-config → main)
+-----------------------------------------------------------------------------------
+Purpose: Make LEAGUE_ID and ENTRY_ID environment variables optional so
+the app starts without an FPL Draft League. Users who only want
+player/team/fixture queries no longer need a league.
+
+Changes:
+  - config.py: Changed league_id/entry_id from _require_int_env() (raises
+    ValueError) to default_factory lambdas that default to 0.
+  - server.py: Guarded startup refresh, run_startup_refresh(), and
+    _start_cache_scheduler() to skip when league_id=0.
+  - scheduler.py: Guarded run_tuesday_reports() and run_friday_reports()
+    to skip when no league/entry configured.
+  - agent.py: Added _has_league() helper (returns True when league_id > 0).
+  - Tests updated: config tests changed from "raises" to "defaults to zero";
+    added server guard tests and _has_league tests.
+
+Bug encountered during implementation:
+  Plain `int(os.getenv(...))` in a dataclass field evaluates at class
+  definition time (module import), not at instance creation. Tests using
+  monkeypatch could not override it. Fixed by using
+  `field(default_factory=lambda: int(os.getenv("LEAGUE_ID", "0") or "0"))`.
+
+
+PR #97: feat/epl-summary (branch: feat/epl-summary → chore/optional-league-config)
+-----------------------------------------------------------------------------------
+Purpose: Add real Premier League fixture results and standings table.
+"premier league summary" / "EPL" / "prem" keywords show EPL data.
+"league summary" shows FPL Draft when league is configured, EPL when not.
+
+Go MCP server changes (3 new files):
+  - epl_common.go: Shared types (Team, rawFixture, gwLiveFixturesOnly)
+    and helpers (loadTeams, loadFixtureResults).
+  - epl_fixtures.go: epl_fixtures tool — returns fixture results for a
+    single gameweek. Handles in-progress, not-started, and finished matches.
+  - epl_standings.go: epl_standings tool — computes full season standings
+    by iterating GW 1..current_event, accumulating W/D/L/GF/GA per team.
+    EPL tiebreakers: Points DESC > GD DESC > GF DESC > Team name ASC.
+    Handles missing GWs, unfinished matches, DGWs, and nil scores.
+  - main.go: Registered both new tools.
+  - 10 new Go tests (5 fixtures + 5 standings) covering: single GW,
+    in-progress, not-started, missing GW, DGW, multi-GW accumulation,
+    tiebreakers, unfinished exclusion.
+
+Python agent changes:
+  - agent.py: Added epl_summary intent keywords, EPL routing in
+    _try_route(), _handle_epl_summary(), _render_epl_summary(),
+    _apply_defaults() for new tools, and SYSTEM_PROMPT updates.
+  - 6 new Python tests for EPL routing and rendering.
+
+Routing bug found during local testing:
+  "prem standings" was matching the FPL Draft `standings` intent (keyword
+  "standings") before reaching the `epl_summary` check. Fixed by moving
+  the epl_summary check ABOVE the standings check in _try_route().
+  Same pattern as "premier league summary" containing "league summary" —
+  more-specific intents must be checked before more-general ones.
+
+
+LOCAL END-TO-END TEST RESULTS
+-----------------------------
+Both servers started (Go MCP on :8080, Python FastAPI on :8000).
+Tested via POST /chat endpoint.
+
+TEST 1: "premier league summary" (league configured)
+  Routing: epl_fixtures(gw=0) + epl_standings({})
+  Result: GW27 results (10 matches, all finished with scores) +
+          20-team standings table. PASS.
+
+TEST 2: "EPL results gw25" (specific gameweek)
+  Routing: epl_fixtures(gw=25) + epl_standings({})
+  Result: GW25 fixtures + standings table. PASS.
+
+TEST 3: "league summary" (LEAGUE_ID=14204 configured)
+  Routing: league_summary(league_id=14204)
+  Result: FPL Draft league summary (10 managers). PASS.
+  Correctly routed to FPL Draft, not EPL.
+
+TEST 4: "prem standings"
+  Before fix: Routed to FPL Draft standings tool. FAIL.
+  After fix: Routed to epl_fixtures + epl_standings. PASS.
+
+TEST 5: "league summary" (LEAGUE_ID=0, no league)
+  Routing: epl_fixtures(gw=0) + epl_standings({})
+  Result: EPL fixtures + standings (fallback). PASS.
+  Correctly fell back to EPL when no Draft League configured.
+
+
+TEST COUNTS
+-----------
+  Python: 101 tests pass (ruff clean)
+  Go: All packages pass including 10 new EPL tests
+
+
+COMMITS
+-------
+1. chore(config): make league_id and entry_id optional with 0 default
+2. feat(epl): add epl_fixtures and epl_standings Go MCP tools
+3. feat(agent): add EPL summary routing and rendering
+4. fix(agent): move EPL routing above standings to prevent
+   "prem standings" misroute
+
+
+OPEN PRs
+--------
+  PR #96: chore/optional-league-config → main
+  PR #97: feat/epl-summary → chore/optional-league-config
+  (PR #97 depends on PR #96 — merge sequentially)

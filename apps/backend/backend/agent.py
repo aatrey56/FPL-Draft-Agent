@@ -239,6 +239,10 @@ class Agent:
         """
         user_message = (user_message or "").strip()
         context = context or {}
+        # Clear per-turn GW so it doesn't leak across conversation turns.
+        # The GW will be re-set only if the frontend's context dict or the
+        # user's text explicitly specifies one.
+        self._session.pop("gw", None)
         self._update_session_from_context(context)
         self._update_session_from_text(user_message)
 
@@ -311,7 +315,7 @@ class Agent:
                     self._append_history("assistant", err_msg)
                     return {"content": err_msg, "tool_events": tool_events}
                 tool_events.append({"type": "tool_result", "name": name, "result": result})
-                if name == "league_summary" and isinstance(result, dict):
+                if name == "league_summary" and isinstance(result, dict) and "error" not in result:
                     content = render_league_summary_md(result, self.llm)
                     if user_message:
                         self._append_history("user", user_message)
@@ -556,17 +560,28 @@ class Agent:
                 pass
 
     def _update_session_from_text(self, text: str) -> None:
+        """Extract league/entry IDs from the user's message and persist them.
+
+        GW is intentionally NOT persisted here — it is extracted per-query
+        inside each handler to avoid cross-turn stickiness (#75).
+        """
         league_id = self._extract_league_id(text)
         if league_id:
             self._session["league_id"] = league_id
         entry_id = self._extract_entry_id(text)
         if entry_id:
             self._session["entry_id"] = entry_id
-        gw = self._extract_gw(text)
-        if gw is not None:
-            self._session["gw"] = gw
 
     def _note_tool_use(self, name: str, args: Dict[str, Any]) -> None:
+        """Record the last-used tool and persist stable session keys.
+
+        **GW is intentionally NOT cached here.**  Persisting the GW from every
+        tool call caused "GW stickiness" — after "standings for GW3", all
+        subsequent queries would silently default to GW3 instead of the current
+        gameweek (#75, #81-#84, #88).  The GW is now per-query only: it comes
+        from the user's text or from the ``context`` dict provided by the API
+        caller, never from a previous tool invocation.
+        """
         self._session["last_tool"] = name
         league_id = args.get("league_id")
         if league_id:
@@ -583,14 +598,6 @@ class Agent:
         entry_name = args.get("entry_name")
         if entry_name:
             self._session["entry_name"] = str(entry_name)
-        gw = args.get("gw")
-        if gw is None:
-            gw = args.get("as_of_gw")
-        if gw is not None:
-            try:
-                self._session["gw"] = int(gw)
-            except Exception:
-                pass
 
     def _append_history(self, role: str, content: str) -> None:
         text = (content or "").strip()
@@ -648,6 +655,33 @@ class Agent:
         docs = self._rag.search(text, k=3)
         return format_rag_docs(docs)
 
+    # Common greetings and small-talk patterns that should get a friendly
+    # response without calling any tools.
+    _GREETING_PATTERNS: List[str] = [
+        "hello", "hi", "hey", "howdy", "yo", "sup", "good morning",
+        "good afternoon", "good evening", "what's up", "whats up",
+        "how are you", "thanks", "thank you", "cheers", "bye", "goodbye",
+    ]
+
+    def _is_greeting(self, text: str) -> bool:
+        """Return True if *text* is a greeting or simple small-talk phrase.
+
+        Uses exact matching against ``_GREETING_PATTERNS`` and, for very short
+        messages (1-2 words), checks whether the *first word* is a known
+        greeting.  This avoids false positives where FPL queries like
+        "hi salah stats" or "highlights gw27" would previously match because
+        ``startswith`` treated "hi" as a prefix of the whole string.
+        """
+        lower = text.lower().strip().rstrip("!?.,")
+        # Exact match against known patterns (handles multi-word phrases too)
+        if lower in self._GREETING_PATTERNS:
+            return True
+        # Short messages (1-2 words) where the first word is a greeting
+        words = lower.split()
+        if len(words) <= 2 and words and words[0] in self._GREETING_PATTERNS:
+            return True
+        return False
+
     def _try_route(self, user_message: str, tool_events: List[Dict[str, Any]]) -> Optional[str]:
         text = user_message.strip()
         if not text:
@@ -656,6 +690,14 @@ class Agent:
         if pending is not None:
             return pending
         lower = text.lower()
+
+        # ---- Greetings / small-talk — respond without calling any tools ----
+        if self._is_greeting(lower):
+            return (
+                "Hey! I'm your FPL Draft assistant. "
+                "Ask me about league standings, waiver picks, matchups, "
+                "player stats, schedules, and more."
+            )
 
         # ---- New tools (higher priority — check before broad existing patterns) ----
         if self._looks_like("game_status", lower):
@@ -684,6 +726,10 @@ class Agent:
             return self._handle_league_summary(text, tool_events)
         if self._looks_like("win_list", lower):
             return self._handle_wins_list(text, tool_events)
+        # Check "strength" before "schedule" because "strength of schedule"
+        # contains "schedule" and would be misrouted otherwise.
+        if self._looks_like("strength", lower):
+            return self._handle_strength_of_schedule(text, tool_events)
         if self._looks_like("schedule", lower):
             return self._handle_schedule(text, tool_events)
         if self._looks_like("fixtures", lower):
@@ -705,14 +751,12 @@ class Agent:
             return self._handle_transactions(text, tool_events)
         if self._looks_like("lineup", lower):
             return self._handle_lineup_efficiency(text, tool_events)
-        if self._looks_like("strength", lower):
-            return self._handle_simple_tool(text, tool_events, "strength_of_schedule", "Strength of schedule")
         if self._looks_like("ownership", lower):
-            return self._handle_simple_tool(text, tool_events, "ownership_scarcity", "Ownership scarcity")
+            return self._handle_ownership_scarcity(text, tool_events)
         if self._looks_like("matchup_summary", lower):
             return self._handle_matchup_summary(text, tool_events)
         if "league entries" in lower or "all teams" in lower:
-            return self._handle_simple_tool(text, tool_events, "league_entries", "League teams")
+            return self._handle_league_entries(text, tool_events)
 
         league_id = self._extract_league_id(text) or self._default_league_id()
         if self._looks_like_team_name_only(text, league_id, tool_events):
@@ -724,15 +768,44 @@ class Agent:
 
         return None
 
+    @staticmethod
+    def _sanitize_error(msg: str) -> str:
+        """Strip internal file paths and Go-level detail from error messages.
+
+        The Go MCP server may include raw ``os.Open`` error strings that leak
+        file-system layout (e.g.  ``open data/raw/gw/99/live.json: no such
+        file or directory``).  This helper rewrites them into user-friendly
+        messages while preserving the essential information.
+        """
+        # Pattern: "open <path>: no such file or directory"
+        m = re.search(r"open\s+\S+:\s*no such file or directory", msg)
+        if m:
+            # Try to extract GW number from the path
+            gw_m = re.search(r"/gw/(\d+)/", msg)
+            if gw_m:
+                return f"No data available for GW{gw_m.group(1)}. The data may not have been fetched yet."
+            return "The requested data file was not found. Try refreshing your data."
+        # Generic: strip anything that looks like a file-system path
+        cleaned = re.sub(r"(?:open|read|stat)\s+\S+\.json:\s*", "", msg).strip()
+        return cleaned or msg
+
     def _call_tool(self, tool_events: List[Dict[str, Any]], name: str, args: Dict[str, Any]) -> Any:
+        """Call an MCP tool and return its result, or an ``{"error": ...}`` dict on failure.
+
+        Error messages from the Go server are sanitised to remove internal file
+        paths before being stored in the result.
+        """
         self._note_tool_use(name, args)
         tool_events.append({"type": "tool_call", "name": name, "arguments": args})
         try:
             result = self.mcp.call_tool(name, args)
         except Exception as exc:
-            err_msg = str(exc)
+            err_msg = self._sanitize_error(str(exc))
             tool_events.append({"type": "tool_error", "name": name, "error": err_msg})
             return {"error": err_msg}
+        # Sanitise errors that arrive inside the result dict
+        if isinstance(result, dict) and "error" in result:
+            result["error"] = self._sanitize_error(str(result["error"]))
         tool_events.append({"type": "tool_result", "name": name, "result": result})
         return result
 
@@ -924,14 +997,21 @@ class Agent:
         gw = self._extract_gw(text)
         if gw is None:
             gw = self._default_gw()
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
-        team_name = team_name_override or self._default_entry_name()
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
 
-        if not entry_id:
+        # Resolve team name from text before session fallback.
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("roster", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team's roster would you like? Please provide a team name or entry ID."
 
@@ -963,16 +1043,29 @@ class Agent:
                 lines.append(f"  {p.get('position_slot', '')}) {name} ({team}, {pos})")
         return "\n".join(lines)
 
-    def _handle_draft_picks(self, text: str, tool_events: List[Dict[str, Any]]) -> Optional[str]:
+    def _handle_draft_picks(
+        self,
+        text: str,
+        tool_events: List[Dict[str, Any]],
+        entry_id_override: Optional[int] = None,
+        team_name_override: Optional[str] = None,
+    ) -> Optional[str]:
         league_id = self._extract_league_id(text) or self._default_league_id()
-        entry_id = self._extract_entry_id(text) or self._default_entry_id()
-        team_name = self._default_entry_name()
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
 
-        if not entry_id:
+        # Resolve team name from text before session fallback.
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 # Can't set pending for draft since it's not in pending handler — fall through to LLM.
                 return None
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
 
         # Extract optional round filter (e.g. "round 1", "rd 3").
         round_filter: Optional[int] = None
@@ -1017,14 +1110,21 @@ class Agent:
         team_name_override: Optional[str] = None,
     ) -> str:
         league_id = self._extract_league_id(text) or self._default_league_id()
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
-        team_name = team_name_override or self._default_entry_name()
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
 
-        if not entry_id:
+        # Resolve team name from text before session fallback.
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("season", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team's season history would you like? Please provide a team name or entry ID."
 
@@ -1251,24 +1351,38 @@ class Agent:
         gw = self._extract_gw(text)
         if gw is None:
             gw = self._default_gw()
-        args: Dict[str, Any] = {"league_id": league_id}
-        if gw is not None:
-            args["gw"] = gw
+        args: Dict[str, Any] = {"league_id": league_id, "gw": gw or 0}
         result = self._call_tool(tool_events, "league_summary", args)
-        if not isinstance(result, dict):
-            return "League summary is unavailable right now."
+        if not isinstance(result, dict) or "error" in result:
+            err = result.get("error", "") if isinstance(result, dict) else ""
+            return f"League summary is unavailable right now. {err}".strip()
         return render_league_summary_md(result, self.llm)
 
-    def _handle_lineup_efficiency(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+    def _handle_lineup_efficiency(
+        self,
+        text: str,
+        tool_events: List[Dict[str, Any]],
+        entry_id_override: Optional[int] = None,
+        team_name_override: Optional[str] = None,
+    ) -> str:
         league_id = self._extract_league_id(text) or self._default_league_id()
         gw = self._extract_gw(text)
         if gw is None:
             gw = self._default_gw()
-        entry_id = self._extract_entry_id(text) or self._default_entry_id()
-        if not entry_id:
-            entry_id, _, multiple = self._resolve_team(league_id, text, tool_events)
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
+
+        # Resolve team name from text before session fallback.
+        if not entry_id and not team_name:
+            entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         args: Dict[str, Any] = {"league_id": league_id, "gw": gw if gw is not None else 0}
         result = self._call_tool(tool_events, "lineup_efficiency", args)
         if not isinstance(result, dict):
@@ -1340,14 +1454,24 @@ class Agent:
         if gw is None:
             gw = self._default_gw()
         horizon = self._extract_horizon(text)
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
 
-        team_name = team_name_override or self._default_entry_name()
-        if not entry_id:
+        # Try resolving a team name from the text before falling back to
+        # session defaults.  This ensures "waiver recs for Boot Gang" queries
+        # the named team rather than silently returning the user's own team.
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("waiver", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        # Fall back to session defaults only when no team was identified.
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team should I run waivers for? Please provide a team name or entry ID."
 
@@ -1404,14 +1528,21 @@ class Agent:
         if gw is None:
             gw = self._default_gw()
         horizon = self._extract_horizon(text) or 5
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
 
-        team_name = team_name_override or self._default_entry_name()
-        if not entry_id:
+        # Resolve team name from text before session fallback (#74).
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("schedule", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team do you want the schedule for?"
 
@@ -1493,13 +1624,21 @@ class Agent:
         team_name_override: Optional[str] = None,
     ) -> str:
         league_id = self._extract_league_id(text) or self._default_league_id()
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
-        team_name = team_name_override or self._default_entry_name()
-        if not entry_id:
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
+
+        # Resolve team name from text before session fallback (#73).
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("streak", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team should I check for win streaks?"
         args: Dict[str, Any] = {"league_id": league_id, "entry_id": entry_id}
@@ -1523,13 +1662,21 @@ class Agent:
         team_name_override: Optional[str] = None,
     ) -> str:
         league_id = self._extract_league_id(text) or self._default_league_id()
-        entry_id = entry_id_override or self._extract_entry_id(text) or self._default_entry_id()
-        team_name = team_name_override or self._default_entry_name()
-        if not entry_id:
+        entry_id = entry_id_override or self._extract_entry_id(text)
+        team_name = team_name_override
+
+        # Resolve team name from text before session fallback.
+        if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
             if multiple:
                 self._set_pending("wins", league_id, multiple, text)
                 return f"I found multiple matching teams: {self._format_candidates(multiple)} Which one do you mean?"
+
+        if not entry_id:
+            entry_id = self._default_entry_id()
+            team_name = team_name or self._default_entry_name()
+        if not team_name:
+            team_name = self._default_entry_name()
         if not entry_id:
             return "Which team do you want win weeks for?"
 
@@ -1844,6 +1991,95 @@ class Agent:
             lines.append("Waivers: processed (free agency open)")
         else:
             lines.append("Waivers: pending")
+        return "\n".join(lines)
+
+    def _handle_league_entries(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+        """Render the list of teams in the league (#77)."""
+        league_id = self._extract_league_id(text) or self._default_league_id()
+        result = self._call_tool(tool_events, "league_entries", {"league_id": league_id})
+        if not isinstance(result, dict):
+            return "League entries data is unavailable right now."
+        teams = result.get("teams", [])
+        if not teams:
+            return "No teams found in this league."
+        lines = [f"League teams ({len(teams)}):"]
+        for t in teams:
+            name = t.get("entry_name") or "Unknown"
+            short = t.get("short_name") or ""
+            entry_id = t.get("entry_id", "")
+            if short:
+                lines.append(f"- {name} ({short}) — ID {entry_id}")
+            else:
+                lines.append(f"- {name} — ID {entry_id}")
+        return "\n".join(lines)
+
+    def _handle_ownership_scarcity(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+        """Render ownership/scarcity breakdown by position (#78)."""
+        league_id = self._extract_league_id(text) or self._default_league_id()
+        gw = self._extract_gw(text)
+        if gw is None:
+            gw = self._default_gw()
+        args: Dict[str, Any] = {"league_id": league_id, "gw": gw if gw is not None else 0}
+        result = self._call_tool(tool_events, "ownership_scarcity", args)
+        if not isinstance(result, dict):
+            return "Ownership scarcity data is unavailable right now."
+
+        gw_label = result.get("gameweek") or gw or "current"
+        lines = [f"Ownership scarcity (GW{gw_label}):"]
+
+        owned = result.get("owned_totals") or {}
+        unowned = result.get("unowned_totals") or {}
+        if owned or unowned:
+            lines.append(f"  Owned: GK {owned.get('gk', 0)}, DEF {owned.get('def', 0)}, "
+                         f"MID {owned.get('mid', 0)}, FWD {owned.get('fwd', 0)} "
+                         f"(total {owned.get('total', 0)})")
+            lines.append(f"  Free agents: GK {unowned.get('gk', 0)}, DEF {unowned.get('def', 0)}, "
+                         f"MID {unowned.get('mid', 0)}, FWD {unowned.get('fwd', 0)} "
+                         f"(total {unowned.get('total', 0)})")
+
+        hoarders = result.get("hoarders") or {}
+        if hoarders:
+            lines.append("Position hoarders:")
+            for pos, entries in hoarders.items():
+                if entries:
+                    names = ", ".join(
+                        f"{h.get('entry_name', '?')} ({h.get('count', 0)})"
+                        for h in entries[:3]
+                    )
+                    lines.append(f"  {pos.upper()}: {names}")
+        return "\n".join(lines)
+
+    def _handle_strength_of_schedule(self, text: str, tool_events: List[Dict[str, Any]]) -> str:
+        """Render strength-of-schedule rankings (#79)."""
+        league_id = self._extract_league_id(text) or self._default_league_id()
+        gw = self._extract_gw(text)
+        if gw is None:
+            gw = self._default_gw()
+        horizon = self._extract_horizon(text) or 5
+        args: Dict[str, Any] = {"league_id": league_id, "horizon": horizon}
+        if gw is not None:
+            args["as_of_gw"] = gw
+        result = self._call_tool(tool_events, "strength_of_schedule", args)
+        if not isinstance(result, dict):
+            return "Strength of schedule data is unavailable right now."
+
+        entries = result.get("entries", [])
+        if not entries:
+            return "No strength of schedule data available."
+
+        gw_label = result.get("gameweek") or gw or "current"
+        lines = [f"Strength of schedule (as of GW{gw_label}, next {horizon} GWs):"]
+        # Sort by easiest future schedule (lowest future_opponent_avg_rank = easier)
+        sorted_entries = sorted(entries, key=lambda e: e.get("future_opponent_avg_rank", 99))
+        for i, e in enumerate(sorted_entries, 1):
+            name = e.get("entry_name") or "Unknown"
+            fut_rank = e.get("future_opponent_avg_rank", 0)
+            fut_top = e.get("future_opponents_top_half", 0)
+            fut_bot = e.get("future_opponents_bottom_half", 0)
+            lines.append(
+                f"{i}. {name} — avg opp rank {fut_rank:.1f} "
+                f"({fut_top} top-half, {fut_bot} bottom-half)"
+            )
         return "\n".join(lines)
 
     def _load_element_map(self) -> Dict[int, str]:

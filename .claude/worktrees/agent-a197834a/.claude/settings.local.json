@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "Bash(grep:*)",
+      "Bash(python3:*)",
+      "Bash(do echo:*)",
+      "Bash(PYTHONPATH=. python3:*)",
+      "Bash(do git:*)"
+    ]
+  },
+  "outputStyle": "Learning"
+}
