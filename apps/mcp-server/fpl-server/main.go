@@ -435,6 +435,21 @@ func main() {
 		return toolMarshal(out)
 	})
 
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "game_status",
+		Description: "Current game state: GW progress, deadlines (waivers/trades/lineup lock), fixture status, points finality",
+	}, gameStatusHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "epl_fixtures",
+		Description: "Premier League fixture results for a specific gameweek",
+	}, eplFixturesHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "epl_standings",
+		Description: "Current Premier League season standings table",
+	}, eplStandingsHandler(cfg))
+
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return server
 	}, &mcp.StreamableHTTPOptions{JSONResponse: true})

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Go checks
+echo "--- Go checks ---"
 (
   cd apps/mcp-server
   go vet ./...
   go test ./...
+  UNFMT=$(gofmt -l .)
+  if [ -n "$UNFMT" ]; then echo "gofmt needed: $UNFMT"; exit 1; fi
 )
 
 # Python checks
@@ -23,19 +25,23 @@ fi
 
 ensure_module() {
   local module="$1"
+  local pip_name="${2:-$1}"
   if ! "$PYTHON_BIN" - <<PY
 import importlib.util
 import sys
 sys.exit(0 if importlib.util.find_spec("$module") else 1)
 PY
   then
-    echo "Installing missing Python tool: ${module}"
-    "$PYTHON_BIN" -m pip install "${module}"
+    echo "Installing missing Python tool: ${pip_name}"
+    "$PYTHON_BIN" -m pip install "${pip_name}"
   fi
 }
 
 ensure_module "ruff"
 ensure_module "pytest"
+ensure_module "dotenv" "python-dotenv"
+
+echo "--- Python checks ---"
 
 # Syntax-check all Python sources, explicitly skipping any .venv tree.
 # Using find+py_compile rather than compileall so we can exclude .venv without
