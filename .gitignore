@@ -14,3 +14,5 @@ apps/mcp-server/fpldraft-mcp-server
 *.tmp
 *.swp
 .env
+.hypothesis/
+.claude/worktrees/
