@@ -517,4 +517,5 @@ These rules are non-negotiable for all agents operating in this repo:
 - **Never mutate `_docs` in RAGIndex** outside of `refresh()`.
 - **Never skip `--force-with-lease`** when force-pushing a rebased branch.
 - **Never open more than one PR per issue.**
+- **Never merge a PR without explicit user approval.** Present the PR for review; do not merge autonomously.
 - **Never ship without updating this file** if architecture changes.
