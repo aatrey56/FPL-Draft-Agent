@@ -141,17 +141,17 @@ type elementInfo struct {
 	TotalPoints  int
 
 	// Fields from bootstrap-static.json used by the expanded scoring model.
-	SeasonXGI          float64 // expected_goal_involvements
-	SeasonXA           float64 // expected_assists
-	SeasonBonus        int     // bonus
-	SeasonBPS          int     // bps
-	SeasonGoals        int     // goals_scored
-	SeasonAssists      int     // assists
-	SeasonCleanSheets  int     // clean_sheets
-	SeasonSaves        int     // saves
-	ChanceOfPlayingNext int    // chance_of_playing_next_round (0-100; -1 = null/unknown)
-	ICTIndex           float64 // ict_index (string in JSON, parsed to float)
-	SeasonMinutes      int     // minutes
+	SeasonXGI           float64 // expected_goal_involvements
+	SeasonXA            float64 // expected_assists
+	SeasonBonus         int     // bonus
+	SeasonBPS           int     // bps
+	SeasonGoals         int     // goals_scored
+	SeasonAssists       int     // assists
+	SeasonCleanSheets   int     // clean_sheets
+	SeasonSaves         int     // saves
+	ChanceOfPlayingNext int     // chance_of_playing_next_round (0-100; -1 = null/unknown)
+	ICTIndex            float64 // ict_index (string in JSON, parsed to float)
+	SeasonMinutes       int     // minutes
 }
 
 type fixture struct {
@@ -734,23 +734,23 @@ func loadBootstrapData(rawRoot string) ([]elementInfo, map[int]string, map[int][
 	}
 	var resp struct {
 		Elements []struct {
-			ID                      int     `json:"id"`
-			WebName                 string  `json:"web_name"`
-			Team                    int     `json:"team"`
-			ElementType             int     `json:"element_type"`
-			Status                  string  `json:"status"`
-			TotalPoints             int     `json:"total_points"`
+			ID                       int    `json:"id"`
+			WebName                  string `json:"web_name"`
+			Team                     int    `json:"team"`
+			ElementType              int    `json:"element_type"`
+			Status                   string `json:"status"`
+			TotalPoints              int    `json:"total_points"`
 			ExpectedGoalInvolvements string `json:"expected_goal_involvements"`
-			ExpectedAssists         string `json:"expected_assists"`
-			Bonus                   int     `json:"bonus"`
-			BPS                     int     `json:"bps"`
-			GoalsScored             int     `json:"goals_scored"`
-			Assists                 int     `json:"assists"`
-			CleanSheets             int     `json:"clean_sheets"`
-			Saves                   int     `json:"saves"`
-			ChanceOfPlayingNext     *int    `json:"chance_of_playing_next_round"`
-			ICTIndex                string  `json:"ict_index"`
-			Minutes                 int     `json:"minutes"`
+			ExpectedAssists          string `json:"expected_assists"`
+			Bonus                    int    `json:"bonus"`
+			BPS                      int    `json:"bps"`
+			GoalsScored              int    `json:"goals_scored"`
+			Assists                  int    `json:"assists"`
+			CleanSheets              int    `json:"clean_sheets"`
+			Saves                    int    `json:"saves"`
+			ChanceOfPlayingNext      *int   `json:"chance_of_playing_next_round"`
+			ICTIndex                 string `json:"ict_index"`
+			Minutes                  int    `json:"minutes"`
 		} `json:"elements"`
 		Teams []struct {
 			ID        int    `json:"id"`
