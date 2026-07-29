@@ -1868,7 +1868,7 @@ class Agent:
             try:
                 dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
                 return dt.strftime("%a %b %d at %I:%M %p %Z")
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):  # OverflowError: out-of-range dates overflow astimezone
                 return iso
 
         def _countdown(iso: str) -> str:
@@ -1895,7 +1895,7 @@ class Agent:
                 if minutes and not days:
                     parts.append(f"{minutes}m")
                 return f" ({' '.join(parts)} {suffix})" if parts else ""
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):  # OverflowError: out-of-range dates overflow astimezone
                 return ""
 
         gw = data.get("current_gw", "?")
@@ -1967,7 +1967,7 @@ class Agent:
             try:
                 dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
                 return dt.strftime("%a %b %d at %I:%M %p %Z")
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):  # OverflowError: out-of-range dates overflow astimezone
                 return iso
 
         gw = data.get("current_gw", "?")
