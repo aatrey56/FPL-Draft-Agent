@@ -196,10 +196,10 @@ class TestRefreshSkippedNoLeague:
     def test_startup_refresh_cmd_populated_when_league_set(self):
         with patch.object(server_module, "SETTINGS") as mock_settings:
             mock_settings.refresh_cmd_startup = ""
-            mock_settings.league_id = 14204
+            mock_settings.league_id = 999999
             cmd = server_module._startup_refresh_cmd()
         assert len(cmd) > 0
-        assert "14204" in " ".join(cmd)
+        assert "999999" in " ".join(cmd)
 
     def test_run_startup_refresh_skips_when_no_league(self, capsys):
         with patch.object(server_module, "SETTINGS") as mock_settings:

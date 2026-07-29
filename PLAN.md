@@ -17,7 +17,7 @@ per section. Status: `[ ]` todo, `[~]` in progress, `[x]` done.
 
 ## Phase 2 — Draft board (hero, target ~mid Aug)
 - [ ] Season projection model (PROJECTION_MODEL_SPEC), validated vs 25/26. Acceptance: beats the last-season-points baseline (Spearman) per position on the 2024-25 backtest.
-- [ ] `draft_board` + `draft_assistant` + `player_card` tools, wired to Claude Desktop. Acceptance: returns a tiered, roster-aware board for league 14204.
+- [ ] `draft_board` + `draft_assistant` + `player_card` tools, wired to Claude Desktop. Acceptance: returns a tiered, roster-aware board for the configured league.
 
 ## Phase 3 — Weekly co-pilot (season start onward)
 - [ ] Match xP model (MATCH_MODEL_SPEC). Acceptance: beats FPL `ep_next` (Spearman) on a 25/26 walk-forward, per position.

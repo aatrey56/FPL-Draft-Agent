@@ -200,8 +200,8 @@ class TestApplyDefaultsProperty:
         the Go MCP server rejects null JSON fields."""
         tool = data.draw(st.sampled_from(self.TOOLS_WITH_DEFAULTS))
         agent = _make_agent()
-        agent._session["league_id"] = 14204
-        agent._session["entry_id"] = 286192
+        agent._session["league_id"] = 999999
+        agent._session["entry_id"] = 888888
         result = agent._apply_defaults(tool, {})
         for k, v in result.items():
             assert v is not None, f"_apply_defaults('{tool}', {{}}) produced None for key '{k}'"

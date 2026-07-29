@@ -29,7 +29,7 @@ type GameMeta struct {
 
 func main() {
 	var (
-		leagueID        = flag.Int("league", 14204, "draft league id")
+		leagueID        = flag.Int("league", 0, "draft league id (required; pass --league)")
 		gwMin           = flag.Int("gw-min", 1, "minimum gameweek to fetch (default 1)")
 		gwMax           = flag.Int("gw-max", 0, "maximum gameweek to fetch (0 = current)")
 		rawRoot         = flag.String("raw-root", "data/raw", "root directory for raw JSON")
