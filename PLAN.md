@@ -10,10 +10,10 @@ per section. Status: `[ ]` todo, `[~]` in progress, `[x]` done.
 - [x] Scaffold build-loop: architect (Fable) + reviewer (Opus) agents, `/build-loop` command, PLAN/STATE.
 - [ ] Disable Codex workflows on `stage` (branch `chore/disable-codex-ci` ready) and uninstall the Codex GitHub App; rotate keys. Acceptance: no Codex checks/comments on new PRs.
 
-## Phase 1 — Data foundation
-- [ ] Phase A ingest -> `player_seasons.parquet` (HISTORY_INGEST_SPEC). Acceptance: builds offline; the 4 spec tests pass.
-- [ ] Phase A.2 per-GW panel -> `player_gameweeks.parquet` (GAMEWEEK_INGEST_SPEC). Acceptance: builds offline; the 5 spec tests pass.
-- [ ] Eval harness + naive baseline over 25/26. Acceptance: one command produces a report scoring recommendation ranking vs a last-season-points baseline, per position.
+## Phase 1 — Data foundation  ✅ DONE (2026-07-29)
+- [x] Phase A ingest -> `player_seasons.parquet` (HISTORY_INGEST_SPEC). 5404 rows, 7 seasons; 5 tests pass.
+- [x] Phase A.2 per-GW panel -> `player_gameweeks.parquet` (GAMEWEEK_INGEST_SPEC). 29747 rows, 38 GWs, 841 players (409 DGW + 409 blank rows correctly flagged); 6 tests pass.
+- [x] Eval harness + naive baseline (`backend.ml.eval`). One command backtests any signal vs the last-season-points baseline, per position (Spearman + top-N). Result: baseline Spearman 0.42-0.66; ICT beats it for DEF/MID; per-90 alone loses (minutes matter). Confirms the "define accurate = beat baseline at ranking" framing.
 
 ## Phase 2 — Draft board (hero, target ~mid Aug)
 - [ ] Season projection model (PROJECTION_MODEL_SPEC), validated vs 25/26. Acceptance: beats the last-season-points baseline (Spearman) per position on the 2024-25 backtest.

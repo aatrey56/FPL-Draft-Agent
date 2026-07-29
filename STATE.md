@@ -1,6 +1,6 @@
 # STATE — checkpoint
 
-Updated: 2026-07-18
+Updated: 2026-07-29
 Branch: `feat/history-ingestion` (holds the foundation commits until you reorganize on push)
 
 ## Done
@@ -10,10 +10,16 @@ Branch: `feat/history-ingestion` (holds the foundation commits until you reorgan
 - Scaffolded the build-loop: `architect` (Fable) + `reviewer` (Opus) agents,
   `/build-loop` command, PLAN.md, STATE.md.
 
+## Done (Phase 1 — 2026-07-29)
+- Phase A ingest verified -> player_seasons.parquet (5404 rows, 7 seasons).
+- Phase A.2 per-GW panel -> player_gameweeks.parquet (29747 rows, 38 GWs).
+- Eval harness (backend.ml.eval): baseline Spearman 0.42-0.66; ICT beats it for
+  DEF/MID; per-90 alone loses. 15 ML tests; full suite 259 pass (1 pre-existing
+  bug deselected, logged in ISSUES.md).
+
 ## Next
-- Phase 1: finish Phase A ingest to parquet + tests; build the per-GW panel;
-  stand up the eval harness + naive baseline against the completed 25/26 season
-  (define "accurate" as beating that baseline at ranking).
+- Phase 2: season projection model (PROJECTION_MODEL_SPEC) that beats the eval
+  baseline per position -> draft_board / draft_assistant / player_card tools.
 
 ## Not done — needs you (outward-facing, not done locally)
 - Push branches / open PRs (nothing has been pushed).
