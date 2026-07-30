@@ -2,10 +2,11 @@ name: CI
 
 on:
   push:
+    branches: [main]   # post-merge verification on trunk; PRs are the gate
   pull_request:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: "0 6 * * 1"   # weekly keep-alive: also prevents GitHub's 60-day inactivity auto-disable
 
 concurrency:
   group: ci-${{ github.ref }}

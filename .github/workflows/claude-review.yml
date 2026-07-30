@@ -1,13 +1,8 @@
 name: Claude Review
 
-# Runs an automated Claude Code review on pull requests that move code between
-# the two gated branch transitions in this repo:
-#
-#   dev  →  stage   (integration gate)
-#   stage →  main   (production gate)
-#
-# Feature-branch PRs are intentionally excluded to keep token usage low.
-# Manual runs (workflow_dispatch) bypass the branch filter for testing.
+# Runs an automated Claude Code review on every pull request into main.
+# This repo uses trunk-based flow (feature branch -> PR -> main); the PR is the
+# single gate, so every PR gets a review.
 #
 # Required secret: CLAUDE_CODE_OAUTH_TOKEN (added automatically by the Claude GitHub App)
 # Install the app at: github.com/apps/claude  — or use ANTHROPIC_API_KEY as a fallback.
@@ -15,9 +10,7 @@ name: Claude Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    # Pre-filter to PRs targeting stage or main; the job-level `if` below
-    # further restricts to the exact source→target pairs we care about.
-    branches: [stage, main]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -29,11 +22,9 @@ jobs:
     name: Claude Code Review
     runs-on: ubuntu-latest
 
-    # Only run on the two branch transitions we care about.
-    # workflow_dispatch bypass lets you trigger a review manually for testing.
+    # Every PR into main gets a review; workflow_dispatch allows manual runs.
     if: |
-      (github.base_ref == 'stage' && github.head_ref == 'dev') ||
-      (github.base_ref == 'main'  && github.head_ref == 'stage') ||
+      github.base_ref == 'main' ||
       github.event_name == 'workflow_dispatch'
 
     steps:
