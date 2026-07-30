@@ -1,0 +1,6 @@
+# ML / data-engineering dependencies (Phase A onward).
+# Kept separate from requirements.txt so the core backend stays lightweight.
+# Install with: pip install -r requirements-ml.txt
+pandas>=2.2
+pyarrow>=15
+requests==2.32.5

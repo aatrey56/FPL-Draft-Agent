@@ -347,5 +347,220 @@ func TestLoadFixturesFromLive(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// loadBootstrapData — new expanded fields
+// ---------------------------------------------------------------------------
+
+// writeBootstrapJSON writes a minimal bootstrap-static.json into rawRoot.
+func writeBootstrapJSON(t *testing.T, rawRoot string, payload map[string]any) {
+	t.Helper()
+	dir := filepath.Join(rawRoot, "bootstrap")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir bootstrap dir: %v", err)
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal bootstrap json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bootstrap-static.json"), b, 0o644); err != nil {
+		t.Fatalf("write bootstrap json: %v", err)
+	}
+}
+
+func TestLoadBootstrapData_ExpandedFields(t *testing.T) {
+	rawRoot := t.TempDir()
+	writeBootstrapJSON(t, rawRoot, map[string]any{
+		"elements": []any{
+			map[string]any{
+				"id":                           10,
+				"web_name":                     "Salah",
+				"team":                         1,
+				"element_type":                 3,
+				"status":                       "a",
+				"total_points":                 180,
+				"expected_goal_involvements":   "12.5",
+				"expected_assists":             "4.3",
+				"bonus":                        22,
+				"bps":                          550,
+				"goals_scored":                 15,
+				"assists":                      8,
+				"clean_sheets":                 3,
+				"saves":                        0,
+				"chance_of_playing_next_round": 75,
+				"ict_index":                    "320.4",
+				"minutes":                      2500,
+			},
+		},
+		"teams":    []any{map[string]any{"id": 1, "short_name": "LIV"}},
+		"fixtures": map[string]any{},
+	})
+
+	elements, _, _, err := loadBootstrapData(rawRoot)
+	if err != nil {
+		t.Fatalf("loadBootstrapData: %v", err)
+	}
+	if len(elements) != 1 {
+		t.Fatalf("expected 1 element, got %d", len(elements))
+	}
+
+	e := elements[0]
+	if e.ID != 10 {
+		t.Errorf("ID: want 10, got %d", e.ID)
+	}
+	if math.Abs(e.SeasonXGI-12.5) > 1e-9 {
+		t.Errorf("SeasonXGI: want 12.5, got %f", e.SeasonXGI)
+	}
+	if math.Abs(e.SeasonXA-4.3) > 1e-9 {
+		t.Errorf("SeasonXA: want 4.3, got %f", e.SeasonXA)
+	}
+	if e.SeasonBonus != 22 {
+		t.Errorf("SeasonBonus: want 22, got %d", e.SeasonBonus)
+	}
+	if e.SeasonBPS != 550 {
+		t.Errorf("SeasonBPS: want 550, got %d", e.SeasonBPS)
+	}
+	if e.SeasonGoals != 15 {
+		t.Errorf("SeasonGoals: want 15, got %d", e.SeasonGoals)
+	}
+	if e.SeasonAssists != 8 {
+		t.Errorf("SeasonAssists: want 8, got %d", e.SeasonAssists)
+	}
+	if e.SeasonCleanSheets != 3 {
+		t.Errorf("SeasonCleanSheets: want 3, got %d", e.SeasonCleanSheets)
+	}
+	if e.SeasonSaves != 0 {
+		t.Errorf("SeasonSaves: want 0, got %d", e.SeasonSaves)
+	}
+	if e.ChanceOfPlayingNext != 75 {
+		t.Errorf("ChanceOfPlayingNext: want 75, got %d", e.ChanceOfPlayingNext)
+	}
+	if math.Abs(e.ICTIndex-320.4) > 1e-9 {
+		t.Errorf("ICTIndex: want 320.4, got %f", e.ICTIndex)
+	}
+	if e.SeasonMinutes != 2500 {
+		t.Errorf("SeasonMinutes: want 2500, got %d", e.SeasonMinutes)
+	}
+}
+
+// TestLoadBootstrapData_NullChanceOfPlaying verifies that a JSON null for
+// chance_of_playing_next_round maps to -1 in the elementInfo struct.
+func TestLoadBootstrapData_NullChanceOfPlaying(t *testing.T) {
+	rawRoot := t.TempDir()
+	writeBootstrapJSON(t, rawRoot, map[string]any{
+		"elements": []any{
+			map[string]any{
+				"id":                           20,
+				"web_name":                     "Haaland",
+				"team":                         2,
+				"element_type":                 4,
+				"status":                       "a",
+				"total_points":                 150,
+				"expected_goal_involvements":   "0.0",
+				"expected_assists":             "0.0",
+				"bonus":                        0,
+				"bps":                          0,
+				"goals_scored":                 0,
+				"assists":                      0,
+				"clean_sheets":                 0,
+				"saves":                        0,
+				"chance_of_playing_next_round": nil,
+				"ict_index":                    "0.0",
+				"minutes":                      0,
+			},
+		},
+		"teams":    []any{map[string]any{"id": 2, "short_name": "MCI"}},
+		"fixtures": map[string]any{},
+	})
+
+	elements, _, _, err := loadBootstrapData(rawRoot)
+	if err != nil {
+		t.Fatalf("loadBootstrapData: %v", err)
+	}
+	if elements[0].ChanceOfPlayingNext != -1 {
+		t.Errorf("null chance_of_playing_next_round: want -1, got %d", elements[0].ChanceOfPlayingNext)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// loadLiveStats — new expanded fields
+// ---------------------------------------------------------------------------
+
+func TestLoadLiveStats_ExpandedFields(t *testing.T) {
+	rawRoot := t.TempDir()
+
+	writeLiveJSON(t, rawRoot, 5, map[string]any{
+		// Element with non-zero values for every field.
+		"42": map[string]any{"stats": map[string]any{
+			"minutes":          90,
+			"total_points":     12,
+			"expected_goals":   1.2,
+			"expected_assists": 0.8,
+			"goals_scored":     2,
+			"assists":          1,
+			"clean_sheets":     1,
+			"bonus":            3,
+			"bps":              45,
+			"saves":            0,
+		}},
+		// Element with all zeros — verifies the zero path.
+		"99": map[string]any{"stats": map[string]any{
+			"minutes":          0,
+			"total_points":     0,
+			"expected_goals":   0.0,
+			"expected_assists": 0.0,
+			"goals_scored":     0,
+			"assists":          0,
+			"clean_sheets":     0,
+			"bonus":            0,
+			"bps":              0,
+			"saves":            0,
+		}},
+	})
+
+	live, err := loadLiveStats(rawRoot, 5)
+	if err != nil {
+		t.Fatalf("loadLiveStats: %v", err)
+	}
+
+	// --- element 42: non-zero values ---
+	s := live[42]
+	if s.Minutes != 90 {
+		t.Errorf("Minutes: want 90, got %d", s.Minutes)
+	}
+	if s.TotalPoints != 12 {
+		t.Errorf("TotalPoints: want 12, got %d", s.TotalPoints)
+	}
+	if math.Abs(s.XG-1.2) > 1e-9 {
+		t.Errorf("XG: want 1.2, got %f", s.XG)
+	}
+	if math.Abs(s.XA-0.8) > 1e-9 {
+		t.Errorf("XA: want 0.8, got %f", s.XA)
+	}
+	if s.Goals != 2 {
+		t.Errorf("Goals: want 2, got %d", s.Goals)
+	}
+	if s.Assists != 1 {
+		t.Errorf("Assists: want 1, got %d", s.Assists)
+	}
+	if s.CleanSheets != 1 {
+		t.Errorf("CleanSheets: want 1, got %d", s.CleanSheets)
+	}
+	if s.Bonus != 3 {
+		t.Errorf("Bonus: want 3, got %d", s.Bonus)
+	}
+	if s.BPS != 45 {
+		t.Errorf("BPS: want 45, got %d", s.BPS)
+	}
+	if s.Saves != 0 {
+		t.Errorf("Saves: want 0, got %d", s.Saves)
+	}
+
+	// --- element 99: all zeros ---
+	z := live[99]
+	if z.XA != 0 || z.Goals != 0 || z.Assists != 0 || z.CleanSheets != 0 || z.Bonus != 0 || z.BPS != 0 || z.Saves != 0 {
+		t.Errorf("element 99 should be all zeros, got %+v", z)
+	}
+}
+
 // Suppress unused import if math was already imported.
 var _ = math.Pi

@@ -81,12 +81,12 @@ Important routing guidance:
 - Never pass null values in arguments. Omit missing fields instead.
 
 Example tool calls:
-{"action":"tool","name":"current_roster","arguments":{"league_id":14204,"entry_id":286192}}
-{"action":"tool","name":"draft_picks","arguments":{"league_id":14204,"entry_id":286192}}
-{"action":"tool","name":"manager_season","arguments":{"league_id":14204,"entry_id":286192}}
-{"action":"tool","name":"transaction_analysis","arguments":{"league_id":14204,"gw":0}}
+{"action":"tool","name":"current_roster","arguments":{"league_id":999999,"entry_id":888888}}
+{"action":"tool","name":"draft_picks","arguments":{"league_id":999999,"entry_id":888888}}
+{"action":"tool","name":"manager_season","arguments":{"league_id":999999,"entry_id":888888}}
+{"action":"tool","name":"transaction_analysis","arguments":{"league_id":999999,"gw":0}}
 {"action":"tool","name":"player_gw_stats","arguments":{"player_name":"Salah"}}
-{"action":"tool","name":"head_to_head","arguments":{"league_id":14204,"entry_name_a":"Team A","entry_name_b":"Team B"}}
+{"action":"tool","name":"head_to_head","arguments":{"league_id":999999,"entry_name_a":"Team A","entry_name_b":"Team B"}}
 
 Temporal awareness rules:
 - A "Game Status" section is injected into every prompt with real-time deadlines and fixture progress.
@@ -1400,7 +1400,7 @@ class Agent:
         # Extract team names around "vs"
         match = re.search(r"(.+?)\s+vs\.?\s+(.+)", text, re.IGNORECASE)
         if not match:
-            return "Please provide two team names (e.g., Glock Tua vs Luckier Than You)."
+            return "Please provide two team names (e.g., Team Alpha vs Team Bravo)."
 
         left = match.group(1)
         right = match.group(2)
@@ -1458,7 +1458,7 @@ class Agent:
         team_name = team_name_override
 
         # Try resolving a team name from the text before falling back to
-        # session defaults.  This ensures "waiver recs for Boot Gang" queries
+        # session defaults.  This ensures "waiver recs for Team Charlie" queries
         # the named team rather than silently returning the user's own team.
         if not entry_id and not team_name:
             entry_id, team_name, multiple = self._resolve_team(league_id, text, tool_events)
@@ -1868,7 +1868,7 @@ class Agent:
             try:
                 dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
                 return dt.strftime("%a %b %d at %I:%M %p %Z")
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):  # OverflowError: out-of-range dates overflow astimezone
                 return iso
 
         def _countdown(iso: str) -> str:
@@ -1895,7 +1895,7 @@ class Agent:
                 if minutes and not days:
                     parts.append(f"{minutes}m")
                 return f" ({' '.join(parts)} {suffix})" if parts else ""
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):  # OverflowError: out-of-range dates overflow astimezone
                 return ""
 
         gw = data.get("current_gw", "?")
@@ -1967,7 +1967,7 @@ class Agent:
             try:
                 dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz)
                 return dt.strftime("%a %b %d at %I:%M %p %Z")
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):  # OverflowError: out-of-range dates overflow astimezone
                 return iso
 
         gw = data.get("current_gw", "?")

@@ -56,7 +56,7 @@ else
   exit 1
 fi
 
-LEAGUE_ID="${LEAGUE_ID:-14204}"
+LEAGUE_ID="${LEAGUE_ID:-0}"
 
 echo "[dev] Refreshing cache..."
 go -C "$ROOT/apps/mcp-server" run ./cmd/dev --league "$LEAGUE_ID" --gw-max 0

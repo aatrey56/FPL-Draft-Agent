@@ -3,7 +3,7 @@
 An end-to-end **Fantasy Premier League Draft** toolkit.  Ask any question about your league in natural language — the agent calls the right data tools and returns a clear, structured answer.
 
 The stack is:
-- **Go MCP server** — exposes 22 tools backed by locally-cached FPL Draft API data
+- **Go MCP server** — exposes 26 tools backed by locally-cached FPL Draft API data
 - **Python backend** — chat API, scheduled reports, and a WebSocket endpoint
 - **Web UI** — chat interface with tool-call visibility and one-click report generation
 
@@ -68,8 +68,8 @@ cp .env.example .env
 Edit `.env`:
 
 ```dotenv
-LEAGUE_ID=14204          # replace with your league ID
-ENTRY_ID=286192          # replace with your entry (team) ID
+LEAGUE_ID=999999          # replace with your league ID
+ENTRY_ID=888888          # replace with your entry (team) ID
 OPENAI_API_KEY=sk-...    # required for LLM answers
 FPL_MCP_API_KEY=secret   # any strong random string
 ```
@@ -81,10 +81,10 @@ See `.env.example` for all options with explanations.
 This pulls data from the FPL Draft API into `data/raw/` and `data/derived/`.
 
 ```bash
-go run ./apps/mcp-server/cmd/dev --league 14204 --gw-max 0
+go run ./apps/mcp-server/cmd/dev --league 999999 --gw-max 0
 ```
 
-Replace `14204` with your league ID.  This takes ~30 seconds on a fast connection.
+Replace `999999` with your league ID.  This takes ~30 seconds on a fast connection.
 
 ### 3. Start the MCP server (Go)
 
@@ -119,8 +119,8 @@ Open in your browser:
 Instead of setting environment variables manually, put everything in `.env` at the repo root:
 
 ```dotenv
-LEAGUE_ID=14204
-ENTRY_ID=286192
+LEAGUE_ID=999999
+ENTRY_ID=888888
 FPL_MCP_API_KEY=secret
 OPENAI_API_KEY=sk-...
 START_GO_SERVER=true
@@ -210,8 +210,8 @@ Copy `.env.example` to `.env` — every variable has a comment explaining what i
 
 | Variable | Default | Description |
 |---|---|---|
-| `LEAGUE_ID` | `14204` | Your FPL Draft league ID |
-| `ENTRY_ID` | `286192` | Your team (entry) ID |
+| `LEAGUE_ID` | `999999` | Your FPL Draft league ID |
+| `ENTRY_ID` | `888888` | Your team (entry) ID |
 | `FPL_MCP_API_KEY` | *(none)* | Shared secret for the MCP server |
 | `OPENAI_API_KEY` | *(none)* | OpenAI key for LLM-powered answers |
 | `OPENAI_MODEL` | `gpt-4.1` | OpenAI model to use |
