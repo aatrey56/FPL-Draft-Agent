@@ -82,13 +82,18 @@ implications for agents working here right now:
 
 ## 3.2 Branching Rules
 
+This repo uses **trunk-based flow**: short-lived feature branch → PR → `main`.
+There are no `dev`/`stage` integration branches. The PR is the single gate:
+required status checks (Python 3.11/3.12, Go, gitleaks, artifacts-guard) +
+review must pass before merge; `main` runs post-merge CI.
+
 Branch naming:
 - `fix/<topic>`
 - `feat/<topic>`
 - `refactor/<topic>`
 - `chore/<topic>`
 
-Never work directly on `main`.
+Never work directly on `main`. Delete the feature branch after merge.
 
 ---
 
@@ -536,7 +541,7 @@ These rules are non-negotiable for all agents operating in this repo:
 
 - **Never call the live FPL API in tests.** Use fixtures in `t.TempDir()` (Go) or `tmp_path` (pytest).
 - **Never hardcode league IDs, entry IDs, or element IDs** in source code. Pass them as parameters.
-- **Never push directly to `main` or `dev`.** All changes must go through a PR.
+- **Never push directly to `main`.** All changes must go through a PR (trunk-based flow; there are no `dev`/`stage` branches).
 - **Never merge a PR with failing CI** (tests, lint, vet).
 - **Never add a `# type: ignore`** without a comment explaining why it's unavoidable.
 - **Never use `fmt.Sscanf` for float parsing** in Go — use `strconv.ParseFloat`.

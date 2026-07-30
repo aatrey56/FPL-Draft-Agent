@@ -1,7 +1,7 @@
 # STATE — checkpoint
 
-Updated: 2026-07-29
-Branch: `feat/history-ingestion` (holds the foundation commits until you reorganize on push)
+Updated: 2026-07-30
+Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage retired 2026-07-30; Docling-style).
 
 ## Done
 - Committed in-flight ML ingestion (Phase A) + reshape plan and model specs.
@@ -21,8 +21,14 @@ Branch: `feat/history-ingestion` (holds the foundation commits until you reorgan
 - Phase 2: season projection model (PROJECTION_MODEL_SPEC) that beats the eval
   baseline per position -> draft_board / draft_assistant / player_card tools.
 
-## Not done — needs you (outward-facing, not done locally)
-- Push branches / open PRs (nothing has been pushed).
-- Rotate `OPENAI_API_KEY`; set a real random `FPL_MCP_API_KEY`.
+## Done (CI/CD + branch model — 2026-07-30)
+- Fixed the 7-week CI failure (OverflowError dates); CI installs ML deps; re-enabled
+  the auto-disabled CI workflow; required status checks now gate `main` (strict).
+- PR #142 merged: full reshape foundation on `main`; main CI GREEN.
+- Branch cleanup: 44 remote branches -> main + dependabot. dev/stage retired;
+  Codex workflows deleted with stage. claude-review now gates every PR into main.
+
+## Not done — needs you (outward-facing)
+- Set a real random `FPL_MCP_API_KEY` (local .env still has the placeholder).
 - Uninstall the `chatgpt-codex-connector` GitHub App (GitHub settings).
-- Merge/close open PRs (#125, #115 safe; #137, #138 close; #122 request changes).
+- Dependabot PR triage (#125, #115 merge; #137, #138 close; #141, #135 judge; #122 request changes).
