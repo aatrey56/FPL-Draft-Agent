@@ -17,3 +17,18 @@ Tracked defects found during the reshape, not yet fixed. Newest first.
   `player_seasons.parquet`, so xGI-based predictors can't be scored by the season
   eval yet. Fold GW-panel features into the eval (or the season table) when the
   projection model needs them.
+
+## Model limitations (tracked)
+
+- **FWD projection loses to the naive baseline on the 2024-25 holdout**
+  (Spearman 0.537 vs 0.662; ties baseline on 2025-26). Small pool (~30-35
+  forwards/season) makes internal validation noisy. Do not tune the selection
+  rule against 2024-25 further (test-set overfitting); the expected fix is
+  GW-panel features (form curves, minutes stability) in a Phase B extension
+  of `backend/ml/projection.py`.
+
+- **Single-season persistence has no multi-year reversion** — e.g. M.Salah:
+  344 pts in 2024-25, injury-hit 123 in 2025-26, so the board ranks him MID
+  #16 for 2026-27. Multi-year weighted history (or GW-panel form context)
+  would moderate this; meanwhile `player_card` should always show multi-season
+  history next to the projection so a human can catch buy-low cases.
