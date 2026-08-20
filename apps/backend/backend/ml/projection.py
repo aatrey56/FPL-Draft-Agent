@@ -83,7 +83,7 @@ STAGE2_FEATURE_SETS: dict[str, dict[str, list[str]]] = {
 RIDGE_ALPHAS = [100.0, 30.0, 10.0, 3.0, 1.0, 0.3]
 
 # Draft config: league size and typical starters per position (configurable).
-DEFAULT_LEAGUE_SIZE = 10
+DEFAULT_LEAGUE_SIZE = 12
 DEFAULT_STARTERS = {"GKP": 1, "DEF": 4, "MID": 4, "FWD": 2}
 TIER_COUNT = 5
 

@@ -1,6 +1,6 @@
 # STATE — checkpoint
 
-Updated: 2026-07-30
+Updated: 2026-08-20
 Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage retired 2026-07-30; Docling-style).
 
 ## Done
@@ -17,9 +17,21 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
   DEF/MID; per-90 alone loses. 15 ML tests; full suite 259 pass (1 pre-existing
   bug deselected, logged in ISSUES.md).
 
+## Done (Phase 2 model + new-league spine — 2026-08-20)
+- PR #144 merged: projection model + 26/27 draft board (394 players).
+- New 12-manager league verified against the live API (ids live in .env,
+  never tracked); league_size=12 in projection config (VOR regenerated).
+- Season-nested data layout (data/raw|derived/<season>/); 25/26 stays in the
+  legacy flat layout, untouched. First 26/27 fetch complete.
+- Fetcher: + league element-status (with timestamped snapshot archive),
+  element-summary, entry public/history endpoints.
+- Drop-radar (backend.ml.ownership): diffs snapshots -> ownership events;
+  ranked free-agent report (departed players filtered). 7 tests.
+
 ## Next
-- Phase 2: season projection model (PROJECTION_MODEL_SPEC) that beats the eval
-  baseline per position -> draft_board / draft_assistant / player_card tools.
+- Phase 3 weekly tools: waiver_plan (roster-aware add+drop using xP), my_week,
+  trade_check, league_pulse; match xP model (MATCH_MODEL_SPEC); schedule the
+  fetcher (fast mode) around waiver deadlines for fresh snapshots.
 
 ## Done (CI/CD + branch model — 2026-07-30)
 - Fixed the 7-week CI failure (OverflowError dates); CI installs ML deps; re-enabled
