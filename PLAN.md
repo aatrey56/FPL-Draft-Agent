@@ -8,7 +8,7 @@ per section. Status: `[ ]` todo, `[~]` in progress, `[x]` done.
 ## Phase 0 — Foundation & declutter
 - [x] Commit in-flight work; remove stale worktrees; prune ephemeral branches (60 -> 5).
 - [x] Scaffold build-loop: architect (Fable) + reviewer (Opus) agents, `/build-loop` command, PLAN/STATE.
-- [ ] Disable Codex workflows on `stage` (branch `chore/disable-codex-ci` ready) and uninstall the Codex GitHub App; rotate keys. Acceptance: no Codex checks/comments on new PRs.
+- [x] Codex workflows removed (deleted with the retired stage branch); GitHub App uninstall still manual.
 
 ## Phase 1 — Data foundation  ✅ DONE (2026-07-29)
 - [x] Phase A ingest -> `player_seasons.parquet` (HISTORY_INGEST_SPEC). 5404 rows, 7 seasons; 5 tests pass.

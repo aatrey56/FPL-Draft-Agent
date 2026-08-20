@@ -410,8 +410,9 @@ fpl-draft-mcp/
 │           ├── config.py        # SETTINGS (env-backed)
 │           └── ml/              # Preseason next-season modeling (see ml/HISTORY_INGEST_SPEC.md)
 ├── data/                    # FPL raw + derived data (gitignored)
-│   ├── raw/                 # API snapshots (bootstrap.json, gw/*/live.json, etc.)
-│   └── derived/
+│   ├── raw/                 # LEGACY flat layout = the 2025-26 archive (do not overwrite)
+│   │   └── <season>/        # 2026-27 onward: season-nested (fetcher --season flag)
+│   └── derived/             # same convention: flat = 2025-26, <season>/ = new seasons
 │       ├── summary/         # league/standings/transactions summaries
 │       └── reports/         # GW markdown reports
 ├── CLAUDE.md
