@@ -37,9 +37,9 @@ def _agent(tool_return: Any = None) -> Agent:
     llm.available.return_value = False
     with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
         agent = Agent(mcp, llm)
-    agent._session["league_id"] = 14204
-    agent._session["entry_id"] = 286192
-    agent._session["entry_name"] = "Boot Gang"
+    agent._session["league_id"] = 999999
+    agent._session["entry_id"] = 888888
+    agent._session["entry_name"] = "Team Charlie"
     return agent
 
 
@@ -52,15 +52,15 @@ def _agent_with_side_effect(side_effect) -> Agent:
     llm.available.return_value = False
     with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
         agent = Agent(mcp, llm)
-    agent._session["league_id"] = 14204
-    agent._session["entry_id"] = 286192
-    agent._session["entry_name"] = "Boot Gang"
+    agent._session["league_id"] = 999999
+    agent._session["entry_id"] = 888888
+    agent._session["entry_name"] = "Team Charlie"
     return agent
 
 
 _TEAMS = [
-    {"entry_id": 100, "entry_name": "Boot Gang", "short_name": "BG"},
-    {"entry_id": 200, "entry_name": "Glock Tua", "short_name": "GT"},
+    {"entry_id": 100, "entry_name": "Team Charlie", "short_name": "BG"},
+    {"entry_id": 200, "entry_name": "Team Alpha", "short_name": "GT"},
 ]
 
 
@@ -72,7 +72,7 @@ class TestHandleCurrentRoster:
 
     def test_renders_starters_and_bench(self) -> None:
         a = _agent({
-            "entry_name": "Boot Gang",
+            "entry_name": "Team Charlie",
             "gameweek": 28,
             "starters": [
                 {"name": "Salah", "team": "LIV", "position_type": 3,
@@ -86,7 +86,7 @@ class TestHandleCurrentRoster:
             ],
         })
         result = a._handle_current_roster("show my team", [])
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         assert "GW28" in result
         assert "Salah" in result
         assert "©" in result
@@ -121,9 +121,9 @@ class TestHandleDraftPicks:
         a = _agent({
             "filtered_by": "all",
             "picks": [
-                {"round": 1, "pick": 3, "entry_name": "Boot Gang",
+                {"round": 1, "pick": 3, "entry_name": "Team Charlie",
                  "player_name": "Haaland", "team": "MCI", "position_type": 4, "was_auto": False},
-                {"round": 2, "pick": 10, "entry_name": "Glock Tua",
+                {"round": 2, "pick": 10, "entry_name": "Team Alpha",
                  "player_name": "Salah", "team": "LIV", "position_type": 3, "was_auto": True},
             ],
         })
@@ -135,11 +135,11 @@ class TestHandleDraftPicks:
 
     def test_round_filter(self) -> None:
         a = _agent({
-            "filtered_by": "Boot Gang",
+            "filtered_by": "Team Charlie",
             "picks": [
-                {"round": 1, "pick": 3, "entry_name": "Boot Gang",
+                {"round": 1, "pick": 3, "entry_name": "Team Charlie",
                  "player_name": "Haaland", "team": "MCI", "position_type": 4, "was_auto": False},
-                {"round": 2, "pick": 10, "entry_name": "Boot Gang",
+                {"round": 2, "pick": 10, "entry_name": "Team Charlie",
                  "player_name": "Salah", "team": "LIV", "position_type": 3, "was_auto": False},
             ],
         })
@@ -162,7 +162,7 @@ class TestHandleManagerSeason:
 
     def test_renders_season_summary(self) -> None:
         a = _agent({
-            "entry_name": "Boot Gang",
+            "entry_name": "Team Charlie",
             "record": {"wins": 15, "draws": 3, "losses": 7},
             "total_points": 1450,
             "avg_score": 58.0,
@@ -172,11 +172,11 @@ class TestHandleManagerSeason:
             "lowest_score": 32,
             "gameweeks": [
                 {"gameweek": 1, "finished": True, "result": "W",
-                 "score": 65, "opponent_score": 50, "opponent_name": "Glock Tua"},
+                 "score": 65, "opponent_score": 50, "opponent_name": "Team Alpha"},
             ],
         })
         result = a._handle_manager_season("season stats", [])
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         assert "15W" in result
         assert "3D" in result
         assert "1450" in result
@@ -195,7 +195,7 @@ class TestHandleManagerSeason:
             "lowest_score": 0,
             "gameweeks": [
                 {"gameweek": 30, "finished": False, "result": "", "score": 0,
-                 "opponent_score": 0, "opponent_name": "Glock Tua"},
+                 "opponent_score": 0, "opponent_name": "Team Alpha"},
             ],
         })
         result = a._handle_manager_season("season stats", [])
@@ -305,8 +305,8 @@ class TestHandleHeadToHead:
             return {"teams": _TEAMS}
         if name == "head_to_head":
             return {
-                "team_a": {"entry_name": "Boot Gang", "wins": 5, "draws": 2, "losses": 3},
-                "team_b": {"entry_name": "Glock Tua", "wins": 3, "draws": 2, "losses": 5},
+                "team_a": {"entry_name": "Team Charlie", "wins": 5, "draws": 2, "losses": 3},
+                "team_b": {"entry_name": "Team Alpha", "wins": 3, "draws": 2, "losses": 5},
                 "matches": [
                     {"gameweek": 1, "finished": True, "score_a": 65, "score_b": 50, "result_a": "W"},
                     {"gameweek": 5, "finished": True, "score_a": 40, "score_b": 55, "result_a": "L"},
@@ -316,9 +316,9 @@ class TestHandleHeadToHead:
 
     def test_renders_record_and_matches(self) -> None:
         a = _agent_with_side_effect(self._h2h_side_effect)
-        result = a._handle_head_to_head("Boot Gang vs Glock Tua", [])
-        assert "Boot Gang" in result
-        assert "Glock Tua" in result
+        result = a._handle_head_to_head("Team Charlie vs Team Alpha", [])
+        assert "Team Charlie" in result
+        assert "Team Alpha" in result
         assert "5W" in result
         assert "3W" in result
         assert "GW1" in result
@@ -337,7 +337,7 @@ class TestHandleHeadToHead:
                 return {"teams": _TEAMS}
             return "error"
         a = _agent_with_side_effect(se)
-        result = a._handle_head_to_head("Boot Gang vs Glock Tua", [])
+        result = a._handle_head_to_head("Team Charlie vs Team Alpha", [])
         assert "unavailable" in result.lower()
 
 
@@ -349,7 +349,7 @@ class TestHandleWaiver:
 
     def test_renders_recommendations_with_drops(self) -> None:
         a = _agent({
-            "entry_name": "Boot Gang",
+            "entry_name": "Team Charlie",
             "target_gw": 28,
             "top_adds": [
                 {"name": "Palmer", "team": "CHE", "position_type": 3,
@@ -381,13 +381,13 @@ class TestHandleStreak:
 
     def test_renders_all_streaks(self) -> None:
         a = _agent({
-            "entry_name": "Boot Gang",
+            "entry_name": "Team Charlie",
             "start_win_streak": 3,
             "current_win_streak": 2,
             "max_win_streak": 5,
         })
         result = a._handle_streak("win streak", [])
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         assert "start-season streak 3" in result
         assert "current streak 2" in result
         assert "max streak 5" in result
@@ -406,7 +406,7 @@ class TestHandleWinsList:
 
     def test_renders_win_gameweeks(self) -> None:
         a = _agent({
-            "entry_name": "Boot Gang",
+            "entry_name": "Team Charlie",
             "matches": [
                 {"gameweek": 1, "finished": True, "result": "W"},
                 {"gameweek": 2, "finished": True, "result": "L"},
@@ -422,7 +422,7 @@ class TestHandleWinsList:
 
     def test_no_completed_wins(self) -> None:
         a = _agent({
-            "entry_name": "Boot Gang",
+            "entry_name": "Team Charlie",
             "matches": [
                 {"gameweek": 1, "finished": True, "result": "L"},
             ],
@@ -444,29 +444,29 @@ class TestHandleSchedule:
 
     def test_renders_upcoming_matches(self) -> None:
         a = _agent({
-            "entry_name": "Boot Gang",
+            "entry_name": "Team Charlie",
             "matches": [
-                {"gameweek": 28, "opponent_name": "Glock Tua"},
-                {"gameweek": 29, "opponent_name": "Luckier Than You"},
+                {"gameweek": 28, "opponent_name": "Team Alpha"},
+                {"gameweek": 29, "opponent_name": "Team Bravo"},
             ],
         })
         result = a._handle_schedule("upcoming schedule", [])
-        assert "Boot Gang" in result
-        assert "Glock Tua" in result
+        assert "Team Charlie" in result
+        assert "Team Alpha" in result
         assert "GW28" in result
         assert "GW29" in result
 
     def test_single_gw_shortform(self) -> None:
         a = _agent({
-            "entry_name": "Boot Gang",
-            "matches": [{"gameweek": 28, "opponent_name": "Glock Tua"}],
+            "entry_name": "Team Charlie",
+            "matches": [{"gameweek": 28, "opponent_name": "Team Alpha"}],
         })
-        result = a._handle_schedule("who does Boot Gang play GW28", [])
+        result = a._handle_schedule("who does Team Charlie play GW28", [])
         assert "plays" in result
-        assert "Glock Tua" in result
+        assert "Team Alpha" in result
 
     def test_no_matches(self) -> None:
-        a = _agent({"entry_name": "Boot Gang", "matches": []})
+        a = _agent({"entry_name": "Team Charlie", "matches": []})
         result = a._handle_schedule("schedule", [])
         assert "no matches" in result.lower()
 
@@ -545,13 +545,13 @@ class TestHandleLineupEfficiency:
         a = _agent({
             "gameweek": 28,
             "entries": [
-                {"entry_id": 286192, "entry_name": "Boot Gang",
+                {"entry_id": 888888, "entry_name": "Team Charlie",
                  "bench_points": 15, "bench_points_played": 8,
                  "zero_minute_starter_count": 1},
             ],
         })
         result = a._handle_lineup_efficiency("bench points", [])
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         assert "15" in result
 
     def test_unavailable_on_non_dict(self) -> None:
@@ -569,21 +569,21 @@ class TestHandleLeagueSummary:
     def test_renders_via_reports(self) -> None:
         a = _agent({
             "gameweek": 28,
-            "league_id": 14204,
+            "league_id": 999999,
             "entries": [
-                {"entry_id": 100, "entry_name": "Boot Gang",
-                 "opponent_entry_id": 200, "opponent_name": "Glock Tua",
+                {"entry_id": 100, "entry_name": "Team Charlie",
+                 "opponent_entry_id": 200, "opponent_name": "Team Alpha",
                  "score_for": 65, "score_against": 50, "result": "W",
                  "roster": []},
-                {"entry_id": 200, "entry_name": "Glock Tua",
-                 "opponent_entry_id": 100, "opponent_name": "Boot Gang",
+                {"entry_id": 200, "entry_name": "Team Alpha",
+                 "opponent_entry_id": 100, "opponent_name": "Team Charlie",
                  "score_for": 50, "score_against": 65, "result": "L",
                  "roster": []},
             ],
         })
         result = a._handle_league_summary("league summary", [])
         assert "GW28" in result
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
 
     def test_unavailable_on_error_key(self) -> None:
         a = _agent({"error": "something broke"})
@@ -606,7 +606,7 @@ class TestHandleTransactions:
         a = _agent({
             "gameweek": 28,
             "entries": [
-                {"entry_id": 100, "entry_name": "Boot Gang",
+                {"entry_id": 100, "entry_name": "Team Charlie",
                  "total_in": 1, "total_out": 1,
                  "waiver_in": [101], "waiver_out": [202],
                  "free_in": [], "free_out": [],
@@ -618,7 +618,7 @@ class TestHandleTransactions:
         }):
             result = a._handle_transactions("transactions this week", [])
         assert "GW28" in result
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         assert "Palmer" in result
         assert "Werner" in result
         assert "Waivers" in result
@@ -627,7 +627,7 @@ class TestHandleTransactions:
         a = _agent({
             "gameweek": 28,
             "entries": [
-                {"entry_id": 100, "entry_name": "Boot Gang",
+                {"entry_id": 100, "entry_name": "Team Charlie",
                  "total_in": 0, "total_out": 0,
                  "waiver_in": [], "waiver_out": [],
                  "free_in": [], "free_out": [],
@@ -657,7 +657,7 @@ class TestHandleMatchupSummary:
 
     def test_missing_gw_asks(self) -> None:
         a = _agent({})
-        result = a._handle_matchup_summary("Boot Gang vs Glock Tua recap", [])
+        result = a._handle_matchup_summary("Team Charlie vs Team Alpha recap", [])
         assert "gameweek" in result.lower() or "gw" in result.lower()
 
     def test_missing_vs_asks(self) -> None:
@@ -678,14 +678,14 @@ class TestHandleOwnershipScarcity:
             "owned_totals": {"gk": 10, "def": 40, "mid": 50, "fwd": 20, "total": 120},
             "unowned_totals": {"gk": 30, "def": 60, "mid": 80, "fwd": 40, "total": 210},
             "hoarders": {
-                "def": [{"entry_name": "Boot Gang", "count": 7}],
+                "def": [{"entry_name": "Team Charlie", "count": 7}],
             },
         })
         result = a._handle_ownership_scarcity("ownership breakdown", [])
         assert "GW28" in result
         assert "120" in result
         assert "210" in result
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         assert "7" in result
 
     def test_empty_hoarders(self) -> None:
@@ -714,18 +714,18 @@ class TestHandleStrengthOfSchedule:
         a = _agent({
             "gameweek": 28,
             "entries": [
-                {"entry_name": "Glock Tua", "future_opponent_avg_rank": 5.8,
+                {"entry_name": "Team Alpha", "future_opponent_avg_rank": 5.8,
                  "future_opponents_top_half": 4, "future_opponents_bottom_half": 1},
-                {"entry_name": "Boot Gang", "future_opponent_avg_rank": 3.2,
+                {"entry_name": "Team Charlie", "future_opponent_avg_rank": 3.2,
                  "future_opponents_top_half": 2, "future_opponents_bottom_half": 3},
             ],
         })
         result = a._handle_strength_of_schedule("strength of schedule", [])
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         assert "3.2" in result
-        # Boot Gang (3.2) should appear before Glock Tua (5.8)
-        boot_idx = result.index("Boot Gang")
-        glock_idx = result.index("Glock Tua")
+        # Team Charlie (3.2) should appear before Team Alpha (5.8)
+        boot_idx = result.index("Team Charlie")
+        glock_idx = result.index("Team Alpha")
         assert boot_idx < glock_idx
 
     def test_no_entries(self) -> None:
@@ -748,8 +748,8 @@ class TestHandleLeagueEntries:
     def test_renders_team_list(self) -> None:
         a = _agent({"teams": _TEAMS})
         result = a._handle_league_entries("show all teams", [])
-        assert "Boot Gang" in result
-        assert "Glock Tua" in result
+        assert "Team Charlie" in result
+        assert "Team Alpha" in result
         assert "BG" in result
         assert "2" in result
 

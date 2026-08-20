@@ -47,6 +47,25 @@ This project is a Fantasy Premier League Draft intelligence system consisting of
 
 Data correctness is more important than performance optimizations.
 
+## 2.1 Current Direction (read before planning work)
+
+As of the 2025-26 offseason, this project is being reframed from an in-season
+waiver tool into a **preseason next-season projection system** and, more broadly,
+a **data-engineering pipeline** (multi-season ingest → warehouse/dbt → marts →
+model → serve, with the agent as the natural-language query layer). Practical
+implications for agents working here right now:
+
+- The season is **over**; there is no live gameweek. The Python **scheduler and
+  live-API refresh are dormant** — do not assume an in-progress season.
+- New work lives under `apps/backend/backend/ml/`. Phase A (multi-season
+  historical ingestion) is specced in **`ml/HISTORY_INGEST_SPEC.md`** — treat that
+  file as the contract for ingestion work and follow it exactly.
+- Cross-season joins use the **permanent `code` field**, never the per-season
+  `id` (which is reassigned yearly).
+- Build the ML/data foundation as **plain Python → parquet first**; dbt, Airflow,
+  and a warehouse (DuckDB → Snowflake) are the intended end-state, layered on
+  later — do not introduce them unless a task explicitly asks.
+
 ---
 
 # 3. Standard Workflow (Required)
@@ -63,13 +82,18 @@ Data correctness is more important than performance optimizations.
 
 ## 3.2 Branching Rules
 
+This repo uses **trunk-based flow**: short-lived feature branch → PR → `main`.
+There are no `dev`/`stage` integration branches. The PR is the single gate:
+required status checks (Python 3.11/3.12, Go, gitleaks, artifacts-guard) +
+review must pass before merge; `main` runs post-merge CI.
+
 Branch naming:
 - `fix/<topic>`
 - `feat/<topic>`
 - `refactor/<topic>`
 - `chore/<topic>`
 
-Never work directly on `main`.
+Never work directly on `main`. Delete the feature branch after merge.
 
 ---
 
@@ -354,32 +378,42 @@ End.
 fpl-draft-mcp/
 ├── apps/
 │   ├── mcp-server/          # Go MCP server (port 8080)
+│   │   ├── cmd/
+│   │   │   ├── dev/                     # the ONLY component that hits the live FPL API
+│   │   │   └── schema-inventory/        # dev utility: dumps API schema registry
 │   │   └── fpl-server/
-│   │       ├── main.go                  # Entry point, tool registration
-│   │       ├── bootstrap.go             # Loads FPL bootstrap JSON
-│   │       ├── waiver.go                # Waiver scoring logic
+│   │       ├── main.go                  # Entry point, registers all 30 tools, auth, /mcp
+│   │       ├── draft_tools.go           # Decision layer: draft_board, player_card, waiver_plan, drop_radar (serve ML artifacts)
+│   │       ├── waiver_recommendations.go# Waiver scoring logic
 │   │       ├── fixture_difficulty.go    # FDR calculations
 │   │       ├── head_to_head.go          # H2H record tool
 │   │       ├── manager_season.go        # Season stats tool
+│   │       ├── manager_schedule.go      # Manager schedule tool
+│   │       ├── manager_streak.go        # Form/streak tool
 │   │       ├── player_gw_stats.go       # Per-GW player stats tool
 │   │       ├── current_roster.go        # Active roster tool
 │   │       ├── draft_picks.go           # Draft history tool
 │   │       ├── transaction_analysis.go  # Transaction ranking tool
-│   │       ├── *_test.go                # Go unit tests (no live calls)
-│   │       └── config.go                # ServerConfig struct
+│   │       ├── league_entries.go        # League entries tool
+│   │       ├── epl_*.go / game_status.go# Global EPL data tools (standings, fixtures, status)
+│   │       └── *_test.go                # Go unit tests (no live calls)
 │   └── backend/             # Python FastAPI backend (port 8000)
 │       └── backend/
-│           ├── main.py          # FastAPI app, /chat endpoint
+│           ├── server.py        # FastAPI app, /chat endpoint (uvicorn backend.server:app)
 │           ├── agent.py         # AI agent routing + intent detection
-│           ├── mcp.py           # MCP client (calls Go server)
+│           ├── mcp_client.py    # MCP client (calls Go server)
+│           ├── llm.py           # LLM client — OpenAI (gpt-4.1), NOT Claude
 │           ├── reports.py       # Report generation (markdown)
 │           ├── rag.py           # RAG index (file-backed)
-│           ├── scheduler.py     # APScheduler for data refresh
+│           ├── scheduler.py     # APScheduler for data refresh (DORMANT in offseason)
+│           ├── cli.py           # CLI entrypoint
 │           ├── constants.py     # Shared constants (GW_PATTERN, POSITION_TYPE_LABELS)
-│           └── config.py        # SETTINGS (env-backed)
+│           ├── config.py        # SETTINGS (env-backed)
+│           └── ml/              # Preseason next-season modeling (see ml/HISTORY_INGEST_SPEC.md)
 ├── data/                    # FPL raw + derived data (gitignored)
-│   ├── raw/                 # API snapshots (bootstrap.json, gw/*/live.json, etc.)
-│   └── derived/
+│   ├── raw/                 # LEGACY flat layout = the 2025-26 archive (do not overwrite)
+│   │   └── <season>/        # 2026-27 onward: season-nested (fetcher --season flag)
+│   └── derived/             # same convention: flat = 2025-26, <season>/ = new seasons
 │       ├── summary/         # league/standings/transactions summaries
 │       └── reports/         # GW markdown reports
 ├── CLAUDE.md
@@ -399,14 +433,14 @@ Scheduler (Python, APScheduler)
   ▼
 Go MCP Server (:8080)
   │  reads data/raw/ + derived/
-  │  exposes 22 tools via MCP protocol
+  │  exposes 30 tools via MCP protocol
   ▼
 Python Agent (backend/agent.py)
   │  receives user message
   │  detects intent via _INTENT_KEYWORDS
   │  calls MCP tools via MCPClient
   │  augments with RAG context
-  │  calls Claude LLM
+  │  calls OpenAI LLM (gpt-4.1) as fallback
   ▼
 FastAPI /chat endpoint (:8000)
   │  returns structured response
@@ -418,9 +452,8 @@ User / Frontend
 
 | Service | Port | Notes |
 |---|---|---|
-| Go MCP Server | 8080 | HTTP, MCP protocol |
+| Go MCP Server | 8080 | HTTP, MCP protocol at `/mcp` |
 | Python FastAPI | 8000 | HTTP, /chat endpoint |
-| Dolt SQL (Gas Town) | 3307 | Persistent agent state |
 
 ---
 
@@ -434,11 +467,12 @@ User / Frontend
 
 **What lives in Python (Backend):**
 - Intent detection and routing (`agent.py`)
-- LLM calls (Claude via `llm.py`)
+- LLM calls (**OpenAI `gpt-4.1`** via `llm.py`)
 - RAG index construction and search (`rag.py`)
-- Scheduling and data refresh (`scheduler.py`)
-- HTTP API surface (`main.py`)
+- Scheduling and data refresh (`scheduler.py`) — dormant in the offseason
+- HTTP API surface (`server.py`)
 - Report generation (`reports.py`)
+- Preseason next-season modeling (`ml/`)
 
 **Crossing the boundary:**
 - Python → Go: HTTP POST to MCP server with tool name + JSON args
@@ -481,7 +515,7 @@ go run ./fpl-server
 
 # Terminal 2 — Python backend
 cd apps/backend
-uvicorn backend.main:app --reload --port 8000
+uvicorn backend.server:app --reload --port 8000
 ```
 
 ## Test Chat Endpoint
@@ -509,7 +543,7 @@ These rules are non-negotiable for all agents operating in this repo:
 
 - **Never call the live FPL API in tests.** Use fixtures in `t.TempDir()` (Go) or `tmp_path` (pytest).
 - **Never hardcode league IDs, entry IDs, or element IDs** in source code. Pass them as parameters.
-- **Never push directly to `main` or `dev`.** All changes must go through a PR.
+- **Never push directly to `main`.** All changes must go through a PR (trunk-based flow; there are no `dev`/`stage` branches).
 - **Never merge a PR with failing CI** (tests, lint, vet).
 - **Never add a `# type: ignore`** without a comment explaining why it's unavoidable.
 - **Never use `fmt.Sscanf` for float parsing** in Go — use `strconv.ParseFloat`.

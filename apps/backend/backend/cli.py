@@ -15,8 +15,8 @@ from .reports import (
 def main() -> None:
     parser = argparse.ArgumentParser(description="FPL MCP report CLI")
     parser.add_argument("--type", required=True, choices=["waivers", "league_summary", "trades", "starting_xi"])
-    parser.add_argument("--league-id", type=int, default=14204)
-    parser.add_argument("--entry-id", type=int, default=286192)
+    parser.add_argument("--league-id", type=int, default=0)
+    parser.add_argument("--entry-id", type=int, default=0)
     parser.add_argument("--gw", type=int, default=0)
     args = parser.parse_args()
 
