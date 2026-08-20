@@ -28,10 +28,28 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
 - Drop-radar (backend.ml.ownership): diffs snapshots -> ownership events;
   ranked free-agent report (departed players filtered). 7 tests.
 
+## Done (waiver_plan v1 — 2026-08-20)
+- backend.ml.waiver: roster-aware add/drop CLI. Squad eval (best legal XI by
+  next-3 xP), per-GW baseline from the season projection, fixture multiplier
+  from 25/26 team strengths (promoted prior), live availability gating
+  (next-3 only — ROS survives injuries), and explicit short-vs-long balance:
+  every rec shows next3_gain AND season_gain with upgrade/stream/hold labels.
+  9 no-network tests; live-run verified against the real league.
+
+## Done (serving layer — 2026-08-20)
+- Go decision tools live on the MCP server (30 total): draft_board,
+  player_card (projection + multi-season history + live news — the reversion
+  safeguard), waiver_plan, drop_radar. --default-season flag; 5 Go tests.
+- serve_export writes player_history.json (2108 players); jsonutil.dumps_strict
+  fixes NaN-poisoned artifacts (Go strict JSON) — both writers routed through it.
+- Verified end-to-end over real MCP (initialize -> tools/call).
+- docs/CLAUDE_DESKTOP.md: connector setup + the weekly artifact-refresh loop.
+
 ## Next
-- Phase 3 weekly tools: waiver_plan (roster-aware add+drop using xP), my_week,
-  trade_check, league_pulse; match xP model (MATCH_MODEL_SPEC); schedule the
-  fetcher (fast mode) around waiver deadlines for fresh snapshots.
+- my_week (start/sit), trade_check, league_pulse; match xP model replaces the
+  per-GW baseline as GWs accumulate; schedule fast-mode fetches around waiver
+  deadlines; doc-hygiene sweep from the evaluation report (CLAUDE.md OpenAI
+  sections, PLAN Phase-2 ticks, spec header reconciliation).
 
 ## Done (CI/CD + branch model — 2026-07-30)
 - Fixed the 7-week CI failure (OverflowError dates); CI installs ML deps; re-enabled

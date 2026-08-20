@@ -3,7 +3,7 @@
 An end-to-end **Fantasy Premier League Draft** toolkit.  Ask any question about your league in natural language — the agent calls the right data tools and returns a clear, structured answer.
 
 The stack is:
-- **Go MCP server** — exposes 26 tools backed by locally-cached FPL Draft API data
+- **Go MCP server** — exposes 30 tools backed by locally-cached FPL Draft API data
 - **Python backend** — chat API, scheduled reports, and a WebSocket endpoint
 - **Web UI** — chat interface with tool-call visibility and one-click report generation
 

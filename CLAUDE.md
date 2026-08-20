@@ -382,7 +382,8 @@ fpl-draft-mcp/
 │   │   │   ├── dev/                     # the ONLY component that hits the live FPL API
 │   │   │   └── schema-inventory/        # dev utility: dumps API schema registry
 │   │   └── fpl-server/
-│   │       ├── main.go                  # Entry point, registers all 26 tools, auth, /mcp
+│   │       ├── main.go                  # Entry point, registers all 30 tools, auth, /mcp
+│   │       ├── draft_tools.go           # Decision layer: draft_board, player_card, waiver_plan, drop_radar (serve ML artifacts)
 │   │       ├── waiver_recommendations.go# Waiver scoring logic
 │   │       ├── fixture_difficulty.go    # FDR calculations
 │   │       ├── head_to_head.go          # H2H record tool
@@ -432,7 +433,7 @@ Scheduler (Python, APScheduler)
   ▼
 Go MCP Server (:8080)
   │  reads data/raw/ + derived/
-  │  exposes 26 tools via MCP protocol
+  │  exposes 30 tools via MCP protocol
   ▼
 Python Agent (backend/agent.py)
   │  receives user message

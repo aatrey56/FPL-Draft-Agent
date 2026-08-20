@@ -24,6 +24,7 @@ type ServerConfig struct {
 	DerivedRoot    string
 	WriteDerived   bool
 	ComputeMissing bool
+	DefaultSeason  string // season used by the decision tools when a call omits one
 }
 
 type LeagueGWArgs struct {
@@ -77,6 +78,7 @@ func main() {
 		mcpPath        = flag.String("path", "/mcp", "HTTP path for MCP endpoint")
 		rawRoot        = flag.String("raw-root", "data/raw", "root directory for raw JSON")
 		derivedRoot    = flag.String("derived-root", "data/derived", "root directory for derived JSON")
+		defaultSeason  = flag.String("default-season", "2026-27", "season the decision tools (draft_board/player_card/waiver_plan/drop_radar) read when a call omits one")
 		writeDerived   = flag.Bool("write-derived", true, "write computed summaries to derived root")
 		computeMissing = flag.Bool("compute-missing", true, "compute summaries if missing")
 		requireAuth    = flag.Bool("require-auth", true, "require API key auth via FPL_MCP_API_KEY")
@@ -87,6 +89,7 @@ func main() {
 	cfg := ServerConfig{
 		RawRoot:        *rawRoot,
 		DerivedRoot:    *derivedRoot,
+		DefaultSeason:  *defaultSeason,
 		WriteDerived:   *writeDerived,
 		ComputeMissing: *computeMissing,
 	}
@@ -439,6 +442,26 @@ func main() {
 		Name:        "game_status",
 		Description: "Current game state: GW progress, deadlines (waivers/trades/lineup lock), fixture status, points finality",
 	}, gameStatusHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "draft_board",
+		Description: "The 2026-27 draft board: players ranked per position with projected points, tiers, VOR (12-team), confidence, risk flags, and drivers",
+	}, draftBoardHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "player_card",
+		Description: "Everything about one player: projection with drivers, multi-season history (judge dips/spikes), and live availability news",
+	}, playerCardHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "waiver_plan",
+		Description: "Roster-aware add/drop recommendations: best-XI evaluation plus adds paired with drops, each labeled upgrade/stream/hold with next-3-GW and season gains",
+	}, waiverPlanHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "drop_radar",
+		Description: "Recent league ownership changes (who got dropped/added/traded) from element-status snapshot diffs",
+	}, dropRadarHandler(cfg))
 
 	addTool(server, &registry, &mcp.Tool{
 		Name:        "epl_fixtures",
