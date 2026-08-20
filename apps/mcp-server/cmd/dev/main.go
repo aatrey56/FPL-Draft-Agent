@@ -29,7 +29,7 @@ type GameMeta struct {
 
 func main() {
 	var (
-		leagueID        = flag.Int("league", 14204, "draft league id")
+		leagueID        = flag.Int("league", 0, "draft league id (required; pass --league)")
 		gwMin           = flag.Int("gw-min", 1, "minimum gameweek to fetch (default 1)")
 		gwMax           = flag.Int("gw-max", 0, "maximum gameweek to fetch (0 = current)")
 		rawRoot         = flag.String("raw-root", "data/raw", "root directory for raw JSON")
@@ -46,10 +46,21 @@ func main() {
 		reconcileOn     = flag.Bool("reconcile", true, "compare draft ledger vs snapshots and write mismatch report")
 		summaryHorizons = flag.String("summary-horizons", "5,10,20", "comma-separated horizons in GWs for summaries")
 		summaryRisks    = flag.String("summary-risks", "low,med,high", "comma-separated risk levels for summaries")
+		season          = flag.String("season", "", "season label (e.g. 2026-27): nests raw/derived roots as <root>/<season>. Empty = legacy flat layout (the 2025-26 archive) — pass it for all new-season fetches so old seasons are never overwritten")
+		elementStatus   = flag.Bool("element-status", true, "fetch league element-status (ownership) and archive a timestamped snapshot for the drop-radar")
 	)
 	flag.Parse()
 
-	st := store.NewJSONStore(*rawRoot)
+	// Season-nested layout: data/raw/<season>/... and data/derived/<season>/...
+	// keeps each season's data isolated (the flat legacy layout holds 2025-26).
+	rawDir := *rawRoot
+	derivedDir := *derivedRoot
+	if *season != "" {
+		rawDir = filepath.Join(*rawRoot, *season)
+		derivedDir = filepath.Join(derivedDir, *season)
+	}
+
+	st := store.NewJSONStore(rawDir)
 	client := fetch.NewClient(st)
 	client.PrettyWrite = *pretty && !*live
 	client.Sleep = time.Duration(*sleepMS) * time.Millisecond
@@ -106,15 +117,18 @@ func main() {
 		must(client.LeagueTransactions(*leagueID, refreshTransactions))
 		must(client.LeagueTrades(*leagueID, refreshTransactions))
 		must(client.LeagueDetails(*leagueID, refreshLeagueDetails))
+		if *elementStatus {
+			must(snapshotElementStatus(client, *leagueID, now))
+		}
 		if client.DisableWrite {
 			log.Println("fast refresh complete (live mode)")
 			return
 		}
-		if err := summary.BuildTransactionsSummary(st, *derivedRoot, *leagueID, game.CurrentEvent); err != nil {
+		if err := summary.BuildTransactionsSummary(st, derivedDir, *leagueID, game.CurrentEvent); err != nil {
 			log.Printf("derive-transactions failed: %v", err)
 		}
 		if game.WaiversProcessed && game.NextEvent > game.CurrentEvent {
-			if err := summary.BuildTransactionsSummary(st, *derivedRoot, *leagueID, game.NextEvent); err != nil {
+			if err := summary.BuildTransactionsSummary(st, derivedDir, *leagueID, game.NextEvent); err != nil {
 				log.Printf("derive-next-transactions failed: %v", err)
 			} else {
 				log.Printf("derived transactions for GW %d\n", game.NextEvent)
@@ -129,6 +143,9 @@ func main() {
 	must(client.LeagueTransactions(*leagueID, refreshTransactions))
 	must(client.LeagueTrades(*leagueID, refreshTransactions))
 	must(client.LeagueDetails(*leagueID, refreshLeagueDetails))
+	if *elementStatus {
+		must(snapshotElementStatus(client, *leagueID, now))
+	}
 
 	// Read league details from disk to get entry IDs.
 	ldPath := fmt.Sprintf("league/%d/details.json", *leagueID)
@@ -143,6 +160,8 @@ func main() {
 		entryIDs = append(entryIDs, e.EntryID)
 	}
 	log.Printf("Found %d entry IDs\n", len(entryIDs))
+
+	must(fetchEntryMeta(client, entryIDs, refreshLeagueDetails))
 
 	minGW := *gwMin
 	maxGW := *gwMax
@@ -164,7 +183,7 @@ func main() {
 		if client.DisableWrite {
 			log.Println("derive-draft skipped in live mode")
 		} else {
-			must(buildDraftLedger(st, *derivedRoot, *leagueID))
+			must(buildDraftLedger(st, derivedDir, *leagueID))
 		}
 	}
 
@@ -172,7 +191,7 @@ func main() {
 		if client.DisableWrite {
 			log.Println("derive-snapshots skipped in live mode")
 		} else {
-			must(buildEntrySnapshots(st, *derivedRoot, *leagueID, entryIDs, minGW, maxGW))
+			must(buildEntrySnapshots(st, derivedDir, *leagueID, entryIDs, minGW, maxGW))
 		}
 	}
 
@@ -180,14 +199,14 @@ func main() {
 		if client.DisableWrite {
 			log.Println("reconcile skipped in live mode")
 		} else {
-			must(buildReconcileReports(st, *derivedRoot, *leagueID, entryIDs, minGW, maxGW))
+			must(buildReconcileReports(st, derivedDir, *leagueID, entryIDs, minGW, maxGW))
 		}
 	}
 
 	if client.DisableWrite {
 		log.Println("derive-points skipped in live mode")
 	} else {
-		must(buildPointsResults(st, *derivedRoot, *leagueID, entryIDs, minGW, maxGW))
+		must(buildPointsResults(st, derivedDir, *leagueID, entryIDs, minGW, maxGW))
 	}
 
 	if client.DisableWrite {
@@ -196,9 +215,9 @@ func main() {
 		horizons, err := summary.ParseHorizons(*summaryHorizons)
 		must(err)
 		riskLevels := summary.ParseRiskLevels(*summaryRisks)
-		must(summary.BuildLeagueSummaries(st, *derivedRoot, *leagueID, ld, entryIDs, minGW, maxGW, horizons, riskLevels))
+		must(summary.BuildLeagueSummaries(st, derivedDir, *leagueID, ld, entryIDs, minGW, maxGW, horizons, riskLevels))
 		if game.WaiversProcessed && game.NextEvent > game.CurrentEvent {
-			if err := summary.BuildTransactionsSummary(st, *derivedRoot, *leagueID, game.NextEvent); err != nil {
+			if err := summary.BuildTransactionsSummary(st, derivedDir, *leagueID, game.NextEvent); err != nil {
 				log.Printf("derive-next-transactions failed: %v", err)
 			} else {
 				log.Printf("derived transactions for GW %d\n", game.NextEvent)
@@ -207,6 +226,33 @@ func main() {
 	}
 
 	log.Println("Done.")
+}
+
+// snapshotElementStatus fetches the league's element-status (ownership of
+// every player: owner entry id or null = free agent) and archives a
+// timestamped copy. Always forced — ownership is a live snapshot, and the
+// timestamped history is what the drop-radar diffs into ownership events.
+func snapshotElementStatus(client *fetch.Client, leagueID int, now time.Time) error {
+	body, err := client.LeagueElementStatus(leagueID, true)
+	if err != nil {
+		return err
+	}
+	ts := now.UTC().Format("20060102T1504")
+	return client.ArchiveElementStatus(leagueID, body, ts)
+}
+
+// fetchEntryMeta fetches each manager's public profile and per-GW history.
+// Cheap (2 calls per entry) and useful for league_pulse / opponent context.
+func fetchEntryMeta(client *fetch.Client, entryIDs []int, force bool) error {
+	for _, entryID := range entryIDs {
+		if err := client.EntryPublic(entryID, force); err != nil {
+			return err
+		}
+		if err := client.EntryHistory(entryID, force); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Scheduled refresh window:

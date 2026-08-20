@@ -88,14 +88,14 @@ class TestExtractParam:
         assert self.agent._extract_param("gw", "gameweek 12") == 12
 
     def test_extract_league_id(self) -> None:
-        assert self.agent._extract_param("league_id", "league 14204") == 14204
+        assert self.agent._extract_param("league_id", "league 999999") == 999999
 
     def test_extract_league_id_colon(self) -> None:
         # Pattern supports "league id:XXXXX" with whitespace separator
         assert self.agent._extract_param("league_id", "league id:99999") == 99999
 
     def test_extract_entry_id(self) -> None:
-        assert self.agent._extract_param("entry_id", "entry 286192") == 286192
+        assert self.agent._extract_param("entry_id", "entry 888888") == 888888
 
     def test_extract_horizon(self) -> None:
         assert self.agent._extract_param("horizon", "horizon 3") == 3
@@ -206,18 +206,18 @@ class TestApplyDefaults:
     def setup_method(self) -> None:
         self.agent = _make_agent()
         # Seed session with known values
-        self.agent._session["league_id"] = 14204
-        self.agent._session["entry_id"] = 286192
+        self.agent._session["league_id"] = 999999
+        self.agent._session["entry_id"] = 888888
         self.agent._session["gw"] = 5
 
     def test_waiver_recommendations_injects_entry_id(self) -> None:
         # _apply_defaults injects entry_id and entry_name for waiver_recommendations
         result = self.agent._apply_defaults("waiver_recommendations", {})
-        assert result["entry_id"] == 286192
+        assert result["entry_id"] == 888888
 
     def test_league_summary_injects_league_id(self) -> None:
         result = self.agent._apply_defaults("league_summary", {})
-        assert result["league_id"] == 14204
+        assert result["league_id"] == 999999
 
     def test_league_summary_injects_gw_from_session(self) -> None:
         result = self.agent._apply_defaults("league_summary", {})
@@ -231,7 +231,7 @@ class TestApplyDefaults:
         # session has gw=5, but _apply_defaults for transaction_analysis sets gw=0 if unset
         result = self.agent._apply_defaults("transaction_analysis", {})
         # league_id should come from session
-        assert result["league_id"] == 14204
+        assert result["league_id"] == 999999
 
     def test_manager_schedule_flattens_first_last(self) -> None:
         result = self.agent._apply_defaults(
@@ -268,8 +268,8 @@ class TestTryRoute:
         with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
             self.agent = Agent(self.mcp, self.llm)
 
-        self.agent._session["league_id"] = 14204
-        self.agent._session["entry_id"] = 286192
+        self.agent._session["league_id"] = 999999
+        self.agent._session["entry_id"] = 888888
 
     def test_waiver_routes_to_handler(self) -> None:
         result = self.agent._try_route("show my waiver recommendations", [])
@@ -463,12 +463,12 @@ class TestGwSessionStickiness:
         with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
             self.agent = Agent(self.mcp, self.llm)
 
-        self.agent._session["league_id"] = 14204
-        self.agent._session["entry_id"] = 286192
+        self.agent._session["league_id"] = 999999
+        self.agent._session["entry_id"] = 888888
 
     def test_gw_not_persisted_by_note_tool_use(self) -> None:
         """_note_tool_use should NOT store gw in session."""
-        self.agent._note_tool_use("league_summary", {"league_id": 14204, "gw": 3})
+        self.agent._note_tool_use("league_summary", {"league_id": 999999, "gw": 3})
         assert self.agent._session.get("gw") is None
 
     def test_gw_not_persisted_from_text(self) -> None:
@@ -541,7 +541,7 @@ class TestRoutingBugs:
 
     def test_current_roster_uses_settings_fallback(self) -> None:
         """'my team' should work even without session entry_id (#76)."""
-        self.agent._session["league_id"] = 14204
+        self.agent._session["league_id"] = 999999
         self.agent._session["entry_id"] = None
         self.mcp.call_tool.return_value = {
             "entry_name": "My Team", "gameweek": 5,
@@ -549,7 +549,7 @@ class TestRoutingBugs:
         }
         with patch("backend.agent.SETTINGS") as mock_settings:
             mock_settings.entry_id = 99
-            mock_settings.league_id = 14204
+            mock_settings.league_id = 999999
             result = self.agent._try_route("show my team", [])
         assert result is not None
         assert "unavailable" not in result.lower()
@@ -558,7 +558,7 @@ class TestRoutingBugs:
 
     def test_draft_picks_filters_by_round(self) -> None:
         """'who did we draft in round 1' should only show round 1 picks (#80)."""
-        self.agent._session["league_id"] = 14204
+        self.agent._session["league_id"] = 999999
         self.agent._session["entry_id"] = 100
         self.mcp.call_tool.return_value = {
             "filtered_by": "My Team",
@@ -576,7 +576,7 @@ class TestRoutingBugs:
 
     def test_draft_picks_no_round_shows_all(self) -> None:
         """Without a round mention, all picks should be shown."""
-        self.agent._session["league_id"] = 14204
+        self.agent._session["league_id"] = 999999
         self.agent._session["entry_id"] = 100
         self.mcp.call_tool.return_value = {
             "filtered_by": "My Team",
@@ -594,7 +594,7 @@ class TestRoutingBugs:
 
     def test_who_won_gw_routes_to_league_summary(self) -> None:
         """'who won GW27' should route to league_summary, not win_list (#85)."""
-        self.agent._session["league_id"] = 14204
+        self.agent._session["league_id"] = 999999
         self.mcp.call_tool.return_value = {
             "entries": [], "gameweek": 27, "matches": [],
         }
@@ -619,7 +619,7 @@ class TestRoutingBugs:
 
     def test_player_name_for_prefix_stripped(self) -> None:
         """'gameweek points for Saka' should extract 'Saka', not 'for Saka' (#87)."""
-        self.agent._session["league_id"] = 14204
+        self.agent._session["league_id"] = 999999
         self.mcp.call_tool.return_value = {
             "player_name": "Saka", "team": "ARS", "position_type": 3,
             "total_points": 50, "avg_points": 5.0, "gameweeks": [],
@@ -648,14 +648,14 @@ class TestHasLeague:
 
     def test_has_league_true_when_set(self) -> None:
         agent = _make_agent()
-        agent._session["league_id"] = 14204
+        agent._session["league_id"] = 999999
         assert agent._has_league() is True
 
     def test_has_league_true_from_settings(self) -> None:
         agent = _make_agent()
         agent._session["league_id"] = None
         with patch("backend.agent.SETTINGS") as mock_settings:
-            mock_settings.league_id = 14204
+            mock_settings.league_id = 999999
             assert agent._has_league() is True
 
 
@@ -709,7 +709,7 @@ class TestEPLSummary:
         assert "epl_fixtures" in tool_names or "epl_standings" in tool_names
 
     def test_league_summary_with_league_routes_to_fpl(self) -> None:
-        self.agent._session["league_id"] = 14204
+        self.agent._session["league_id"] = 999999
         self.mcp.call_tool.return_value = {"entries": [], "gameweek": 27, "matches": []}
         result = self.agent._try_route("league summary", [])
         assert result is not None
@@ -816,27 +816,27 @@ class TestGameStatusRouting:
 
 _LEAGUE_ENTRIES = {
     "teams": [
-        {"entry_id": 100, "entry_name": "Boot Gang", "short_name": "BG"},
-        {"entry_id": 200, "entry_name": "Glock Tua", "short_name": "GT"},
+        {"entry_id": 100, "entry_name": "Team Charlie", "short_name": "BG"},
+        {"entry_id": 200, "entry_name": "Team Alpha", "short_name": "GT"},
     ]
 }
 
 _WAIVER_RESULT = {
-    "entry_name": "Boot Gang",
+    "entry_name": "Team Charlie",
     "target_gw": 28,
     "top_adds": [{"name": "Salah", "team": "LIV", "position_type": 3}],
 }
 
 _STREAK_RESULT = {
-    "entry_name": "Boot Gang",
+    "entry_name": "Team Charlie",
     "start_win_streak": 2,
     "current_win_streak": 1,
     "max_win_streak": 4,
 }
 
 _SCHEDULE_RESULT = {
-    "entry_name": "Boot Gang",
-    "matches": [{"gameweek": 28, "opponent_name": "Glock Tua"}],
+    "entry_name": "Team Charlie",
+    "matches": [{"gameweek": 28, "opponent_name": "Team Alpha"}],
 }
 
 
@@ -851,30 +851,30 @@ class TestTeamNameResolution:
         self.llm.available.return_value = False
         with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
             self.agent = Agent(self.mcp, self.llm)
-        self.agent._session["league_id"] = 14204
-        self.agent._session["entry_id"] = 286192
+        self.agent._session["league_id"] = 999999
+        self.agent._session["entry_id"] = 888888
 
     def test_league_entries_renders_team_list(self) -> None:
         self.mcp.call_tool.return_value = {
-            "league_id": 14204,
+            "league_id": 999999,
             "teams": [
-                {"entry_id": 100, "entry_name": "Boot Gang", "short_name": "BG"},
-                {"entry_id": 200, "entry_name": "Glock Tua", "short_name": "GT"},
+                {"entry_id": 100, "entry_name": "Team Charlie", "short_name": "BG"},
+                {"entry_id": 200, "entry_name": "Team Alpha", "short_name": "GT"},
             ],
         }
         result = self.agent._try_route("show all teams", [])
         assert result is not None
-        assert "Boot Gang" in result
-        assert "Glock Tua" in result
+        assert "Team Charlie" in result
+        assert "Team Alpha" in result
         assert "data is ready" not in result
 
     def test_ownership_scarcity_renders_breakdown(self) -> None:
         self.mcp.call_tool.return_value = {
-            "league_id": 14204,
+            "league_id": 999999,
             "gameweek": 27,
             "owned_totals": {"gk": 10, "def": 40, "mid": 40, "fwd": 20, "total": 110},
             "unowned_totals": {"gk": 5, "def": 10, "mid": 15, "fwd": 5, "total": 35},
-            "hoarders": {"mid": [{"entry_name": "Boot Gang", "count": 8}]},
+            "hoarders": {"mid": [{"entry_name": "Team Charlie", "count": 8}]},
         }
         result = self.agent._try_route("player ownership %", [])
         assert result is not None
@@ -884,17 +884,17 @@ class TestTeamNameResolution:
 
     def test_strength_of_schedule_renders_rankings(self) -> None:
         self.mcp.call_tool.return_value = {
-            "league_id": 14204,
+            "league_id": 999999,
             "gameweek": 27,
             "entries": [
                 {
-                    "entry_name": "Boot Gang",
+                    "entry_name": "Team Charlie",
                     "future_opponent_avg_rank": 3.2,
                     "future_opponents_top_half": 2,
                     "future_opponents_bottom_half": 3,
                 },
                 {
-                    "entry_name": "Glock Tua",
+                    "entry_name": "Team Alpha",
                     "future_opponent_avg_rank": 5.8,
                     "future_opponents_top_half": 4,
                     "future_opponents_bottom_half": 1,
@@ -903,20 +903,20 @@ class TestTeamNameResolution:
         }
         result = self.agent._try_route("strength of schedule next 5 gws", [])
         assert result is not None
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         assert "avg opp rank" in result
         assert "data is ready" not in result
-        # Verify sort order: Boot Gang (3.2) should appear before Glock Tua (5.8)
-        assert result.index("Boot Gang") < result.index("Glock Tua")
+        # Verify sort order: Team Charlie (3.2) should appear before Team Alpha (5.8)
+        assert result.index("Team Charlie") < result.index("Team Alpha")
 
     def test_strength_of_schedule_routes_to_correct_tool(self) -> None:
         """'strength of schedule' must route to strength_of_schedule, not schedule handler."""
         self.mcp.call_tool.return_value = {
-            "league_id": 14204,
+            "league_id": 999999,
             "gameweek": 27,
             "entries": [
                 {
-                    "entry_name": "Boot Gang",
+                    "entry_name": "Team Charlie",
                     "future_opponent_avg_rank": 3.2,
                     "future_opponents_top_half": 2,
                     "future_opponents_bottom_half": 3,
@@ -933,11 +933,11 @@ class TestTeamNameResolution:
     def test_schedule_difficulty_routes_to_strength_tool(self) -> None:
         """'schedule difficulty' must route to strength_of_schedule, not schedule handler."""
         self.mcp.call_tool.return_value = {
-            "league_id": 14204,
+            "league_id": 999999,
             "gameweek": 27,
             "entries": [
                 {
-                    "entry_name": "Glock Tua",
+                    "entry_name": "Team Alpha",
                     "future_opponent_avg_rank": 5.8,
                     "future_opponents_top_half": 4,
                     "future_opponents_bottom_half": 1,
@@ -1065,7 +1065,7 @@ class TestLeagueSummaryBugFixes:
         """
         error_response = {"error": "file not found"}
         agent = _make_agent(mcp_return=error_response)
-        agent._session["league_id"] = 14204
+        agent._session["league_id"] = 999999
 
         tool_events: List[Dict[str, Any]] = []
         result = agent._handle_league_summary("show league summary", tool_events)
@@ -1097,7 +1097,7 @@ class TestLeagueSummaryBugFixes:
             json.dumps({
                 "action": "tool",
                 "name": "league_summary",
-                "arguments": {"league_id": 14204, "gw": 5},
+                "arguments": {"league_id": 999999, "gw": 5},
             }),
             json.dumps({
                 "action": "final",
@@ -1108,7 +1108,7 @@ class TestLeagueSummaryBugFixes:
         with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
             agent = Agent(mcp, llm)
 
-        agent._session["league_id"] = 14204
+        agent._session["league_id"] = 999999
 
         # Patch _try_route to return None so the LLM loop is entered
         # (otherwise the fast-path router handles "league summary" directly).
@@ -1142,7 +1142,7 @@ class TestLeagueSummaryBugFixes:
         with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
             agent = Agent(mcp, llm)
 
-        agent._session["league_id"] = 14204
+        agent._session["league_id"] = 999999
         # Explicitly ensure no GW is set in session
         agent._session["gw"] = None
 
@@ -1177,10 +1177,10 @@ class TestHandlerTeamNameResolution:
         with patch("backend.agent.get_rag_index", return_value=MagicMock(search=lambda *a, **k: [])):
             self.agent = Agent(self.mcp, self.llm)
 
-        # Session defaults point to *Glock Tua* (id=200).
-        self.agent._session["league_id"] = 14204
+        # Session defaults point to *Team Alpha* (id=200).
+        self.agent._session["league_id"] = 999999
         self.agent._session["entry_id"] = 200
-        self.agent._session["entry_name"] = "Glock Tua"
+        self.agent._session["entry_name"] = "Team Alpha"
 
     def _mock_call_tool(self, responses: Dict[str, Any]):
         """Return different data depending on which MCP tool is called."""
@@ -1193,11 +1193,11 @@ class TestHandlerTeamNameResolution:
             "league_entries": _LEAGUE_ENTRIES,
             "waiver_recommendations": _WAIVER_RESULT,
         })
-        result = self.agent._try_route("waiver recs for Boot Gang", [])
+        result = self.agent._try_route("waiver recs for Team Charlie", [])
         assert result is not None
-        # Should mention Boot Gang, NOT Glock Tua
-        assert "Boot Gang" in result
-        # The tool should have been called with Boot Gang's entry_id (100)
+        # Should mention Team Charlie, NOT Team Alpha
+        assert "Team Charlie" in result
+        # The tool should have been called with Team Charlie's entry_id (100)
         calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "waiver_recommendations"]
         assert len(calls) == 1
         assert calls[0][0][1]["entry_id"] == 100
@@ -1209,7 +1209,7 @@ class TestHandlerTeamNameResolution:
         })
         result = self.agent._try_route("show my waiver recommendations", [])
         assert result is not None
-        # No team name in text → should use session default (Glock Tua, id=200)
+        # No team name in text → should use session default (Team Alpha, id=200)
         calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "waiver_recommendations"]
         assert len(calls) == 1
         assert calls[0][0][1]["entry_id"] == 200
@@ -1219,9 +1219,9 @@ class TestHandlerTeamNameResolution:
             "league_entries": _LEAGUE_ENTRIES,
             "manager_streak": _STREAK_RESULT,
         })
-        result = self.agent._try_route("win streak for Boot Gang", [])
+        result = self.agent._try_route("win streak for Team Charlie", [])
         assert result is not None
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_streak"]
         assert len(calls) == 1
         assert calls[0][0][1]["entry_id"] == 100
@@ -1231,9 +1231,9 @@ class TestHandlerTeamNameResolution:
             "league_entries": _LEAGUE_ENTRIES,
             "manager_schedule": _SCHEDULE_RESULT,
         })
-        result = self.agent._try_route("schedule for Boot Gang", [])
+        result = self.agent._try_route("schedule for Team Charlie", [])
         assert result is not None
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_schedule"]
         assert len(calls) == 1
         assert calls[0][0][1]["entry_id"] == 100
@@ -1242,7 +1242,7 @@ class TestHandlerTeamNameResolution:
         self._mock_call_tool({
             "league_entries": _LEAGUE_ENTRIES,
             "manager_schedule": {
-                "entry_name": "Boot Gang",
+                "entry_name": "Team Charlie",
                 "matches": [
                     {"gameweek": 5, "finished": True, "result": "W"},
                     {"gameweek": 6, "finished": True, "result": "L"},
@@ -1250,10 +1250,10 @@ class TestHandlerTeamNameResolution:
                 ],
             },
         })
-        result = self.agent._try_route("wins each week for Boot Gang", [])
+        result = self.agent._try_route("wins each week for Team Charlie", [])
         assert result is not None
-        assert "Boot Gang" in result
-        # The handler should have called manager_schedule with Boot Gang's
+        assert "Team Charlie" in result
+        # The handler should have called manager_schedule with Team Charlie's
         # entry_id (100), not the session default (200).
         calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_schedule"]
         assert len(calls) == 1
@@ -1265,13 +1265,13 @@ class TestHandlerTeamNameResolution:
         self._mock_call_tool({
             "league_entries": _LEAGUE_ENTRIES,
             "current_roster": {
-                "entry_name": "Boot Gang", "gameweek": 28,
+                "entry_name": "Team Charlie", "gameweek": 28,
                 "starters": [], "bench": [],
             },
         })
-        result = self.agent._try_route("current roster for Boot Gang", [])
+        result = self.agent._try_route("current roster for Team Charlie", [])
         assert result is not None
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "current_roster"]
         assert len(calls) == 1
         assert calls[0][0][1]["entry_id"] == 100
@@ -1280,7 +1280,7 @@ class TestHandlerTeamNameResolution:
         self._mock_call_tool({
             "league_entries": _LEAGUE_ENTRIES,
             "current_roster": {
-                "entry_name": "Glock Tua", "gameweek": 28,
+                "entry_name": "Team Alpha", "gameweek": 28,
                 "starters": [], "bench": [],
             },
         })
@@ -1296,16 +1296,16 @@ class TestHandlerTeamNameResolution:
         self._mock_call_tool({
             "league_entries": _LEAGUE_ENTRIES,
             "draft_picks": {
-                "filtered_by": "Boot Gang",
+                "filtered_by": "Team Charlie",
                 "picks": [
-                    {"round": 1, "pick": 1, "entry_name": "Boot Gang",
+                    {"round": 1, "pick": 1, "entry_name": "Team Charlie",
                      "player_name": "Salah", "team": "LIV", "position_type": 3},
                 ],
             },
         })
-        result = self.agent._try_route("draft picks for Boot Gang", [])
+        result = self.agent._try_route("draft picks for Team Charlie", [])
         assert result is not None
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "draft_picks"]
         assert len(calls) == 1
         assert calls[0][0][1]["entry_id"] == 100
@@ -1314,9 +1314,9 @@ class TestHandlerTeamNameResolution:
         self._mock_call_tool({
             "league_entries": _LEAGUE_ENTRIES,
             "draft_picks": {
-                "filtered_by": "Glock Tua",
+                "filtered_by": "Team Alpha",
                 "picks": [
-                    {"round": 1, "pick": 2, "entry_name": "Glock Tua",
+                    {"round": 1, "pick": 2, "entry_name": "Team Alpha",
                      "player_name": "Haaland", "team": "MCI", "position_type": 4},
                 ],
             },
@@ -1333,14 +1333,14 @@ class TestHandlerTeamNameResolution:
         self._mock_call_tool({
             "league_entries": _LEAGUE_ENTRIES,
             "manager_season": {
-                "entry_name": "Boot Gang",
+                "entry_name": "Team Charlie",
                 "gameweeks": [],
                 "record": {"wins": 5, "draws": 2, "losses": 3},
             },
         })
-        result = self.agent._try_route("season stats for Boot Gang", [])
+        result = self.agent._try_route("season stats for Team Charlie", [])
         assert result is not None
-        assert "Boot Gang" in result
+        assert "Team Charlie" in result
         calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "manager_season"]
         assert len(calls) == 1
         assert calls[0][0][1]["entry_id"] == 100
@@ -1349,7 +1349,7 @@ class TestHandlerTeamNameResolution:
         self._mock_call_tool({
             "league_entries": _LEAGUE_ENTRIES,
             "manager_season": {
-                "entry_name": "Glock Tua",
+                "entry_name": "Team Alpha",
                 "gameweeks": [],
                 "record": {"wins": 3, "draws": 1, "losses": 6},
             },
@@ -1368,12 +1368,12 @@ class TestHandlerTeamNameResolution:
             "lineup_efficiency": {
                 "gameweek": 28,
                 "entries": [
-                    {"entry_id": 100, "entry_name": "Boot Gang",
+                    {"entry_id": 100, "entry_name": "Team Charlie",
                      "bench_points": 10, "zero_minute_starters": 0},
                 ],
             },
         })
-        result = self.agent._try_route("lineup efficiency for Boot Gang", [])
+        result = self.agent._try_route("lineup efficiency for Team Charlie", [])
         assert result is not None
         calls = [c for c in self.mcp.call_tool.call_args_list if c[0][0] == "lineup_efficiency"]
         assert len(calls) == 1
@@ -1384,7 +1384,7 @@ class TestHandlerTeamNameResolution:
             "lineup_efficiency": {
                 "gameweek": 28,
                 "entries": [
-                    {"entry_id": 200, "entry_name": "Glock Tua",
+                    {"entry_id": 200, "entry_name": "Team Alpha",
                      "bench_points": 5, "zero_minute_starters": 1},
                 ],
             },
@@ -1420,7 +1420,7 @@ class TestHandlerTeamNameResolution:
         self._mock_call_tool({
             "league_entries": _LEAGUE_ENTRIES,
             "manager_schedule": {
-                "entry_name": "Glock Tua",
+                "entry_name": "Team Alpha",
                 "matches": [
                     {"gameweek": 5, "finished": True, "result": "W"},
                 ],
