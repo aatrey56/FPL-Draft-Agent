@@ -39,6 +39,8 @@ from typing import Any
 
 import pandas as pd
 
+from backend.ml import jsonutil
+
 logger = logging.getLogger(__name__)
 
 POSITIONS = {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -295,7 +297,8 @@ def main(argv: list[str] | None = None) -> int:
 
     out = _repo_root() / "data/derived" / args.season / "ml/waiver_plan.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"xi_next3_xp": xi_total, "recommendations": recs}, indent=1))
+    out.write_text(jsonutil.dumps_strict(
+        {"xi_next3_xp": xi_total, "recommendations": recs}, indent=1))
     logger.info("wrote %s", out)
     return 0
 

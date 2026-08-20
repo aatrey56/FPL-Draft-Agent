@@ -36,11 +36,20 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
   every rec shows next3_gain AND season_gain with upgrade/stream/hold labels.
   9 no-network tests; live-run verified against the real league.
 
+## Done (serving layer — 2026-08-20)
+- Go decision tools live on the MCP server (30 total): draft_board,
+  player_card (projection + multi-season history + live news — the reversion
+  safeguard), waiver_plan, drop_radar. --default-season flag; 5 Go tests.
+- serve_export writes player_history.json (2108 players); jsonutil.dumps_strict
+  fixes NaN-poisoned artifacts (Go strict JSON) — both writers routed through it.
+- Verified end-to-end over real MCP (initialize -> tools/call).
+- docs/CLAUDE_DESKTOP.md: connector setup + the weekly artifact-refresh loop.
+
 ## Next
-- my_week (start/sit from the same xP core), trade_check, league_pulse;
-  match xP model (MATCH_MODEL_SPEC) replaces the per-GW baseline once GWs
-  accumulate; MCP tool wrappers for Claude Desktop; schedule fast-mode fetches
-  around waiver deadlines.
+- my_week (start/sit), trade_check, league_pulse; match xP model replaces the
+  per-GW baseline as GWs accumulate; schedule fast-mode fetches around waiver
+  deadlines; doc-hygiene sweep from the evaluation report (CLAUDE.md OpenAI
+  sections, PLAN Phase-2 ticks, spec header reconciliation).
 
 ## Done (CI/CD + branch model — 2026-07-30)
 - Fixed the 7-week CI failure (OverflowError dates); CI installs ML deps; re-enabled

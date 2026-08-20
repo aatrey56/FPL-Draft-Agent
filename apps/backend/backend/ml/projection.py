@@ -40,6 +40,7 @@ import numpy as np
 import pandas as pd
 
 from backend.ml import features as F
+from backend.ml import jsonutil
 
 logger = logging.getLogger(__name__)
 
@@ -561,7 +562,7 @@ def main(argv: list[str] | None = None) -> int:
         out_parquet = args.out_dir / "projections_2627.parquet"
         board.to_parquet(out_parquet, index=False)
         out_json = args.out_dir / "projections_2627.json"
-        out_json.write_text(json.dumps(board.to_dict(orient="records"), indent=1))
+        out_json.write_text(jsonutil.dumps_strict(board.to_dict(orient="records"), indent=1))
         logger.info("wrote %d projections -> %s (+ .json for Go tools)",
                     len(board), out_parquet)
     return 0
