@@ -28,10 +28,19 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
 - Drop-radar (backend.ml.ownership): diffs snapshots -> ownership events;
   ranked free-agent report (departed players filtered). 7 tests.
 
+## Done (waiver_plan v1 — 2026-08-20)
+- backend.ml.waiver: roster-aware add/drop CLI. Squad eval (best legal XI by
+  next-3 xP), per-GW baseline from the season projection, fixture multiplier
+  from 25/26 team strengths (promoted prior), live availability gating
+  (next-3 only — ROS survives injuries), and explicit short-vs-long balance:
+  every rec shows next3_gain AND season_gain with upgrade/stream/hold labels.
+  9 no-network tests; live-run verified against the real league.
+
 ## Next
-- Phase 3 weekly tools: waiver_plan (roster-aware add+drop using xP), my_week,
-  trade_check, league_pulse; match xP model (MATCH_MODEL_SPEC); schedule the
-  fetcher (fast mode) around waiver deadlines for fresh snapshots.
+- my_week (start/sit from the same xP core), trade_check, league_pulse;
+  match xP model (MATCH_MODEL_SPEC) replaces the per-GW baseline once GWs
+  accumulate; MCP tool wrappers for Claude Desktop; schedule fast-mode fetches
+  around waiver deadlines.
 
 ## Done (CI/CD + branch model — 2026-07-30)
 - Fixed the 7-week CI failure (OverflowError dates); CI installs ML deps; re-enabled
