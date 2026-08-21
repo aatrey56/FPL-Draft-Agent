@@ -132,54 +132,6 @@ func main() {
 	})
 
 	addTool(server, &registry, &mcp.Tool{
-		Name:        "waiver_targets",
-		Description: "Ranked add suggestions for your league",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args LeagueGWAndRiskArgs) (*mcp.CallToolResult, any, error) {
-		leagueID := args.LeagueID
-		if leagueID == 0 {
-			return toolError(fmt.Errorf("league_id is required")), nil, nil
-		}
-		gw, err := resolveGW(cfg, args.GW)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		h := args.Horizon
-		if h <= 0 {
-			h = 5
-		}
-		risk := normalizeRisk(args.Risk)
-		relPath := fmt.Sprintf("summary/waiver_targets/%d/gw/%d_h%d_risk-%s.json", leagueID, gw, h, risk)
-		return toolJSON(loadSummaryFile(cfg, leagueID, gw, relPath, []int{h}, []string{risk}))
-	})
-
-	addTool(server, &registry, &mcp.Tool{
-		Name:        "waiver_recommendations",
-		Description: "Personalized waiver report (fixtures/form/points/xG) with drop suggestions",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args WaiverRecommendationsArgs) (*mcp.CallToolResult, any, error) {
-		out, err := buildWaiverRecommendations(cfg, args)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		return toolJSONBytes(out), nil, nil
-	})
-
-	addTool(server, &registry, &mcp.Tool{
-		Name:        "league_summary",
-		Description: "League weekly summary (roster, points, bench, record, opponent)",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args LeagueGWArgs) (*mcp.CallToolResult, any, error) {
-		leagueID := args.LeagueID
-		if leagueID == 0 {
-			return toolError(fmt.Errorf("league_id is required")), nil, nil
-		}
-		gw, err := resolveGW(cfg, args.GW)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		relPath := fmt.Sprintf("summary/league/%d/gw/%d.json", leagueID, gw)
-		return toolJSON(loadSummaryFile(cfg, leagueID, gw, relPath, nil, nil))
-	})
-
-	addTool(server, &registry, &mcp.Tool{
 		Name:        "matchup_breakdown",
 		Description: "Points by position for each matchup (why you won/lost)",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args LeagueGWArgs) (*mcp.CallToolResult, any, error) {
@@ -196,38 +148,6 @@ func main() {
 	})
 
 	addTool(server, &registry, &mcp.Tool{
-		Name:        "standings",
-		Description: "League standings table snapshot for a gameweek",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args LeagueGWArgs) (*mcp.CallToolResult, any, error) {
-		leagueID := args.LeagueID
-		if leagueID == 0 {
-			return toolError(fmt.Errorf("league_id is required")), nil, nil
-		}
-		gw, err := resolveGW(cfg, args.GW)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		relPath := fmt.Sprintf("summary/standings/%d/gw/%d.json", leagueID, gw)
-		return toolJSON(loadSummaryFile(cfg, leagueID, gw, relPath, nil, nil))
-	})
-
-	addTool(server, &registry, &mcp.Tool{
-		Name:        "transactions",
-		Description: "Weekly waivers/free agents/trades digest per manager",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args LeagueGWArgs) (*mcp.CallToolResult, any, error) {
-		leagueID := args.LeagueID
-		if leagueID == 0 {
-			return toolError(fmt.Errorf("league_id is required")), nil, nil
-		}
-		gw, err := resolveGW(cfg, args.GW)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		relPath := fmt.Sprintf("summary/transactions/%d/gw/%d.json", leagueID, gw)
-		return toolJSON(loadSummaryFile(cfg, leagueID, gw, relPath, nil, nil))
-	})
-
-	addTool(server, &registry, &mcp.Tool{
 		Name:        "lineup_efficiency",
 		Description: "Bench points, bench points played, and zero-minute starters",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args LeagueGWArgs) (*mcp.CallToolResult, any, error) {
@@ -240,38 +160,6 @@ func main() {
 			return toolError(err), nil, nil
 		}
 		relPath := fmt.Sprintf("summary/lineup_efficiency/%d/gw/%d.json", leagueID, gw)
-		return toolJSON(loadSummaryFile(cfg, leagueID, gw, relPath, nil, nil))
-	})
-
-	addTool(server, &registry, &mcp.Tool{
-		Name:        "strength_of_schedule",
-		Description: "Past/future opponent difficulty based on standings at a gameweek",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args LeagueGWArgs) (*mcp.CallToolResult, any, error) {
-		leagueID := args.LeagueID
-		if leagueID == 0 {
-			return toolError(fmt.Errorf("league_id is required")), nil, nil
-		}
-		gw, err := resolveGW(cfg, args.GW)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		relPath := fmt.Sprintf("summary/strength_of_schedule/%d/gw/%d.json", leagueID, gw)
-		return toolJSON(loadSummaryFile(cfg, leagueID, gw, relPath, nil, nil))
-	})
-
-	addTool(server, &registry, &mcp.Tool{
-		Name:        "ownership_scarcity",
-		Description: "Ownership counts by position and hoarders",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args LeagueGWArgs) (*mcp.CallToolResult, any, error) {
-		leagueID := args.LeagueID
-		if leagueID == 0 {
-			return toolError(fmt.Errorf("league_id is required")), nil, nil
-		}
-		gw, err := resolveGW(cfg, args.GW)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		relPath := fmt.Sprintf("summary/ownership_scarcity/%d/gw/%d.json", leagueID, gw)
 		return toolJSON(loadSummaryFile(cfg, leagueID, gw, relPath, nil, nil))
 	})
 
@@ -369,17 +257,6 @@ func main() {
 	})
 
 	addTool(server, &registry, &mcp.Tool{
-		Name:        "league_entries",
-		Description: "List league teams (entry id/name) from league details",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args LeagueEntriesArgs) (*mcp.CallToolResult, any, error) {
-		out, err := buildLeagueEntries(cfg, args.LeagueID)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		return toolMarshal(out)
-	})
-
-	addTool(server, &registry, &mcp.Tool{
 		Name:        "current_roster",
 		Description: "Show a manager's current squad (starters + bench) with player names, teams, and positions",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args CurrentRosterArgs) (*mcp.CallToolResult, any, error) {
@@ -413,17 +290,6 @@ func main() {
 	})
 
 	addTool(server, &registry, &mcp.Tool{
-		Name:        "transaction_analysis",
-		Description: "League-wide transaction analysis for a gameweek: most targeted positions, top added/dropped players, per-manager breakdown",
-	}, func(ctx context.Context, req *mcp.CallToolRequest, args TransactionAnalysisArgs) (*mcp.CallToolResult, any, error) {
-		out, err := buildTransactionAnalysis(cfg, args)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		return toolMarshal(out)
-	})
-
-	addTool(server, &registry, &mcp.Tool{
 		Name:        "player_gw_stats",
 		Description: "Per-gameweek stats for a specific player: minutes, points, goals, assists, xG, xA across a GW range",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args PlayerGWStatsArgs) (*mcp.CallToolResult, any, error) {
@@ -444,11 +310,6 @@ func main() {
 		}
 		return toolMarshal(out)
 	})
-
-	addTool(server, &registry, &mcp.Tool{
-		Name:        "game_status",
-		Description: "Current game state: GW progress, deadlines (waivers/trades/lineup lock), fixture status, points finality",
-	}, gameStatusHandler(cfg))
 
 	addTool(server, &registry, &mcp.Tool{
 		Name:        "draft_board",
@@ -484,6 +345,11 @@ func main() {
 		Name:        "team_env",
 		Description: "Per-team match environment: FPL points/xG generated and conceded (by position, home/away) — shootout vs stalemate context for fixtures",
 	}, teamEnvHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "gw_live",
+		Description: "Live gameweek matchup tracker: my XI vs my H2H opponent with in-play points per player, bench points, and who has played (refresh the fetcher during matches)",
+	}, gwLiveHandler(cfg))
 
 	addTool(server, &registry, &mcp.Tool{
 		Name:        "league_pulse",
