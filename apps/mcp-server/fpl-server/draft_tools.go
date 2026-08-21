@@ -163,15 +163,9 @@ func playerCardHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		var match *projectionRow
-		for i := range rows {
-			if strings.Contains(strings.ToLower(rows[i].WebName), needle) {
-				if match != nil {
-					return toolError(fmt.Errorf("ambiguous name %q (matches %s and %s) — be more specific",
-						args.Name, match.WebName, rows[i].WebName)), nil, nil
-				}
-				match = &rows[i]
-			}
+		match, err := resolveProjection(rows, args.Name)
+		if err != nil {
+			return toolError(err), nil, nil
 		}
 		// Multi-season history — the reversion safeguard: no card is served
 		// without the player's history next to it.
@@ -209,12 +203,20 @@ func playerCardHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 			// but the card must still show who they were and how they are now.
 			var el *bootstrapElement
 			for i := range bootstrap.Elements {
-				if strings.Contains(strings.ToLower(bootstrap.Elements[i].WebName), needle) {
-					if el != nil {
-						return toolError(fmt.Errorf("ambiguous name %q (matches %s and %s) — be more specific",
-							args.Name, el.WebName, bootstrap.Elements[i].WebName)), nil, nil
-					}
+				if strings.ToLower(bootstrap.Elements[i].WebName) == needle {
 					el = &bootstrap.Elements[i]
+					break
+				}
+			}
+			if el == nil {
+				for i := range bootstrap.Elements {
+					if strings.Contains(strings.ToLower(bootstrap.Elements[i].WebName), needle) {
+						if el != nil {
+							return toolError(fmt.Errorf("ambiguous name %q (matches %s and %s) — be more specific",
+								args.Name, el.WebName, bootstrap.Elements[i].WebName)), nil, nil
+						}
+						el = &bootstrap.Elements[i]
+					}
 				}
 			}
 			if el == nil {

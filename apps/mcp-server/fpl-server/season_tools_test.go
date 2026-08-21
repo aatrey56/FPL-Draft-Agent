@@ -46,6 +46,26 @@ func TestTradeCheckComparesSidesAndFlagsUnprojected(t *testing.T) {
 	}
 }
 
+func TestResolveProjectionExactNameBeatsSubstringAmbiguity(t *testing.T) {
+	rows := []projectionRow{
+		{WebName: "Wood", ProjectedPoints: 120},
+		{WebName: "Hinshelwood", ProjectedPoints: 90},
+	}
+	match, err := resolveProjection(rows, "wood")
+	if err != nil {
+		t.Fatalf("exact match must not be ambiguous: %v", err)
+	}
+	if match.WebName != "Wood" {
+		t.Fatalf("wrong player: %s", match.WebName)
+	}
+	if _, err := resolveProjection(rows, "ood"); err == nil {
+		t.Fatal("pure substring collisions must still be ambiguous")
+	}
+	if match, _ := resolveProjection(rows, "hinshel"); match == nil || match.WebName != "Hinshelwood" {
+		t.Fatal("unique substring must still resolve")
+	}
+}
+
 func TestLeaguePulseComposesStandingsTransactionsAndGame(t *testing.T) {
 	cfg := fixtureConfig(t)
 	season := filepath.Join(cfg.RawRoot, "2026-27")

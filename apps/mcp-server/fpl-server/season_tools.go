@@ -27,13 +27,20 @@ type TradeCheckArgs struct {
 	Season string   `json:"season,omitempty" jsonschema:"Season for availability news (default: server default season)"`
 }
 
-// resolveProjection finds exactly one projected player by case-insensitive
-// substring, mirroring player_card's semantics: ambiguous -> error, absent ->
-// (nil, nil) so callers can handle unprojected players explicitly.
+// resolveProjection finds exactly one projected player by name. An exact
+// (case-insensitive) web-name match wins outright — "Wood" must not be
+// ambiguous with "Hinshelwood" — otherwise unique-substring semantics apply:
+// ambiguous -> error, absent -> (nil, nil) so callers can handle unprojected
+// players explicitly.
 func resolveProjection(rows []projectionRow, name string) (*projectionRow, error) {
 	needle := strings.ToLower(strings.TrimSpace(name))
 	if needle == "" {
 		return nil, fmt.Errorf("empty player name")
+	}
+	for i := range rows {
+		if strings.ToLower(rows[i].WebName) == needle {
+			return &rows[i], nil
+		}
 	}
 	var match *projectionRow
 	for i := range rows {
