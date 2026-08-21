@@ -77,6 +77,70 @@ def test_build_my_week_xi_bench_and_attention(tmp_path):
     assert "P114" not in xi_names                     # unknown never auto-started
 
 
+def test_xi_selection_value_ordering():
+    """projected+fit > unprojected+fit > unavailable, regardless of gw_xp."""
+    projected_fit = pd.Series({"availability": 1.0, "gw_xp": 2.5})
+    unknown_fit = pd.Series({"availability": 1.0, "gw_xp": float("nan")})
+    injured_projected = pd.Series({"availability": 0.0, "gw_xp": 0.0})
+    injured_unknown = pd.Series({"availability": 0.0, "gw_xp": float("nan")})
+
+    assert mw.xi_selection_value(projected_fit) == 2.5
+    assert mw.xi_selection_value(unknown_fit) == 0.0
+    assert mw.xi_selection_value(injured_projected) == -1.0
+    assert mw.xi_selection_value(injured_unknown) == -1.0
+
+
+def test_injured_players_never_start_over_fit_ones(tmp_path):
+    """The Madjo/Maddison GW1 regression: with fit alternatives on the bench,
+    zero-chance players must never occupy an XI slot — and a fit unprojected
+    player must outrank an injured projected one."""
+    elements, projections = [], []
+    code = 100
+    # 2 GKP, 4 DEF (all fit/projected — only nine fit projected outfielders in
+    # total, so the tenth XI slot MUST come from the unknown or the injured),
+    # then crafted MID and FWD rooms.
+    for pos_type, count in ((1, 2), (2, 4)):
+        for _ in range(count):
+            elements.append({"id": code, "code": code, "web_name": f"P{code}",
+                             "element_type": pos_type, "team": 1, "status": "a"})
+            projections.append({"code": code, "projected_points": 150.0 - code % 100})
+            code += 1
+    # MIDs: three projected fit, one projected but OUT, one unprojected fit.
+    for name, status, projected in (
+            ("MidA", "a", True), ("MidB", "a", True), ("MidC", "a", True),
+            ("MidInjured", "i", True), ("MidMystery", "a", False)):
+        el = {"id": code, "code": code, "web_name": name, "element_type": 3,
+              "team": 1, "status": status}
+        if status == "i":
+            el["chance_of_playing_next_round"] = 0
+        elements.append(el)
+        if projected:
+            projections.append({"code": code, "projected_points": 120.0})
+        code += 1
+    # FWDs: two projected fit, one unprojected AND out (the Madjo case).
+    for name, status, projected in (
+            ("FwdA", "a", True), ("FwdB", "a", True), ("FwdMadjo", "i", False)):
+        el = {"id": code, "code": code, "web_name": name, "element_type": 4,
+              "team": 1, "status": status}
+        if status == "i":
+            el["chance_of_playing_next_round"] = 0
+        elements.append(el)
+        if projected:
+            projections.append({"code": code, "projected_points": 110.0})
+        code += 1
+
+    bootstrap, players = _world(tmp_path, elements, projections)
+    status = {"element_status": [{"element": e["id"], "owner": 42} for e in elements]}
+    week = mw.build_my_week(players, status, entry_id=42)
+
+    xi_names = {p["web_name"] for p in week["xi"]}
+    assert "FwdMadjo" not in xi_names          # zero-chance never starts
+    assert "MidInjured" not in xi_names        # even projected, out is out
+    assert "MidMystery" in xi_names            # fit unknown beats injured anybody
+    assert len(week["xi"]) == 11
+    assert week["xi_gw_xp"] > 0                # total is real xP, no -1 leakage
+
+
 def test_blank_gameweek_flags_players(tmp_path):
     elements = [{"id": 1, "code": 10, "web_name": "Blanked", "element_type": 3,
                  "team": 2, "status": "a"}]
