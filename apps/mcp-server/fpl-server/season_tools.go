@@ -120,6 +120,44 @@ func tradeCheckHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 }
 
 // ---------------------------------------------------------------------------
+// team_env
+// ---------------------------------------------------------------------------
+
+type TeamEnvArgs struct {
+	Team string `json:"team,omitempty" jsonschema:"Optional team name filter (case-insensitive substring; empty = all 20 teams)"`
+}
+
+func teamEnvHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, TeamEnvArgs) (*mcp.CallToolResult, any, error) {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args TeamEnvArgs) (*mcp.CallToolResult, any, error) {
+		var payload struct {
+			Season string                    `json:"season"`
+			Teams  map[string]map[string]any `json:"teams"`
+		}
+		path := filepath.Join(cfg.DerivedRoot, "ml/team_env.json")
+		if err := readJSONFile(path, &payload); err != nil {
+			return toolError(err), nil, nil
+		}
+		teams := payload.Teams
+		if needle := strings.ToLower(strings.TrimSpace(args.Team)); needle != "" {
+			teams = map[string]map[string]any{}
+			for name, env := range payload.Teams {
+				if strings.Contains(strings.ToLower(name), needle) {
+					teams[name] = env
+				}
+			}
+			if len(teams) == 0 {
+				return toolError(fmt.Errorf("no team matches %q", args.Team)), nil, nil
+			}
+		}
+		return toolMarshal(map[string]any{
+			"season": payload.Season,
+			"teams":  teams,
+			"note":   "Match-environment rates per fixture: attack (pts/xG generated) vs defense (pts/xG conceded, by position and venue). High combined attack xG = shootout potential (players feast); two strong defenses = stalemate risk. Regenerate with: python -m backend.ml.teamenv",
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // league_pulse
 // ---------------------------------------------------------------------------
 

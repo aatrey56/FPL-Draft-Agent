@@ -66,6 +66,29 @@ func TestResolveProjectionExactNameBeatsSubstringAmbiguity(t *testing.T) {
 	}
 }
 
+func TestTeamEnvServesAndFiltersTeams(t *testing.T) {
+	cfg := fixtureConfig(t)
+	writeFixture(t, filepath.Join(cfg.DerivedRoot, "ml/team_env.json"), map[string]any{
+		"season": "2025-26",
+		"teams": map[string]any{
+			"Arsenal": map[string]any{"attack": map[string]any{"xg_pg": 1.76}},
+			"Wolves":  map[string]any{"attack": map[string]any{"xg_pg": 1.1}},
+		},
+	})
+	res, _, err := teamEnvHandler(cfg)(context.Background(), nil, TeamEnvArgs{Team: "arse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := resultText(t, res)
+	if !strings.Contains(text, "Arsenal") || strings.Contains(text, "Wolves") {
+		t.Fatalf("filter failed: %s", text)
+	}
+	res, _, _ = teamEnvHandler(cfg)(context.Background(), nil, TeamEnvArgs{Team: "nope"})
+	if res == nil || !res.IsError {
+		t.Fatal("expected error for unknown team")
+	}
+}
+
 func TestLeaguePulseComposesStandingsTransactionsAndGame(t *testing.T) {
 	cfg := fixtureConfig(t)
 	season := filepath.Join(cfg.RawRoot, "2026-27")

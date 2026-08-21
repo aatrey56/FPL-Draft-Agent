@@ -390,9 +390,9 @@ fpl-draft-mcp/
 │   │   │   ├── dev/                     # the ONLY component that hits the live FPL API
 │   │   │   └── schema-inventory/        # dev utility: dumps API schema registry
 │   │   └── fpl-server/
-│   │       ├── main.go                  # Entry point, registers all 33 tools, auth, /mcp
+│   │       ├── main.go                  # Entry point, registers all 34 tools, auth, /mcp
 │   │       ├── draft_tools.go           # Decision layer: draft_board, player_card, waiver_plan, my_week, drop_radar (serve ML artifacts)
-│   │       ├── season_tools.go          # Decision layer: trade_check, league_pulse
+│   │       ├── season_tools.go          # Decision layer: trade_check, league_pulse, team_env
 │   │       ├── waiver_recommendations.go# Waiver scoring logic
 │   │       ├── fixture_difficulty.go    # FDR calculations
 │   │       ├── head_to_head.go          # H2H record tool
@@ -444,7 +444,7 @@ Derive (Python, backend/ml/*)
   ▼
 Go MCP Server (:8080)
   │  reads raw + derived (local JSON only)
-  │  exposes 33 tools via MCP protocol (X-API-Key auth)
+  │  exposes 34 tools via MCP protocol (X-API-Key auth)
   ▼
 Claude Desktop / Claude Code (the LLM client, user's Max plan)
   │  calls decision tools, layers live web research + judgment

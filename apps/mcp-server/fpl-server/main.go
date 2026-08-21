@@ -481,6 +481,11 @@ func main() {
 	}, tradeCheckHandler(cfg))
 
 	addTool(server, &registry, &mcp.Tool{
+		Name:        "team_env",
+		Description: "Per-team match environment: FPL points/xG generated and conceded (by position, home/away) — shootout vs stalemate context for fixtures",
+	}, teamEnvHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
 		Name:        "league_pulse",
 		Description: "League state in one call: standings, recent transactions (named), and the game clock (current/next GW, waivers status)",
 	}, leaguePulseHandler(cfg))

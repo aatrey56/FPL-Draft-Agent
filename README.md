@@ -1,7 +1,7 @@
 # FPL Draft Co-Pilot
 
 A **draft + weekly-manager co-pilot** for Fantasy Premier League Draft.
-A Go MCP server exposes 33 tools over locally-cached FPL Draft API data; a
+A Go MCP server exposes 34 tools over locally-cached FPL Draft API data; a
 Python ML pipeline turns seven seasons of history into projections and
 weekly recommendations; **Claude (Desktop or Code) is the client** — you ask
 questions in natural language, Claude calls the decision tools and layers
@@ -9,7 +9,7 @@ live web research on top.
 
 ```
 FPL API → Go fetcher → data/<season>/ → Python ML (projections, waivers,
-start/sit) → Go MCP server (:8080, 33 tools) → Claude Desktop / Claude Code
+start/sit) → Go MCP server (:8080, 34 tools) → Claude Desktop / Claude Code
 ```
 
 ## The decision layer
@@ -23,8 +23,9 @@ start/sit) → Go MCP server (:8080, 33 tools) → Claude Desktop / Claude Code
 | `trade_check` | Is this trade good? Give vs get on season value + starter scarcity (VOR) |
 | `league_pulse` | What's happening? Standings, named transactions, game clock |
 | `drop_radar` | Who hit the wire? Ownership diffs from element-status snapshots |
+| `team_env` | Shootout or stalemate? Per-team points/xG generated and conceded, by position and venue |
 
-Plus 26 data-layer tools (standings, matchups, fixtures, transactions,
+Plus the 26 data-layer tools (standings, matchups, fixtures, transactions,
 per-GW player stats, …) — all season-aware: flat `data/` roots are the
 2025-26 archive, current seasons nest under `data/{raw,derived}/<season>/`.
 
@@ -89,13 +90,13 @@ claude mcp add fpl --transport http http://localhost:8080/mcp \
 ```
 apps/
   mcp-server/            Go module
-    fpl-server/          33 MCP tool handlers + HTTP server (X-API-Key auth)
+    fpl-server/          34 MCP tool handlers + HTTP server (X-API-Key auth)
     cmd/dev/             FPL data fetcher (the only live-API component)
     internal/            fetch, store, ledger, points, summary, config
   backend/               Python package
     backend/ml/          ingestion → parquet, projection model, waiver_plan,
                          my_week, drop-radar, specs (treat *_SPEC.md as contracts)
-    tests/               pytest suite (296 tests, no network)
+    tests/               pytest suite (300 tests, no network)
 data/                    Raw + derived FPL data (gitignored; flat = 25/26 archive)
 docs/                    Setup + design docs
 PLAN.md / STATE.md / ISSUES.md   Living roadmap, checkpoint, known issues
