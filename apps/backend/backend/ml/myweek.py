@@ -64,11 +64,35 @@ def player_warnings(row: pd.Series) -> list[str]:
     return warnings
 
 
+def xi_selection_value(row: pd.Series) -> float:
+    """Ordering for start/sit decisions — stricter than raw gw_xp.
+
+    Raw gw_xp cannot rank the edge cases: an injured projected player scores
+    0.0 while a fit unprojected player scores NaN, so the injured one wins
+    ties (the Madjo/Maddison GW1 bug). The rule made explicit:
+
+      projected + available  ->  their gw_xp (as before)
+      unprojected + available -> 0.0  (unknown, but CAN play)
+      availability 0          -> -1.0 (cannot play — never start over anyone
+                                       who can, projected or not)
+    """
+    if row["availability"] == 0:
+        return -1.0
+    if pd.isna(row["gw_xp"]):
+        return 0.0
+    return float(row["gw_xp"])
+
+
 def build_my_week(players: pd.DataFrame, element_status: dict,
                   entry_id: int) -> dict[str, Any]:
     """XI + bench + attention list for my squad, scored on gw_xp."""
     squad = wv.my_squad(players, element_status, entry_id)
-    xi, xi_total = wv.best_xi(squad, value_col="gw_xp")
+    squad["xi_value"] = squad.apply(xi_selection_value, axis=1)
+    xi, _ = wv.best_xi(squad, value_col="xi_value")
+    # Report real expected points, not the selection ordering (which carries
+    # a -1 penalty for unavailable players).
+    xi_total = round(float(pd.to_numeric(xi["gw_xp"], errors="coerce")
+                           .fillna(0).clip(lower=0).sum()), 1)
     bench = squad[~squad["element"].isin(xi["element"])]
 
     def rows(frame: pd.DataFrame) -> list[dict[str, Any]]:
