@@ -66,13 +66,30 @@ cd apps/mcp-server && go run ./cmd/dev --season 2026-27 \
 
 # derive: ownership events, waiver plan, start/sit
 cd ../backend
-python -m backend.ml.ownership
-python -m backend.ml.waiver
-python -m backend.ml.myweek
+uv run python -m backend.ml.ownership
+uv run python -m backend.ml.waiver
+uv run python -m backend.ml.myweek
 ```
 
-After any ingest refresh also run `python -m backend.ml.serve_export`
+After any ingest refresh also run `uv run python -m backend.ml.serve_export`
 (player history for player_card).
+
+## 3b. Fresh machine? Bootstrap the ML artifacts once
+
+The derived artifacts (projections, player history) are gitignored. On a new
+clone, after `uv sync` and one fetch (step 3 above), rebuild them — the
+explicit season list pulls 2025-26 from the public vaastav mirror, needed on
+machines without the local 25/26 archive:
+
+```bash
+cd apps/backend
+uv run python -m backend.ml.history --seasons 2019-20 2020-21 2021-22 2022-23 2023-24 2024-25 2025-26
+uv run python -m backend.ml.projection --project
+uv run python -m backend.ml.serve_export
+```
+
+(`team_env` additionally needs the 25/26 per-GW archive and won't regenerate
+on a fresh machine yet — its tool errors cleanly until then.)
 
 ## 4. Ask real questions
 

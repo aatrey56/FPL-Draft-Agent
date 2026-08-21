@@ -47,11 +47,12 @@ per-GW player stats, …) — all season-aware: flat `data/` roots are the
 
 ## Quickstart
 
-Prerequisites: Go 1.25+, Python 3.11+.
+Prerequisites: Go 1.25+, [uv](https://docs.astral.sh/uv/) (manages Python
+itself — no system Python needed: `curl -LsSf https://astral.sh/uv/install.sh | sh`).
 
 ```bash
 git clone https://github.com/aatrey56/FPL-Draft-Agent.git && cd FPL-Draft-Agent
-pip install -r apps/backend/requirements.txt -r apps/backend/requirements-ml.txt
+(cd apps/backend && uv sync)
 
 # one-time config — ids from draft.premierleague.com URLs, key is any random string
 printf 'LEAGUE_ID=<yours>\nENTRY_ID=<yours>\nFPL_MCP_API_KEY=%s\n' \
@@ -67,7 +68,7 @@ cd apps/mcp-server && go run ./cmd/dev --season 2026-27 \
 
 # 2. derive: ownership events, waiver plan, start/sit
 cd ../backend
-python -m backend.ml.ownership && python -m backend.ml.waiver && python -m backend.ml.myweek
+uv run python -m backend.ml.ownership && uv run python -m backend.ml.waiver && uv run python -m backend.ml.myweek
 
 # 3. serve
 cd ../mcp-server && go run ./fpl-server \
