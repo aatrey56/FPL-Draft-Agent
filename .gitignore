@@ -17,3 +17,6 @@ apps/mcp-server/fpldraft-mcp-server
 .hypothesis/
 .claude/worktrees/
 .claude/settings.local.json
+
+# compiled Go binaries (never commit build output)
+apps/mcp-server/fpl-server/fpl-server
