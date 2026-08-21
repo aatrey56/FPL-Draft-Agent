@@ -263,7 +263,13 @@ def ingest(
         season_rows = load_vaastav_season(season, scratch_dir, base_url, session)
         logger.info("season %s: %d players (vaastav)", season, len(season_rows))
         rows.extend(season_rows)
-    if local_bootstrap_path and Path(local_bootstrap_path).exists():
+    if LOCAL_SEASON in historical_seasons:
+        # Already ingested from vaastav — loading the local archive too would
+        # duplicate every (code, season) row. Fresh machines pass 2025-26 in
+        # --seasons precisely because they lack the local archive; ignore any
+        # stray local file so both sources are never mixed.
+        logger.info("season %s ingested from vaastav; skipping local bootstrap", LOCAL_SEASON)
+    elif local_bootstrap_path and Path(local_bootstrap_path).exists():
         local_rows = load_local_season(Path(local_bootstrap_path))
         logger.info("season %s: %d players (local)", LOCAL_SEASON, len(local_rows))
         rows.extend(local_rows)
