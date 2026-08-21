@@ -10,6 +10,7 @@ package main
 //	player_card  <- projections + data/derived/ml/player_history.json
 //	             + data/raw/<season>/bootstrap/bootstrap-static.json (live news)
 //	waiver_plan  <- data/derived/<season>/ml/waiver_plan.json
+//	my_week      <- data/derived/<season>/ml/my_week.json
 //	drop_radar   <- data/derived/<season>/ml/ownership_events.json
 //
 // Season-aware paths use ServerConfig.DefaultSeason unless the call passes an

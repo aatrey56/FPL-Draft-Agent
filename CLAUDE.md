@@ -49,21 +49,29 @@ Data correctness is more important than performance optimizations.
 
 ## 2.1 Current Direction (read before planning work)
 
-As of the 2025-26 offseason, this project is being reframed from an in-season
-waiver tool into a **preseason next-season projection system** and, more broadly,
-a **data-engineering pipeline** (multi-season ingest → warehouse/dbt → marts →
-model → serve, with the agent as the natural-language query layer). Practical
-implications for agents working here right now:
+The project is a **draft + weekly-manager co-pilot** for the live 2026-27
+season, used from Claude Desktop / Claude Code over MCP (the LLM is the
+client — there is no in-app chatbot). Practical implications for agents
+working here right now:
 
-- The season is **over**; there is no live gameweek. The Python **scheduler and
-  live-API refresh are dormant** — do not assume an in-progress season.
-- New work lives under `apps/backend/backend/ml/`. Phase A (multi-season
-  historical ingestion) is specced in **`ml/HISTORY_INGEST_SPEC.md`** — treat that
-  file as the contract for ingestion work and follow it exactly.
+- The **2026-27 season is live** (GW1: 2026-08-21). The weekly loop is:
+  fetch (cmd/dev) → derive (backend.ml.ownership / waiver / myweek) → serve
+  (Go MCP decision tools). Keep artifacts fresh before waiver deadlines.
+- ML work lives under `apps/backend/backend/ml/` with specs as contracts:
+  HISTORY_INGEST, GAMEWEEK_INGEST, PROJECTION_MODEL (built), MATCH_MODEL
+  (next: replaces the per-GW heuristic once 26/27 GWs accumulate).
+- **Data layout:** flat `data/raw|derived/` = the 2025-26 archive (never
+  overwrite); current seasons nest as `<root>/<season>/` (fetcher `--season`,
+  server `--default-season`, `ArchiveSeason` const in Go).
 - Cross-season joins use the **permanent `code` field**, never the per-season
   `id` (which is reassigned yearly).
-- Build the ML/data foundation as **plain Python → parquet first**; dbt, Airflow,
-  and a warehouse (DuckDB → Snowflake) are the intended end-state, layered on
+- **Never commit real league/entry ids or league/team/manager names** — they
+  live in `.env` (LEAGUE_ID / ENTRY_ID) and CLI flags only.
+- The legacy FastAPI/OpenAI chat stack (`server.py`, `agent.py`, `llm.py`,
+  `rag.py`, `scheduler.py`) is **deprecated** — kept compiling/tested but not
+  developed; do not build on it. Claude over MCP replaced it.
+- Build the ML/data foundation as **plain Python → parquet first**; dbt,
+  Airflow, and a warehouse are possible later end-state, layered on
   later — do not introduce them unless a task explicitly asks.
 
 ---
@@ -382,8 +390,9 @@ fpl-draft-mcp/
 │   │   │   ├── dev/                     # the ONLY component that hits the live FPL API
 │   │   │   └── schema-inventory/        # dev utility: dumps API schema registry
 │   │   └── fpl-server/
-│   │       ├── main.go                  # Entry point, registers all 30 tools, auth, /mcp
-│   │       ├── draft_tools.go           # Decision layer: draft_board, player_card, waiver_plan, drop_radar (serve ML artifacts)
+│   │       ├── main.go                  # Entry point, registers all 33 tools, auth, /mcp
+│   │       ├── draft_tools.go           # Decision layer: draft_board, player_card, waiver_plan, my_week, drop_radar (serve ML artifacts)
+│   │       ├── season_tools.go          # Decision layer: trade_check, league_pulse
 │   │       ├── waiver_recommendations.go# Waiver scoring logic
 │   │       ├── fixture_difficulty.go    # FDR calculations
 │   │       ├── head_to_head.go          # H2H record tool
@@ -426,27 +435,24 @@ fpl-draft-mcp/
 FPL API
   │
   ▼
-Scheduler (Python, APScheduler)
-  │  fetches raw JSON → data/raw/
-  │  generates summaries → data/derived/summary/
-  │  generates reports → data/derived/reports/
+Fetcher (Go, cmd/dev — the only component that hits the live API)
+  │  raw JSON → data/raw/<season>/   (+ element-status snapshots)
+  ▼
+Derive (Python, backend/ml/*)
+  │  projections, player_history, ownership_events,
+  │  waiver_plan, my_week → data/derived[/<season>]/ml/
   ▼
 Go MCP Server (:8080)
-  │  reads data/raw/ + derived/
-  │  exposes 30 tools via MCP protocol
+  │  reads raw + derived (local JSON only)
+  │  exposes 33 tools via MCP protocol (X-API-Key auth)
   ▼
-Python Agent (backend/agent.py)
-  │  receives user message
-  │  detects intent via _INTENT_KEYWORDS
-  │  calls MCP tools via MCPClient
-  │  augments with RAG context
-  │  calls OpenAI LLM (gpt-4.1) as fallback
+Claude Desktop / Claude Code (the LLM client, user's Max plan)
+  │  calls decision tools, layers live web research + judgment
   ▼
-FastAPI /chat endpoint (:8000)
-  │  returns structured response
-  ▼
-User / Frontend
+User
 ```
+
+(The FastAPI/OpenAI `/chat` flow this replaced is deprecated; see §2.1.)
 
 ## 12.3 Port Assignments
 
@@ -466,13 +472,12 @@ User / Frontend
 - All MCP tool handlers
 
 **What lives in Python (Backend):**
-- Intent detection and routing (`agent.py`)
-- LLM calls (**OpenAI `gpt-4.1`** via `llm.py`)
-- RAG index construction and search (`rag.py`)
-- Scheduling and data refresh (`scheduler.py`) — dormant in the offseason
-- HTTP API surface (`server.py`)
+- All modeling and derived artifacts (`ml/`): ingestion, projection model,
+  waiver_plan, my_week, drop-radar, serve_export
 - Report generation (`reports.py`)
-- Preseason next-season modeling (`ml/`)
+- DEPRECATED (kept green, not developed): intent routing (`agent.py`),
+  OpenAI LLM calls (`llm.py`), RAG (`rag.py`), APScheduler (`scheduler.py`),
+  FastAPI surface (`server.py`) — replaced by Claude over MCP
 
 **Crossing the boundary:**
 - Python → Go: HTTP POST to MCP server with tool name + JSON args
