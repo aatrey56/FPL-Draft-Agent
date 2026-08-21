@@ -476,6 +476,16 @@ func main() {
 	}, myWeekHandler(cfg))
 
 	addTool(server, &registry, &mcp.Tool{
+		Name:        "trade_check",
+		Description: "Evaluate a proposed trade: give vs get compared on season projection and VOR (starter scarcity), with warnings for unprojected players",
+	}, tradeCheckHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "league_pulse",
+		Description: "League state in one call: standings, recent transactions (named), and the game clock (current/next GW, waivers status)",
+	}, leaguePulseHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
 		Name:        "epl_fixtures",
 		Description: "Premier League fixture results for a specific gameweek",
 	}, eplFixturesHandler(cfg))
