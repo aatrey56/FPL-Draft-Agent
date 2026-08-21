@@ -16,3 +16,4 @@ apps/mcp-server/fpldraft-mcp-server
 .env
 .hypothesis/
 .claude/worktrees/
+.claude/settings.local.json
