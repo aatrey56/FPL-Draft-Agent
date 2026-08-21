@@ -73,20 +73,18 @@ uv run python -m backend.ml.projection --project
 uv run python -m backend.ml.serve_export
 ```
 
-Weekly loop (both Go binaries and the Python CLIs read `.env` automatically):
+Day to day (all commands read `.env` automatically; see the Makefile):
 
 ```bash
-# 1. fetch: game state, league, transactions, element-status snapshot
-cd apps/mcp-server && go run ./cmd/dev --season 2026-27 \
-  --raw-root ../../data/raw --derived-root ../../data/derived --refresh-now
+make weekly     # the weekly loop: fetch fresh data + rebuild waiver/my_week artifacts
+make serve      # run the MCP server (restart after every git pull)
+make matchday   # refresh loop while games are on, so gw_live stays live
+```
 
-# 2. derive: ownership events, waiver plan, start/sit
-cd ../backend
-uv run python -m backend.ml.ownership && uv run python -m backend.ml.waiver && uv run python -m backend.ml.myweek
+Automate the weekly loop with cron (Mon+Tue mornings, after GW lockdown):
 
-# 3. serve
-cd ../mcp-server && go run ./fpl-server \
-  --raw-root ../../data/raw --derived-root ../../data/derived --default-season 2026-27
+```
+0 7 * * 1,2 cd $HOME/path/to/fpl-draft-mcp && bash scripts/weekly.sh >> $HOME/.fpl-weekly.log 2>&1
 ```
 
 Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):
