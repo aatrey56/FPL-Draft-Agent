@@ -112,6 +112,40 @@ func TestPlayerCardMergesHistoryAndFlagsAmbiguity(t *testing.T) {
 	}
 }
 
+func TestPlayerCardFallsBackToHistoryForUnprojectedPlayer(t *testing.T) {
+	cfg := fixtureConfig(t)
+	// Newman: in the season bootstrap with real history, but no projection
+	// (the Maddison case — under the minutes floor last season).
+	writeFixture(t, filepath.Join(cfg.DerivedRoot, "ml/player_history.json"), map[string]any{
+		"9": []map[string]any{
+			{"season": "2024-25", "team_name": "Spurs", "total_points": 133.0},
+			{"season": "2025-26", "team_name": "Spurs", "total_points": 3.0},
+		},
+	})
+	writeFixture(t, filepath.Join(cfg.RawRoot, "2026-27/bootstrap/bootstrap-static.json"), map[string]any{
+		"elements": []map[string]any{
+			{"code": 9, "web_name": "Newman", "status": "a", "news": ""},
+		},
+	})
+
+	res, _, err := playerCardHandler(cfg)(context.Background(), nil, PlayerCardArgs{Name: "newman"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := resultText(t, res)
+	for _, want := range []string{"133", "No projection", "season_history", "Newman"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("fallback card missing %q: %s", want, text)
+		}
+	}
+
+	// A name in neither projections nor bootstrap still errors cleanly.
+	res, _, _ = playerCardHandler(cfg)(context.Background(), nil, PlayerCardArgs{Name: "nosuch"})
+	if res == nil || !res.IsError {
+		t.Fatal("expected error for unknown player")
+	}
+}
+
 func TestWaiverPlanServesSeasonArtifact(t *testing.T) {
 	cfg := fixtureConfig(t)
 	writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/waiver_plan.json"), map[string]any{

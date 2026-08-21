@@ -201,12 +201,16 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
     pool = players[players["is_free_agent"] & (players["status"] != "u")]
     recs: list[dict[str, Any]] = []
     for _, fa in pool.iterrows():
-        mine = squad[squad["position"] == fa["position"]]
+        # Drop candidates come only from players the model can value. An
+        # unprojected teammate (under the minutes floor last season, promoted,
+        # or newly signed) is NOT worth zero — it is unknown, and auto-dropping
+        # a returning star on missing data is the one unrecoverable mistake.
+        # Those players go in the plan's unprojected_squad section instead.
+        mine = squad[(squad["position"] == fa["position"])
+                     & squad["ros_points"].notna()]
         if mine.empty or pd.isna(fa["ros_points"]):
             continue  # cannot recommend a player we cannot value
-        # Weakest same-position player: unprojected players (NaN) rank first —
-        # they are the natural drop candidates; their value counts as 0.
-        drop = mine.sort_values(["ros_points", "next3_xp"], na_position="first").iloc[0]
+        drop = mine.sort_values(["ros_points", "next3_xp"]).iloc[0]
 
         def _v(x):
             return 0.0 if pd.isna(x) else float(x)
@@ -236,6 +240,16 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
     # surface; the label keeps them distinguishable.
     recs.sort(key=lambda r: -max(r["next3_gain"], r["season_gain"]))
     return recs[:top_n]
+
+
+def unprojected_squad(squad: pd.DataFrame) -> list[dict[str, Any]]:
+    """Squad players the model cannot value (no projection) — surfaced for
+    human judgment instead of being silently treated as droppable zeros."""
+    rows = squad[squad["ros_points"].isna()]
+    return [{
+        "web_name": p["web_name"], "position": p["position"], "team": p["team"],
+        "availability": p["status"], "news": p["news"],
+    } for _, p in rows.iterrows()]
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +301,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {p['position']:<4} {p['web_name']:<20} {p['team']:<4} "
               f"next3 {_fmt(p['next3_xp'])} | ROS {_fmt(p['ros_points'])}{flag}")
 
+    unknown = unprojected_squad(squad)
+    if unknown:
+        print("\n== UNPROJECTED SQUAD PLAYERS (model has no value — judge manually) ==")
+        for p in unknown:
+            flag = f"  [{p['availability']}] {p['news']}" if p["availability"] != "a" else ""
+            print(f"  {p['position']:<4} {p['web_name']:<20} {p['team']:<4}"
+                  f" use player_card for their history{flag}")
+
     recs = recommend(players, squad, args.top)
     print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}) ==")
     print("   label    add                    ->  drop                next3   season")
@@ -298,7 +320,8 @@ def main(argv: list[str] | None = None) -> int:
     out = _repo_root() / "data/derived" / args.season / "ml/waiver_plan.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(jsonutil.dumps_strict(
-        {"xi_next3_xp": xi_total, "recommendations": recs}, indent=1))
+        {"xi_next3_xp": xi_total, "recommendations": recs,
+         "unprojected_squad": unknown}, indent=1))
     logger.info("wrote %s", out)
     return 0
 

@@ -172,37 +172,70 @@ func playerCardHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 				match = &rows[i]
 			}
 		}
-		if match == nil {
-			return toolError(fmt.Errorf("no projected player matches %q (promoted/new players have no projection)", args.Name)), nil, nil
-		}
-
-		// Multi-season history — the reversion safeguard: the projection must
-		// never be shown without the player's history next to it.
+		// Multi-season history — the reversion safeguard: no card is served
+		// without the player's history next to it.
 		history := map[string][]historyRow{}
 		historyPath := filepath.Join(cfg.DerivedRoot, "ml/player_history.json")
 		if err := readJSONFile(historyPath, &history); err != nil {
 			return toolError(err), nil, nil
 		}
-		seasons := history[fmt.Sprintf("%d", match.Code)]
 
-		// Live availability from the season bootstrap (best effort).
-		news := map[string]any{}
-		bootstrapPath := filepath.Join(cfg.rawDir(args.Season), "bootstrap/bootstrap-static.json")
-		var bootstrap struct {
-			Elements []struct {
-				Code                     int    `json:"code"`
-				Status                   string `json:"status"`
-				News                     string `json:"news"`
-				ChanceOfPlayingNextRound *int   `json:"chance_of_playing_next_round"`
-			} `json:"elements"`
+		// Season bootstrap: live availability, and the identity fallback for
+		// players the model refused to project (best effort for the former).
+		type bootstrapElement struct {
+			Code                     int    `json:"code"`
+			WebName                  string `json:"web_name"`
+			Status                   string `json:"status"`
+			News                     string `json:"news"`
+			ChanceOfPlayingNextRound *int   `json:"chance_of_playing_next_round"`
 		}
-		if err := readJSONFile(bootstrapPath, &bootstrap); err == nil {
+		var bootstrap struct {
+			Elements []bootstrapElement `json:"elements"`
+		}
+		bootstrapPath := filepath.Join(cfg.rawDir(args.Season), "bootstrap/bootstrap-static.json")
+		bootstrapErr := readJSONFile(bootstrapPath, &bootstrap)
+
+		availability := func(el bootstrapElement) map[string]any {
+			return map[string]any{
+				"status": el.Status, "news": el.News,
+				"chance_of_playing_next_round": el.ChanceOfPlayingNextRound,
+			}
+		}
+
+		if match == nil {
+			// The Maddison case: under the minutes floor last season (long
+			// injury), promoted, or newly signed — the model refuses to guess,
+			// but the card must still show who they were and how they are now.
+			var el *bootstrapElement
+			for i := range bootstrap.Elements {
+				if strings.Contains(strings.ToLower(bootstrap.Elements[i].WebName), needle) {
+					if el != nil {
+						return toolError(fmt.Errorf("ambiguous name %q (matches %s and %s) — be more specific",
+							args.Name, el.WebName, bootstrap.Elements[i].WebName)), nil, nil
+					}
+					el = &bootstrap.Elements[i]
+				}
+			}
+			if el == nil {
+				if bootstrapErr != nil {
+					return toolError(fmt.Errorf("no projected player matches %q (and no season bootstrap to fall back to: %v)", args.Name, bootstrapErr)), nil, nil
+				}
+				return toolError(fmt.Errorf("no player matches %q in projections or the current season", args.Name)), nil, nil
+			}
+			return toolMarshal(map[string]any{
+				"projection":     nil,
+				"web_name":       el.WebName,
+				"season_history": history[fmt.Sprintf("%d", el.Code)],
+				"availability":   availability(*el),
+				"note":           "No projection: under 500 league minutes in 2025-26 (long injury), promoted, or new to the league — the model refuses to guess rather than assume zero. Judge from season_history and availability/news; treat early-season minutes as the real signal.",
+			})
+		}
+
+		news := map[string]any{}
+		if bootstrapErr == nil {
 			for _, el := range bootstrap.Elements {
 				if el.Code == match.Code {
-					news = map[string]any{
-						"status": el.Status, "news": el.News,
-						"chance_of_playing_next_round": el.ChanceOfPlayingNextRound,
-					}
+					news = availability(el)
 					break
 				}
 			}
@@ -210,7 +243,7 @@ func playerCardHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 
 		return toolMarshal(map[string]any{
 			"projection":     match,
-			"season_history": seasons,
+			"season_history": history[fmt.Sprintf("%d", match.Code)],
 			"availability":   news,
 			"note":           "Judge the projection against season_history: a one-season dip (injury) or spike may revert — the model has no multi-year reversion (see ISSUES.md).",
 		})
@@ -232,7 +265,7 @@ func waiverPlanHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 		if err := readJSONFile(path, &plan); err != nil {
 			return toolError(err), nil, nil
 		}
-		plan["note"] = "labels: upgrade = better now and all season; stream = next-3-GW help only (plan to re-drop); hold = tough fixtures now but better rest-of-season. Regenerate with: python -m backend.ml.waiver"
+		plan["note"] = "labels: upgrade = better now and all season; stream = next-3-GW help only (plan to re-drop); hold = tough fixtures now but better rest-of-season. unprojected_squad = players the model cannot value (never auto-dropped — check their player_card). Regenerate with: python -m backend.ml.waiver"
 		return toolMarshal(plan)
 	}
 }
