@@ -271,6 +271,26 @@ func waiverPlanHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 }
 
 // ---------------------------------------------------------------------------
+// my_week
+// ---------------------------------------------------------------------------
+
+type MyWeekArgs struct {
+	Season string `json:"season,omitempty" jsonschema:"Season (default: server default season)"`
+}
+
+func myWeekHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, MyWeekArgs) (*mcp.CallToolResult, any, error) {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args MyWeekArgs) (*mcp.CallToolResult, any, error) {
+		path := filepath.Join(cfg.derivedDir(args.Season), "ml/my_week.json")
+		var week map[string]any
+		if err := readJSONFile(path, &week); err != nil {
+			return toolError(err), nil, nil
+		}
+		week["note"] = "gw_xp = projection/38 × fixture multiplier × availability (heuristic until the match xP model lands). attention = players needing a human call before the deadline; unprojected players are never scored as zero-value certainty. Regenerate with: python -m backend.ml.myweek"
+		return toolMarshal(week)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // drop_radar
 // ---------------------------------------------------------------------------
 

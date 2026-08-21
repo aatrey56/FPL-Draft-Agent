@@ -464,6 +464,11 @@ func main() {
 	}, dropRadarHandler(cfg))
 
 	addTool(server, &registry, &mcp.Tool{
+		Name:        "my_week",
+		Description: "Start/sit for the next gameweek: best XI + bench by per-GW expected points, with attention flags (injuries, blanks, unprojected players)",
+	}, myWeekHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
 		Name:        "epl_fixtures",
 		Description: "Premier League fixture results for a specific gameweek",
 	}, eplFixturesHandler(cfg))

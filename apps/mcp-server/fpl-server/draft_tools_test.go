@@ -165,6 +165,32 @@ func TestWaiverPlanServesSeasonArtifact(t *testing.T) {
 	}
 }
 
+func TestMyWeekServesSeasonArtifact(t *testing.T) {
+	cfg := fixtureConfig(t)
+	writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/my_week.json"), map[string]any{
+		"gw": 1, "xi_gw_xp": 55.2,
+		"xi":        []map[string]any{{"web_name": "Starter", "gw_xp": 6.1}},
+		"bench":     []map[string]any{{"web_name": "Benched", "gw_xp": 2.0}},
+		"attention": []map[string]any{{"web_name": "Benched", "warnings": []string{"availability [d]"}}},
+	})
+	res, _, err := myWeekHandler(cfg)(context.Background(), nil, MyWeekArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := resultText(t, res)
+	for _, want := range []string{"Starter", "55.2", "attention"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("my_week missing %q: %s", want, text)
+		}
+	}
+
+	missing := ServerConfig{RawRoot: t.TempDir(), DerivedRoot: t.TempDir(), DefaultSeason: "2026-27"}
+	res, _, _ = myWeekHandler(missing)(context.Background(), nil, MyWeekArgs{})
+	if res == nil || !res.IsError {
+		t.Fatal("my_week should error when the artifact is missing")
+	}
+}
+
 func TestDropRadarReturnsMostRecentEvents(t *testing.T) {
 	cfg := fixtureConfig(t)
 	events := []map[string]any{
