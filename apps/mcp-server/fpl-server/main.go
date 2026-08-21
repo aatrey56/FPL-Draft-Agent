@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/config"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/ledger"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/store"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/summary"
@@ -85,6 +86,12 @@ func main() {
 		authHeader     = flag.String("auth-header", "X-API-Key", "HTTP header to read API key from")
 	)
 	flag.Parse()
+
+	// Pick up FPL_MCP_API_KEY (and friends) from the repo .env so the server
+	// starts without exported environment variables. Real env always wins.
+	if err := config.FindAndLoadDotEnv(); err != nil {
+		log.Printf("warning: could not load .env: %v", err)
+	}
 
 	cfg := ServerConfig{
 		RawRoot:        *rawRoot,

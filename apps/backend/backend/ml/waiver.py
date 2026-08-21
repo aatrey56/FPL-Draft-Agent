@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from dotenv import load_dotenv
 
 from backend.ml import jsonutil
 
@@ -262,6 +263,7 @@ def _repo_root() -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    load_dotenv(_repo_root() / ".env")
     parser = argparse.ArgumentParser(description="waiver_plan: roster-aware add/drop recommendations")
     parser.add_argument("--season", default="2026-27")
     parser.add_argument("--league", type=int, default=int(os.getenv("LEAGUE_ID", "0") or "0"))

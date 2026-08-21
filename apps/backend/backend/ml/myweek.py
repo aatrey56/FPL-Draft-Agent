@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from dotenv import load_dotenv
 
 from backend.ml import jsonutil
 from backend.ml import waiver as wv
@@ -100,6 +101,7 @@ def _repo_root() -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    load_dotenv(_repo_root() / ".env")
     parser = argparse.ArgumentParser(description="my_week: start/sit for the next gameweek")
     parser.add_argument("--season", default="2026-27")
     parser.add_argument("--league", type=int, default=int(os.getenv("LEAGUE_ID", "0") or "0"))

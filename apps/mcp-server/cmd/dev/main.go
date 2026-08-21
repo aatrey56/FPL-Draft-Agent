@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/config"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/fetch"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/ledger"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/model"
@@ -50,6 +51,17 @@ func main() {
 		elementStatus   = flag.Bool("element-status", true, "fetch league element-status (ownership) and archive a timestamped snapshot for the drop-radar")
 	)
 	flag.Parse()
+
+	// --league falls back to LEAGUE_ID from the environment or the repo .env,
+	// so the weekly loop never needs the id typed (or committed anywhere).
+	if err := config.FindAndLoadDotEnv(); err != nil {
+		log.Printf("warning: could not load .env: %v", err)
+	}
+	if *leagueID == 0 {
+		if fromEnv, err := strconv.Atoi(os.Getenv("LEAGUE_ID")); err == nil {
+			*leagueID = fromEnv
+		}
+	}
 
 	// Season-nested layout: data/raw/<season>/... and data/derived/<season>/...
 	// keeps each season's data isolated (the flat legacy layout holds 2025-26).
