@@ -185,10 +185,9 @@ Run relevant checks before PR:
 - go test ./...
 - go vet ./...
 
-### Python (if touched)
-- pytest
-- ruff check .
-- mypy . (if configured)
+### Python (if touched — via uv, from apps/backend)
+- uv run pytest
+- uv run ruff check .
 
 ### Frontend (if touched)
 - npm test
@@ -504,11 +503,15 @@ go test ./...
 
 ## Python (if `apps/backend/` touched)
 
+Dependencies are managed by **uv** (`pyproject.toml` + `uv.lock` in
+`apps/backend/`; there are no requirements.txt files). Adding a dependency:
+`uv add <pkg>` (or `uv add --dev` for tooling) — commit the lockfile.
+
 ```bash
 cd apps/backend
-pytest
-ruff check .
-mypy backend/   # if mypy is configured
+uv sync            # once, or after lockfile changes
+uv run pytest
+uv run ruff check .
 ```
 
 ## Run Both Servers Locally
