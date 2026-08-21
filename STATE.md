@@ -61,6 +61,19 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
 - Dependabot cleared (4 PRs merged post-verification: go-sdk 1.6.1,
   fastapi 0.141.1, uvicorn 0.42, python-dotenv 1.2.2). Only PR #122 open.
 
+## Done (gw_live + tool pruning — 2026-08-21 GW1 night)
+- gw_live: live H2H matchup tracker (local snapshots: fetcher already writes
+  gw/<n>/live.json + per-entry picks mid-GW; full refresh during matches).
+- Tool surface pruned 34 -> 25: removed waiver_recommendations, waiver_targets,
+  ownership_scarcity (superseded by waiver_plan/drop_radar), league_summary,
+  standings, league_entries, transactions, transaction_analysis (composed by
+  league_pulse), strength_of_schedule (broken, #130), game_status (league_pulse
+  game meta). Shared parsing extracted to data_common.go.
+- Phase-2 consolidation planned (-> ~14): manager×5 + draft_picks -> manager_card;
+  player_lookup/form/gw_stats -> player_card + one stats tool; epl_fixtures +
+  epl_standings -> epl; matchup_breakdown + lineup_efficiency -> gw_live/matchup;
+  fixture_difficulty -> team_env.
+
 ## Next
 - Match xP model (MATCH_MODEL_SPEC) — **hold until Mon 2026-08-24 ~17:00 EST**
   (GW1 finished), then train on the 25/26 GW panel + early 26/27 data; must
