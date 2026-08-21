@@ -106,3 +106,36 @@ def test_local_bootstrap_maps_team_name_and_nulls_now_cost():
     assert frame.loc[0, "team_name"] == "Man City"
     assert pd.isna(frame.loc[0, "now_cost"])
     assert frame.loc[0, "expected_goals"] == 25.5
+
+
+def test_local_season_in_seasons_list_never_double_ingests(tmp_path, monkeypatch):
+    """Regression: passing 2025-26 in --seasons (the fresh-machine path) while
+    a stray local bootstrap exists must use vaastav ONLY, not both."""
+    import json
+
+    def fake_vaastav(season, scratch_dir, base_url, session):
+        return history.parse_local_bootstrap({
+            "elements": [{"code": 100, "id": 1, "web_name": "V", "element_type": 3,
+                          "team": 1, "minutes": 900, "total_points": 50}],
+            "teams": [{"id": 1, "name": "Arsenal", "short_name": "ARS"}],
+        }, season)
+
+    monkeypatch.setattr(history, "load_vaastav_season", fake_vaastav)
+    local = tmp_path / "bootstrap-static.json"
+    local.write_text(json.dumps({
+        "elements": [{"code": 100, "id": 9, "web_name": "L", "element_type": 3,
+                      "team": 1, "minutes": 1, "total_points": 1}],
+        "teams": [{"id": 1, "name": "Arsenal", "short_name": "ARS"}],
+    }))
+
+    frame = history.ingest(
+        historical_seasons=[history.LOCAL_SEASON],
+        local_bootstrap_path=local, scratch_dir=tmp_path)
+    assert len(frame) == 1
+    assert frame.loc[0, "web_name"] == "V"          # vaastav row won; local skipped
+
+    # Control: local season NOT requested from vaastav -> local file is used.
+    frame = history.ingest(
+        historical_seasons=[], local_bootstrap_path=local, scratch_dir=tmp_path)
+    assert len(frame) == 1
+    assert frame.loc[0, "web_name"] == "L"
