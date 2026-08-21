@@ -59,6 +59,17 @@ printf 'LEAGUE_ID=<yours>\nENTRY_ID=<yours>\nFPL_MCP_API_KEY=%s\n' \
   "$(openssl rand -hex 16)" >> .env
 ```
 
+First time only — fetch the season (step 1 below), then build the ML
+artifacts (they're gitignored; the explicit season list pulls the 2025-26
+history from the public vaastav mirror):
+
+```bash
+cd apps/backend
+uv run python -m backend.ml.history --seasons 2019-20 2020-21 2021-22 2022-23 2023-24 2024-25 2025-26
+uv run python -m backend.ml.projection --project
+uv run python -m backend.ml.serve_export
+```
+
 Weekly loop (both Go binaries and the Python CLIs read `.env` automatically):
 
 ```bash
