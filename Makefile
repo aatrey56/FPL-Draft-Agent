@@ -50,3 +50,7 @@ stop:
 start:
 	launchctl bootstrap gui/$$(id -u) $$HOME/Library/LaunchAgents/com.fplcopilot.server.plist
 	launchctl bootstrap gui/$$(id -u) $$HOME/Library/LaunchAgents/com.fplcopilot.refresh.plist
+
+## tui: live matchup dashboard in the terminal (game days; ←/→ switch matchup, r refresh, q quit)
+tui:
+	cd apps/mcp-server && go run ./cmd/tui --raw-root ../../data/raw

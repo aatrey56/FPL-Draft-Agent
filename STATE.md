@@ -108,3 +108,6 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
 - Autopilot (macOS launchd): make autopilot installs always-on server +
   15-min fetch/derive agent (logs in ~/.fplcopilot/); make update = pull +
   server restart; make autopilot-off removes.
+- Matchday TUI (cmd/tui, bubbletea): live H2H dashboard over local snapshots
+  — my matchup default, arrows cycle all matchups, r = fetch now, --once for
+  CI-safe single-frame render. make tui.

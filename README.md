@@ -79,6 +79,7 @@ Then turn on the autopilot (macOS) — after this, no routine commands at all:
 make autopilot   # always-on server + data/artifact refresh every 15 min (launchd)
 make update      # after a merge: pull latest code + restart the server
 make stop / make start   # pause / resume without uninstalling
+make tui         # live matchup dashboard in the terminal on game days
 make autopilot-off
 ```
 
