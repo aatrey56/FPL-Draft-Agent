@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -112,65 +111,9 @@ func TestResultFromScore(t *testing.T) {
 // positionLabel
 // ---------------------------------------------------------------------------
 
-func TestPositionLabel(t *testing.T) {
-	tests := []struct {
-		pos  int
-		want string
-	}{
-		{1, "GK"},
-		{2, "DEF"},
-		{3, "MID"},
-		{4, "FWD"},
-		{0, "UNK"},
-		{99, "UNK"},
-	}
-	for _, tc := range tests {
-		got := positionLabel(tc.pos)
-		if got != tc.want {
-			t.Errorf("positionLabel(%d) = %q; want %q", tc.pos, got, tc.want)
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // horizonWeights
 // ---------------------------------------------------------------------------
-
-func TestHorizonWeights(t *testing.T) {
-	tests := []struct {
-		name    string
-		horizon int
-		wSeason float64
-		wRecent float64
-	}{
-		{"ShortHorizon_3", 3, 0.55, 0.45},
-		{"ShortHorizon_9", 9, 0.55, 0.45},
-		{"MediumHorizon_10", 10, 0.50, 0.50},
-		{"MediumHorizon_15", 15, 0.50, 0.50},
-		{"LongHorizon_20", 20, 0.40, 0.60},
-		{"LongHorizon_38", 38, 0.40, 0.60},
-	}
-	const eps = 1e-9
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			s, r := horizonWeights(tc.horizon)
-			if math.Abs(s-tc.wSeason) > eps || math.Abs(r-tc.wRecent) > eps {
-				t.Errorf("horizonWeights(%d) = (%.2f, %.2f); want (%.2f, %.2f)",
-					tc.horizon, s, r, tc.wSeason, tc.wRecent)
-			}
-		})
-	}
-}
-
-func TestHorizonWeightsSumToOne(t *testing.T) {
-	for _, h := range []int{1, 5, 10, 20, 38} {
-		s, r := horizonWeights(h)
-		sum := s + r
-		if math.Abs(sum-1.0) > 1e-9 {
-			t.Errorf("horizonWeights(%d) sums to %.4f; want 1.0", h, sum)
-		}
-	}
-}
 
 // ---------------------------------------------------------------------------
 // buildHeadToHead

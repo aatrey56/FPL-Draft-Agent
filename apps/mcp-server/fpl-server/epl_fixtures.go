@@ -1,16 +1,8 @@
 package main
 
 import (
-	"context"
 	"fmt"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-// EPLFixturesArgs is the input schema for the epl_fixtures tool.
-type EPLFixturesArgs struct {
-	GW int `json:"gw" jsonschema:"Gameweek number (0 = current)"`
-}
 
 // EPLFixture is a single Premier League fixture result.
 type EPLFixture struct {
@@ -67,15 +59,4 @@ func buildEPLFixtures(cfg ServerConfig, gw int) (*EPLFixturesResult, error) {
 		})
 	}
 	return &EPLFixturesResult{Gameweek: resolvedGW, Fixtures: fixtures}, nil
-}
-
-// eplFixturesHandler is the MCP tool handler for epl_fixtures.
-func eplFixturesHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, EPLFixturesArgs) (*mcp.CallToolResult, any, error) {
-	return func(ctx context.Context, req *mcp.CallToolRequest, args EPLFixturesArgs) (*mcp.CallToolResult, any, error) {
-		out, err := buildEPLFixtures(cfg, args.GW)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		return toolMarshal(out)
-	}
 }

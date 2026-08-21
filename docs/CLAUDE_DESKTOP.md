@@ -1,6 +1,6 @@
 # Connecting Claude Desktop (or Claude Code) to the FPL co-pilot
 
-The Go MCP server serves 25 tools over Streamable HTTP at `/mcp`, including the
+The Go MCP server serves 14 tools over Streamable HTTP at `/mcp`, including the
 decision layer: `draft_board`, `player_card`, `waiver_plan`, `my_week`,
 `trade_check`, `league_pulse`, `drop_radar`, `team_env`, `gw_live`. Claude
 (on a Max plan) is the client — there is no in-app LLM.

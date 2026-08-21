@@ -97,3 +97,11 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
 - Uninstall the `chatgpt-codex-connector` GitHub App (GitHub settings).
 - Decide PR #122 (env-drift CI guardrail): request SHA-pinning changes or close.
 - Connect Claude Desktop/Code per docs/CLAUDE_DESKTOP.md.
+
+## Done (phase-2 consolidation — 2026-08-21 late)
+- Tool surface 25 -> 14 (9 decision + 5 data): manager_card composes the six
+  former manager tools; epl composes epl_fixtures+epl_standings; gw_report
+  composes matchup_breakdown+lineup_efficiency. Retired outright:
+  player_lookup, player_form, fixtures, fixture_difficulty (team_env + the
+  match model cover fixture context). Builders kept and tested; handlers and
+  dead helpers removed.
