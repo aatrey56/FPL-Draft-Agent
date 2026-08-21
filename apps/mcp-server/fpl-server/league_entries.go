@@ -27,7 +27,7 @@ func buildLeagueEntries(cfg ServerConfig, leagueID int) (LeagueEntriesOutput, er
 	if leagueID == 0 {
 		return LeagueEntriesOutput{}, fmt.Errorf("league_id is required")
 	}
-	path := filepath.Join(cfg.RawRoot, fmt.Sprintf("league/%d/details.json", leagueID))
+	path := filepath.Join(cfg.rawDir(""), fmt.Sprintf("league/%d/details.json", leagueID))
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return LeagueEntriesOutput{}, err

@@ -64,7 +64,7 @@ type fixtureRankItem struct {
 }
 
 func loadGameMeta(cfg ServerConfig) (GameMeta, error) {
-	path := fmt.Sprintf("%s/game/game.json", strings.TrimRight(cfg.RawRoot, "/"))
+	path := fmt.Sprintf("%s/game/game.json", strings.TrimRight(cfg.rawDir(""), "/"))
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return GameMeta{}, err
@@ -169,14 +169,14 @@ func buildFixtureDifficulty(cfg ServerConfig, args FixtureDifficultyArgs) (Fixtu
 		return FixtureDifficultyOutput{}, err
 	}
 
-	elements, teamShort, fixturesByGW, err := loadBootstrapData(cfg.RawRoot)
+	elements, teamShort, fixturesByGW, err := loadBootstrapData(cfg.rawDir(""))
 	if err != nil {
 		return FixtureDifficultyOutput{}, err
 	}
 
 	seasonWeight, recentWeight := horizonWeights(h)
-	concededSeason := computePointsConcededByPosition(cfg.RawRoot, elements, asOfGW, asOfGW)
-	concededRecent := computePointsConcededByPosition(cfg.RawRoot, elements, asOfGW, h)
+	concededSeason := computePointsConcededByPosition(cfg.rawDir(""), elements, asOfGW, asOfGW)
+	concededRecent := computePointsConcededByPosition(cfg.rawDir(""), elements, asOfGW, h)
 
 	fixtureList := fixturesByGW[nextGW]
 	contexts := buildFixtureContexts(fixtureList, teamShort)

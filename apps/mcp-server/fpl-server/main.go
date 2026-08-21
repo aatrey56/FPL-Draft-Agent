@@ -539,7 +539,7 @@ func resolveGW(cfg ServerConfig, gw int) (int, error) {
 	if gw > 0 {
 		return gw, nil
 	}
-	gamePath := filepath.Join(cfg.RawRoot, "game", "game.json")
+	gamePath := filepath.Join(cfg.rawDir(""), "game", "game.json")
 	raw, err := os.ReadFile(gamePath)
 	if err != nil {
 		return 0, fmt.Errorf("missing game meta: %w", err)
@@ -579,7 +579,7 @@ func loadSummaryFile(cfg ServerConfig, leagueID int, gw int, relPath string, hor
 	if gw == 0 {
 		return nil, fmt.Errorf("gw is required")
 	}
-	absPath := filepath.Join(cfg.DerivedRoot, relPath)
+	absPath := filepath.Join(cfg.derivedDir(""), relPath)
 	if b, err := os.ReadFile(absPath); err == nil {
 		return b, nil
 	}
@@ -594,7 +594,7 @@ func loadSummaryFile(cfg ServerConfig, leagueID int, gw int, relPath string, hor
 	if len(r) == 0 {
 		r = []string{"low", "med", "high"}
 	}
-	root := cfg.DerivedRoot
+	root := cfg.derivedDir("")
 	cleanup := func() {}
 	if !cfg.WriteDerived {
 		tmp, err := os.MkdirTemp("", "fpl-summary-*")
@@ -606,7 +606,7 @@ func loadSummaryFile(cfg ServerConfig, leagueID int, gw int, relPath string, hor
 	}
 	defer cleanup()
 
-	st := store.NewJSONStore(cfg.RawRoot)
+	st := store.NewJSONStore(cfg.rawDir(""))
 	if strings.HasPrefix(relPath, "summary/transactions/") {
 		if err := summary.BuildTransactionsSummary(st, root, leagueID, gw); err != nil {
 			return nil, err
@@ -688,7 +688,7 @@ func ensureSnapshots(st *store.JSONStore, derivedRoot string, leagueID int, entr
 }
 
 func lookupPlayer(cfg ServerConfig, elementID int) ([]byte, error) {
-	raw, err := os.ReadFile(filepath.Join(cfg.RawRoot, "bootstrap", "bootstrap-static.json"))
+	raw, err := os.ReadFile(filepath.Join(cfg.rawDir(""), "bootstrap", "bootstrap-static.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -736,7 +736,7 @@ func lookupPlayer(cfg ServerConfig, elementID int) ([]byte, error) {
 }
 
 func lookupManager(cfg ServerConfig, leagueID int, entryID int) ([]byte, error) {
-	raw, err := os.ReadFile(filepath.Join(cfg.RawRoot, fmt.Sprintf("league/%d/details.json", leagueID)))
+	raw, err := os.ReadFile(filepath.Join(cfg.rawDir(""), fmt.Sprintf("league/%d/details.json", leagueID)))
 	if err != nil {
 		return nil, err
 	}

@@ -59,7 +59,7 @@ func buildManagerSchedule(cfg ServerConfig, args ManagerScheduleArgs) (ManagerSc
 		return ManagerScheduleOutput{}, fmt.Errorf("league_id is required")
 	}
 
-	path := filepath.Join(cfg.RawRoot, fmt.Sprintf("league/%d/details.json", args.LeagueID))
+	path := filepath.Join(cfg.rawDir(""), fmt.Sprintf("league/%d/details.json", args.LeagueID))
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return ManagerScheduleOutput{}, err

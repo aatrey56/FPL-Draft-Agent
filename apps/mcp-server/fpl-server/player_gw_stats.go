@@ -46,7 +46,7 @@ type PlayerGWStatsOutput struct {
 
 func buildPlayerGWStats(cfg ServerConfig, args PlayerGWStatsArgs) (PlayerGWStatsOutput, error) {
 	// Resolve element ID (by id or by name search).
-	elements, teamShort, _, err := loadBootstrapData(cfg.RawRoot)
+	elements, teamShort, _, err := loadBootstrapData(cfg.rawDir(""))
 	if err != nil {
 		return PlayerGWStatsOutput{}, err
 	}
@@ -116,7 +116,7 @@ func buildPlayerGWStats(cfg ServerConfig, args PlayerGWStatsArgs) (PlayerGWStats
 	gwCount := 0
 
 	for gw := startGW; gw <= endGW; gw++ {
-		livePath := filepath.Join(cfg.RawRoot, fmt.Sprintf("gw/%d/live.json", gw))
+		livePath := filepath.Join(cfg.rawDir(""), fmt.Sprintf("gw/%d/live.json", gw))
 		liveRaw, err := os.ReadFile(livePath)
 		if err != nil {
 			// GW data not yet fetched — skip silently.

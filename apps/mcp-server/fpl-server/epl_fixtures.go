@@ -32,7 +32,7 @@ type EPLFixturesResult struct {
 
 // buildEPLFixtures constructs the fixture results for a single gameweek.
 func buildEPLFixtures(cfg ServerConfig, gw int) (*EPLFixturesResult, error) {
-	teams, err := loadTeams(cfg.RawRoot)
+	teams, err := loadTeams(cfg.rawDir(""))
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +40,7 @@ func buildEPLFixtures(cfg ServerConfig, gw int) (*EPLFixturesResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	rawFixtures, err := loadFixtureResults(cfg.RawRoot, resolvedGW)
+	rawFixtures, err := loadFixtureResults(cfg.rawDir(""), resolvedGW)
 	if err != nil {
 		return nil, fmt.Errorf("gw %d fixtures: %w", resolvedGW, err)
 	}

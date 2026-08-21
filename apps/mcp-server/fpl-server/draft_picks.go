@@ -44,7 +44,7 @@ func buildDraftPicks(cfg ServerConfig, args DraftPicksArgs) (DraftPicksOutput, e
 	}
 
 	// Load draft choices.
-	choicesPath := filepath.Join(cfg.RawRoot, fmt.Sprintf("draft/%d/choices.json", args.LeagueID))
+	choicesPath := filepath.Join(cfg.rawDir(""), fmt.Sprintf("draft/%d/choices.json", args.LeagueID))
 	choicesRaw, err := os.ReadFile(choicesPath)
 	if err != nil {
 		return DraftPicksOutput{}, fmt.Errorf("draft choices not found for league %d: %w", args.LeagueID, err)
@@ -98,7 +98,7 @@ func buildDraftPicks(cfg ServerConfig, args DraftPicksArgs) (DraftPicksOutput, e
 	}
 
 	// Build player metadata map from bootstrap.
-	elements, teamShort, _, err := loadBootstrapData(cfg.RawRoot)
+	elements, teamShort, _, err := loadBootstrapData(cfg.rawDir(""))
 	if err != nil {
 		return DraftPicksOutput{}, err
 	}

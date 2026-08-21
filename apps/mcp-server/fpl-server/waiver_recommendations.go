@@ -203,7 +203,7 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 		if name == "" {
 			return nil, fmt.Errorf("entry_id or entry_name is required")
 		}
-		st := store.NewJSONStore(cfg.RawRoot)
+		st := store.NewJSONStore(cfg.rawDir(""))
 		ld, _, err := loadLeagueDetails(st, args.LeagueID)
 		if err != nil {
 			return nil, err
@@ -304,7 +304,7 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 	// hasn't yet advanced past targetGW-1.
 	rosterGW := resolveRosterGW(asOfGW, targetGW)
 
-	bootstrap, teamShort, fixturesByGW, err := loadBootstrapData(cfg.RawRoot)
+	bootstrap, teamShort, fixturesByGW, err := loadBootstrapData(cfg.rawDir(""))
 	if err != nil {
 		return nil, err
 	}
@@ -324,19 +324,19 @@ func buildWaiverRecommendations(cfg ServerConfig, args WaiverRecommendationsArgs
 		formByElement[p.Element] = p
 	}
 
-	seasonMinutes60, last3Minutes60, xgByElement, err := computeAvailabilityAndXG(cfg.RawRoot, bootstrap, asOfGW, h)
+	seasonMinutes60, last3Minutes60, xgByElement, err := computeAvailabilityAndXG(cfg.rawDir(""), bootstrap, asOfGW, h)
 	if err != nil {
 		return nil, err
 	}
 
-	avgPtsByElement, stddevPtsByElement, err := computeConsistencyStats(cfg.RawRoot, bootstrap, asOfGW, h)
+	avgPtsByElement, stddevPtsByElement, err := computeConsistencyStats(cfg.rawDir(""), bootstrap, asOfGW, h)
 	if err != nil {
 		return nil, err
 	}
 
 	seasonWeight, recentWeight := horizonWeights(h)
-	concededSeason := computePointsConcededByPosition(cfg.RawRoot, bootstrap, asOfGW, asOfGW)
-	concededRecent := computePointsConcededByPosition(cfg.RawRoot, bootstrap, asOfGW, h)
+	concededSeason := computePointsConcededByPosition(cfg.rawDir(""), bootstrap, asOfGW, asOfGW)
+	concededRecent := computePointsConcededByPosition(cfg.rawDir(""), bootstrap, asOfGW, h)
 
 	everOwnersByElement, err := buildEverOwners(cfg, args.LeagueID)
 	if err != nil {
@@ -572,11 +572,11 @@ func resolveRosterGW(asOf, target int) int {
 }
 
 func buildOwnershipAndRoster(cfg ServerConfig, leagueID int, entryID int, asOfGW int, elements []elementInfo, teamShort map[int]string) (map[int]bool, []summary.RosterPlayer, error) {
-	st := store.NewJSONStore(cfg.RawRoot)
-	if err := ensureLedger(st, cfg.DerivedRoot, leagueID); err != nil {
+	st := store.NewJSONStore(cfg.rawDir(""))
+	if err := ensureLedger(st, cfg.derivedDir(""), leagueID); err != nil {
 		return nil, nil, err
 	}
-	ledgerPath := filepath.Join(cfg.DerivedRoot, fmt.Sprintf("ledger/%d/event_0.json", leagueID))
+	ledgerPath := filepath.Join(cfg.derivedDir(""), fmt.Sprintf("ledger/%d/event_0.json", leagueID))
 	raw, err := os.ReadFile(ledgerPath)
 	if err != nil {
 		return nil, nil, err
@@ -634,7 +634,7 @@ func buildOwnershipAndRoster(cfg ServerConfig, leagueID int, entryID int, asOfGW
 }
 
 func buildEverOwners(cfg ServerConfig, leagueID int) (map[int][]string, error) {
-	st := store.NewJSONStore(cfg.RawRoot)
+	st := store.NewJSONStore(cfg.rawDir(""))
 	ld, _, err := loadLeagueDetails(st, leagueID)
 	if err != nil {
 		return nil, err
@@ -644,10 +644,10 @@ func buildEverOwners(cfg ServerConfig, leagueID int) (map[int][]string, error) {
 		entryNameByID[e.EntryID] = e.EntryName
 	}
 
-	if err := ensureLedger(st, cfg.DerivedRoot, leagueID); err != nil {
+	if err := ensureLedger(st, cfg.derivedDir(""), leagueID); err != nil {
 		return nil, err
 	}
-	ledgerPath := filepath.Join(cfg.DerivedRoot, fmt.Sprintf("ledger/%d/event_0.json", leagueID))
+	ledgerPath := filepath.Join(cfg.derivedDir(""), fmt.Sprintf("ledger/%d/event_0.json", leagueID))
 	raw, err := os.ReadFile(ledgerPath)
 	if err != nil {
 		return nil, err

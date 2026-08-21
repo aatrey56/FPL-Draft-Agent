@@ -53,6 +53,27 @@ func (cfg ServerConfig) season(override string) string {
 	return cfg.DefaultSeason
 }
 
+// ArchiveSeason is the season stored at the flat roots (data/raw, data/derived)
+// from before the season-nested layout existed. It never gets a season segment.
+const ArchiveSeason = "2025-26"
+
+// rawDir resolves the raw-data directory for a season: <root>/<season> for
+// current seasons, the flat root for the 2025-26 archive (or no season at all).
+func (cfg ServerConfig) rawDir(override string) string {
+	if s := cfg.season(override); s != "" && s != ArchiveSeason {
+		return filepath.Join(cfg.RawRoot, s)
+	}
+	return cfg.RawRoot
+}
+
+// derivedDir is rawDir for the derived root.
+func (cfg ServerConfig) derivedDir(override string) string {
+	if s := cfg.season(override); s != "" && s != ArchiveSeason {
+		return filepath.Join(cfg.DerivedRoot, s)
+	}
+	return cfg.DerivedRoot
+}
+
 func readJSONFile(path string, v any) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -166,7 +187,7 @@ func playerCardHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 
 		// Live availability from the season bootstrap (best effort).
 		news := map[string]any{}
-		bootstrapPath := filepath.Join(cfg.RawRoot, cfg.season(args.Season), "bootstrap/bootstrap-static.json")
+		bootstrapPath := filepath.Join(cfg.rawDir(args.Season), "bootstrap/bootstrap-static.json")
 		var bootstrap struct {
 			Elements []struct {
 				Code                     int    `json:"code"`
@@ -206,7 +227,7 @@ type WaiverPlanArgs struct {
 
 func waiverPlanHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, WaiverPlanArgs) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, args WaiverPlanArgs) (*mcp.CallToolResult, any, error) {
-		path := filepath.Join(cfg.DerivedRoot, cfg.season(args.Season), "ml/waiver_plan.json")
+		path := filepath.Join(cfg.derivedDir(args.Season), "ml/waiver_plan.json")
 		var plan map[string]any
 		if err := readJSONFile(path, &plan); err != nil {
 			return toolError(err), nil, nil
@@ -227,7 +248,7 @@ type DropRadarArgs struct {
 
 func dropRadarHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, DropRadarArgs) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, args DropRadarArgs) (*mcp.CallToolResult, any, error) {
-		path := filepath.Join(cfg.DerivedRoot, cfg.season(args.Season), "ml/ownership_events.json")
+		path := filepath.Join(cfg.derivedDir(args.Season), "ml/ownership_events.json")
 		var events []map[string]any
 		if err := readJSONFile(path, &events); err != nil {
 			return toolError(err), nil, nil
