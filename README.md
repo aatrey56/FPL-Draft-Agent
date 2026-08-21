@@ -1,7 +1,7 @@
 # FPL Draft Co-Pilot
 
 A **draft + weekly-manager co-pilot** for Fantasy Premier League Draft.
-A Go MCP server exposes 25 tools over locally-cached FPL Draft API data; a
+A Go MCP server exposes 14 tools over locally-cached FPL Draft API data; a
 Python ML pipeline turns seven seasons of history into projections and
 weekly recommendations; **Claude (Desktop or Code) is the client** — you ask
 questions in natural language, Claude calls the decision tools and layers
@@ -9,7 +9,7 @@ live web research on top.
 
 ```
 FPL API → Go fetcher → data/<season>/ → Python ML (projections, waivers,
-start/sit) → Go MCP server (:8080, 25 tools) → Claude Desktop / Claude Code
+start/sit) → Go MCP server (:8080, 14 tools) → Claude Desktop / Claude Code
 ```
 
 ## The decision layer
@@ -26,9 +26,11 @@ start/sit) → Go MCP server (:8080, 25 tools) → Claude Desktop / Claude Code
 | `team_env` | Shootout or stalemate? Per-team points/xG generated and conceded, by position and venue |
 | `gw_live` | How's my matchup going? Live H2H tracker: both XIs with in-play points (refresh mid-match) |
 
-Plus 16 data-layer tools (matchups, fixtures, form, rosters,
-per-GW player stats, …) — all season-aware: flat `data/` roots are the
-2025-26 archive, current seasons nest under `data/{raw,derived}/<season>/`.
+Plus 5 data-layer tools — `manager_card` (one manager: record, form,
+schedule, H2H, draft picks), `current_roster`, `player_gw_stats`, `epl`
+(real PL table/results), `gw_report` (post-GW review) — all season-aware:
+flat `data/` roots are the 2025-26 archive, current seasons nest under
+`data/{raw,derived}/<season>/`.
 
 ## The models (honest by design)
 
@@ -103,7 +105,7 @@ claude mcp add fpl --transport http http://localhost:8080/mcp \
 ```
 apps/
   mcp-server/            Go module
-    fpl-server/          25 MCP tool handlers + HTTP server (X-API-Key auth)
+    fpl-server/          14 MCP tool handlers + HTTP server (X-API-Key auth)
     cmd/dev/             FPL data fetcher (the only live-API component)
     internal/            fetch, store, ledger, points, summary, config
   backend/               Python package

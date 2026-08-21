@@ -389,20 +389,18 @@ fpl-draft-mcp/
 │   │   │   ├── dev/                     # the ONLY component that hits the live FPL API
 │   │   │   └── schema-inventory/        # dev utility: dumps API schema registry
 │   │   └── fpl-server/
-│   │       ├── main.go                  # Entry point, registers all 25 tools, auth, /mcp
+│   │       ├── main.go                  # Entry point, registers all 14 tools, auth, /mcp
 │   │       ├── draft_tools.go           # Decision layer: draft_board, player_card, waiver_plan, my_week, drop_radar (serve ML artifacts)
 │   │       ├── season_tools.go          # Decision layer: trade_check, league_pulse, team_env
 │   │       ├── gw_live.go               # Decision layer: live H2H matchup tracker
-│   │       ├── data_common.go           # Shared bootstrap/live-GW parsing + points-conceded aggregation
-│   │       ├── fixture_difficulty.go    # FDR calculations
-│   │       ├── head_to_head.go          # H2H record tool
-│   │       ├── manager_season.go        # Season stats tool
-│   │       ├── manager_schedule.go      # Manager schedule tool
-│   │       ├── manager_streak.go        # Form/streak tool
+│   │       ├── gw_report.go             # Post-GW review (matchup breakdown + lineup efficiency)
+│   │       ├── manager_card.go          # One manager: record/form/schedule/H2H/draft (composes builders below)
+│   │       ├── epl.go                   # Real PL standings + fixture results
+│   │       ├── data_common.go           # Shared bootstrap parsing + game meta
+│   │       ├── manager_*.go / head_to_head.go / draft_picks.go   # Builders composed by manager_card
 │   │       ├── player_gw_stats.go       # Per-GW player stats tool
 │   │       ├── current_roster.go        # Active roster tool
-│   │       ├── draft_picks.go           # Draft history tool
-│   │       ├── epl_*.go                 # Global EPL data tools (standings, fixtures)
+│   │       ├── epl_*.go                 # Builders composed by epl
 │   │       └── *_test.go                # Go unit tests (no live calls)
 │   └── backend/             # Python FastAPI backend (port 8000)
 │       └── backend/
@@ -442,7 +440,7 @@ Derive (Python, backend/ml/*)
   ▼
 Go MCP Server (:8080)
   │  reads raw + derived (local JSON only)
-  │  exposes 25 tools via MCP protocol (X-API-Key auth)
+  │  exposes 14 tools via MCP protocol (X-API-Key auth)
   ▼
 Claude Desktop / Claude Code (the LLM client, user's Max plan)
   │  calls decision tools, layers live web research + judgment

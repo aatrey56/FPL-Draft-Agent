@@ -1,11 +1,8 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"sort"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // EPLStandingsArgs is the input schema for the epl_standings tool.
@@ -159,15 +156,4 @@ func buildEPLStandings(cfg ServerConfig) (*EPLStandingsResult, error) {
 	}
 
 	return &EPLStandingsResult{AsOfGW: currentGW, Standings: rows}, nil
-}
-
-// eplStandingsHandler is the MCP tool handler for epl_standings.
-func eplStandingsHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, EPLStandingsArgs) (*mcp.CallToolResult, any, error) {
-	return func(ctx context.Context, req *mcp.CallToolRequest, args EPLStandingsArgs) (*mcp.CallToolResult, any, error) {
-		out, err := buildEPLStandings(cfg)
-		if err != nil {
-			return toolError(err), nil, nil
-		}
-		return toolMarshal(out)
-	}
 }
