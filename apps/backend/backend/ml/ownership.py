@@ -20,8 +20,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -163,13 +166,16 @@ def _repo_root() -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    load_dotenv(_repo_root() / ".env")
     parser = argparse.ArgumentParser(description="Drop-radar: ownership events + free-agent report")
     parser.add_argument("--season", default="2026-27")
-    parser.add_argument("--league", type=int, required=True)
+    parser.add_argument("--league", type=int, default=int(os.getenv("LEAGUE_ID", "0") or "0"))
     parser.add_argument("--top", type=int, default=15)
     parser.add_argument("--raw-root", type=Path, default=None)
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
+    if not args.league:
+        parser.error("--league required (or set LEAGUE_ID)")
 
     raw_root = args.raw_root or _repo_root() / "data/raw" / args.season
     history_dir = raw_root / f"league/{args.league}/element_status_history"

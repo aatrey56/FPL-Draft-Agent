@@ -91,7 +91,7 @@ func loadLiveFixtures(dataDir string, gw int) ([]liveFixture, error) {
 
 // loadGameStatusMeta reads game/game.json with the full set of status fields.
 func loadGameStatusMeta(cfg ServerConfig) (gameStatusMeta, error) {
-	path := fmt.Sprintf("%s/game/game.json", strings.TrimRight(cfg.RawRoot, "/"))
+	path := fmt.Sprintf("%s/game/game.json", strings.TrimRight(cfg.rawDir(""), "/"))
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return gameStatusMeta{}, err
@@ -210,7 +210,7 @@ func buildGameStatus(cfg ServerConfig) (*GameStatusResult, error) {
 		return nil, fmt.Errorf("game.json: %w", err)
 	}
 
-	events, err := loadBootstrapEvents(cfg.RawRoot)
+	events, err := loadBootstrapEvents(cfg.rawDir(""))
 	if err != nil {
 		return nil, err
 	}
@@ -238,9 +238,9 @@ func buildGameStatus(cfg ServerConfig) (*GameStatusResult, error) {
 		result.NextTradesDue = nextEvent.TradesTime
 	}
 
-	result.NextGWFirstKickoff = earliestKickoff(cfg.RawRoot, meta.NextEvent)
+	result.NextGWFirstKickoff = earliestKickoff(cfg.rawDir(""), meta.NextEvent)
 
-	result.CurrentGWFixtures = currentGWFixtureProgress(cfg.RawRoot, meta.CurrentEvent)
+	result.CurrentGWFixtures = currentGWFixtureProgress(cfg.rawDir(""), meta.CurrentEvent)
 
 	result.PointsStatus = derivePointsStatus(meta.CurrentEventFinished, result.CurrentGWFixtures)
 

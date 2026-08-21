@@ -53,7 +53,7 @@ func buildCurrentRoster(cfg ServerConfig, args CurrentRosterArgs) (CurrentRoster
 	}
 
 	// Load league details to resolve entry name → entry id.
-	detailsPath := filepath.Join(cfg.RawRoot, fmt.Sprintf("league/%d/details.json", args.LeagueID))
+	detailsPath := filepath.Join(cfg.rawDir(""), fmt.Sprintf("league/%d/details.json", args.LeagueID))
 	detailsRaw, err := os.ReadFile(detailsPath)
 	if err != nil {
 		return CurrentRosterOutput{}, fmt.Errorf("league details not found: %w", err)
@@ -97,7 +97,7 @@ func buildCurrentRoster(cfg ServerConfig, args CurrentRosterArgs) (CurrentRoster
 	}
 
 	// Load the entry snapshot for this gameweek.
-	snapPath := filepath.Join(cfg.RawRoot, fmt.Sprintf("entry/%d/gw/%d.json", entryID, resolvedGW))
+	snapPath := filepath.Join(cfg.rawDir(""), fmt.Sprintf("entry/%d/gw/%d.json", entryID, resolvedGW))
 	snapRaw, err := os.ReadFile(snapPath)
 	if err != nil {
 		return CurrentRosterOutput{}, fmt.Errorf("roster snapshot not available for entry %d GW%d: %w", entryID, resolvedGW, err)
@@ -113,7 +113,7 @@ func buildCurrentRoster(cfg ServerConfig, args CurrentRosterArgs) (CurrentRoster
 	}
 
 	// Build player metadata map from bootstrap.
-	elements, teamShort, _, err := loadBootstrapData(cfg.RawRoot)
+	elements, teamShort, _, err := loadBootstrapData(cfg.rawDir(""))
 	if err != nil {
 		return CurrentRosterOutput{}, err
 	}

@@ -145,6 +145,42 @@ def test_unprojected_free_agents_are_never_recommended(tmp_path):
     assert all(not pd.isna(r["season_gain"]) for r in recs)
 
 
+def test_unprojected_teammate_is_never_the_drop_candidate(tmp_path):
+    """The Maddison case: a squad player with no projection (long injury last
+    season / new signing) must never be auto-dropped, and must be surfaced in
+    unprojected_squad for human judgment instead."""
+    bootstrap = {
+        "teams": TEAMS,
+        "fixtures": {"1": [{"team_h": 1, "team_a": 2}]},
+        "elements": [
+            {"id": 11, "code": 101, "web_name": "MyWeakFWD", "element_type": 4, "team": 2, "status": "a"},
+            {"id": 12, "code": 102, "web_name": "MyMysteryFWD", "element_type": 4, "team": 1, "status": "a"},
+            {"id": 20, "code": 200, "web_name": "SeasonStar", "element_type": 4, "team": 1, "status": "a"},
+        ],
+    }
+    proj = tmp_path / "p.json"
+    proj.write_text(json.dumps([
+        {"code": 101, "projected_points": 80.0},
+        {"code": 200, "projected_points": 150.0},   # MyMysteryFWD: no projection
+    ]))
+    players = wv.build_player_table(bootstrap, SEASONS, proj)
+    status = {"element_status": [
+        {"element": 11, "owner": 42}, {"element": 12, "owner": 42},
+        {"element": 20, "owner": None},
+    ]}
+    players["is_free_agent"] = players["element"].isin({20})
+    squad = wv.my_squad(players, status, entry_id=42)
+
+    recs = wv.recommend(players, squad)
+    star = next(r for r in recs if r["add"] == "SeasonStar")
+    assert star["drop"] == "MyWeakFWD"          # never the unknown
+    assert all(r["drop"] != "MyMysteryFWD" for r in recs)
+    assert star["season_gain"] == pytest.approx(150.0 - 80.0, abs=0.2)  # real gain, not vs 0
+
+    unknown = wv.unprojected_squad(squad)
+    assert [p["web_name"] for p in unknown] == ["MyMysteryFWD"]
+
+
 def test_injury_gates_next3_but_not_season_value(tmp_path):
     """Real-run regression: an injured player's ROS survives; next3 goes to 0."""
     bootstrap = {

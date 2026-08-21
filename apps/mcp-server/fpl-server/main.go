@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/config"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/ledger"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/store"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/summary"
@@ -85,6 +86,12 @@ func main() {
 		authHeader     = flag.String("auth-header", "X-API-Key", "HTTP header to read API key from")
 	)
 	flag.Parse()
+
+	// Pick up FPL_MCP_API_KEY (and friends) from the repo .env so the server
+	// starts without exported environment variables. Real env always wins.
+	if err := config.FindAndLoadDotEnv(); err != nil {
+		log.Printf("warning: could not load .env: %v", err)
+	}
 
 	cfg := ServerConfig{
 		RawRoot:        *rawRoot,
@@ -464,6 +471,26 @@ func main() {
 	}, dropRadarHandler(cfg))
 
 	addTool(server, &registry, &mcp.Tool{
+		Name:        "my_week",
+		Description: "Start/sit for the next gameweek: best XI + bench by per-GW expected points, with attention flags (injuries, blanks, unprojected players)",
+	}, myWeekHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "trade_check",
+		Description: "Evaluate a proposed trade: give vs get compared on season projection and VOR (starter scarcity), with warnings for unprojected players",
+	}, tradeCheckHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "team_env",
+		Description: "Per-team match environment: FPL points/xG generated and conceded (by position, home/away) — shootout vs stalemate context for fixtures",
+	}, teamEnvHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
+		Name:        "league_pulse",
+		Description: "League state in one call: standings, recent transactions (named), and the game clock (current/next GW, waivers status)",
+	}, leaguePulseHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
 		Name:        "epl_fixtures",
 		Description: "Premier League fixture results for a specific gameweek",
 	}, eplFixturesHandler(cfg))
@@ -539,7 +566,7 @@ func resolveGW(cfg ServerConfig, gw int) (int, error) {
 	if gw > 0 {
 		return gw, nil
 	}
-	gamePath := filepath.Join(cfg.RawRoot, "game", "game.json")
+	gamePath := filepath.Join(cfg.rawDir(""), "game", "game.json")
 	raw, err := os.ReadFile(gamePath)
 	if err != nil {
 		return 0, fmt.Errorf("missing game meta: %w", err)
@@ -579,7 +606,7 @@ func loadSummaryFile(cfg ServerConfig, leagueID int, gw int, relPath string, hor
 	if gw == 0 {
 		return nil, fmt.Errorf("gw is required")
 	}
-	absPath := filepath.Join(cfg.DerivedRoot, relPath)
+	absPath := filepath.Join(cfg.derivedDir(""), relPath)
 	if b, err := os.ReadFile(absPath); err == nil {
 		return b, nil
 	}
@@ -594,7 +621,7 @@ func loadSummaryFile(cfg ServerConfig, leagueID int, gw int, relPath string, hor
 	if len(r) == 0 {
 		r = []string{"low", "med", "high"}
 	}
-	root := cfg.DerivedRoot
+	root := cfg.derivedDir("")
 	cleanup := func() {}
 	if !cfg.WriteDerived {
 		tmp, err := os.MkdirTemp("", "fpl-summary-*")
@@ -606,7 +633,7 @@ func loadSummaryFile(cfg ServerConfig, leagueID int, gw int, relPath string, hor
 	}
 	defer cleanup()
 
-	st := store.NewJSONStore(cfg.RawRoot)
+	st := store.NewJSONStore(cfg.rawDir(""))
 	if strings.HasPrefix(relPath, "summary/transactions/") {
 		if err := summary.BuildTransactionsSummary(st, root, leagueID, gw); err != nil {
 			return nil, err
@@ -688,7 +715,7 @@ func ensureSnapshots(st *store.JSONStore, derivedRoot string, leagueID int, entr
 }
 
 func lookupPlayer(cfg ServerConfig, elementID int) ([]byte, error) {
-	raw, err := os.ReadFile(filepath.Join(cfg.RawRoot, "bootstrap", "bootstrap-static.json"))
+	raw, err := os.ReadFile(filepath.Join(cfg.rawDir(""), "bootstrap", "bootstrap-static.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -736,7 +763,7 @@ func lookupPlayer(cfg ServerConfig, elementID int) ([]byte, error) {
 }
 
 func lookupManager(cfg ServerConfig, leagueID int, entryID int) ([]byte, error) {
-	raw, err := os.ReadFile(filepath.Join(cfg.RawRoot, fmt.Sprintf("league/%d/details.json", leagueID)))
+	raw, err := os.ReadFile(filepath.Join(cfg.rawDir(""), fmt.Sprintf("league/%d/details.json", leagueID)))
 	if err != nil {
 		return nil, err
 	}

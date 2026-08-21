@@ -1,6 +1,6 @@
 # STATE — checkpoint
 
-Updated: 2026-08-20
+Updated: 2026-08-21 (GW1 kickoff day)
 Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage retired 2026-07-30; Docling-style).
 
 ## Done
@@ -45,11 +45,32 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
 - Verified end-to-end over real MCP (initialize -> tools/call).
 - docs/CLAUDE_DESKTOP.md: connector setup + the weekly artifact-refresh loop.
 
+## Done (week-1 co-pilot — 2026-08-21)
+- Season-aware legacy tools: all 26 data-layer tools resolve
+  `data/{raw,derived}/<season>/` via `--default-season` (flat roots = 25/26
+  archive, `ArchiveSeason` const). 2 new Go tests.
+- Maddison safety: waiver_plan never auto-drops unprojected squad players
+  (surfaced in `unprojected_squad` instead); player_card falls back to
+  history + live news; trade_check warns. Root cause + open projection-side
+  fix tracked in ISSUES.md.
+- my_week v1 (backend.ml.myweek + MCP tool): next-GW best XI, bench,
+  attention flags (injury/blank/unprojected). 4 + 1 tests.
+- trade_check + league_pulse MCP tools (33 total). 2 test funcs.
+- Config via repo .env: LEAGUE_ID/ENTRY_ID/FPL_MCP_API_KEY picked up by both
+  Go binaries (internal/config, no new dep) and the ML CLIs (python-dotenv).
+- Dependabot cleared (4 PRs merged post-verification: go-sdk 1.6.1,
+  fastapi 0.141.1, uvicorn 0.42, python-dotenv 1.2.2). Only PR #122 open.
+
 ## Next
-- my_week (start/sit), trade_check, league_pulse; match xP model replaces the
-  per-GW baseline as GWs accumulate; schedule fast-mode fetches around waiver
-  deadlines; doc-hygiene sweep from the evaluation report (CLAUDE.md OpenAI
-  sections, PLAN Phase-2 ticks, spec header reconciliation).
+- Match xP model (MATCH_MODEL_SPEC) — **hold until Mon 2026-08-24 ~17:00 EST**
+  (GW1 finished), then train on the 25/26 GW panel + early 26/27 data; must
+  beat FPL's ep_next; replaces the per-GW heuristic in waiver_plan/my_week.
+- Team attack/defense strength ratings from the GW panel (match context:
+  expected game environment) as match-model features; odds-based calibration
+  optional later.
+- Breakout radar (the Bruno case): rolling underlying-rate spikes vs baseline
+  + context flags (manager change, minutes jump, cup-free schedule).
+- Schedule fast-mode fetches around waiver deadlines.
 
 ## Done (CI/CD + branch model — 2026-07-30)
 - Fixed the 7-week CI failure (OverflowError dates); CI installs ML deps; re-enabled
@@ -59,6 +80,7 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
   Codex workflows deleted with stage. claude-review now gates every PR into main.
 
 ## Not done — needs you (outward-facing)
-- Set a real random `FPL_MCP_API_KEY` (local .env still has the placeholder).
+- Fill `.env`: LEAGUE_ID, ENTRY_ID, and a random `FPL_MCP_API_KEY`.
 - Uninstall the `chatgpt-codex-connector` GitHub App (GitHub settings).
-- Dependabot PR triage (#125, #115 merge; #137, #138 close; #141, #135 judge; #122 request changes).
+- Decide PR #122 (env-drift CI guardrail): request SHA-pinning changes or close.
+- Connect Claude Desktop/Code per docs/CLAUDE_DESKTOP.md.

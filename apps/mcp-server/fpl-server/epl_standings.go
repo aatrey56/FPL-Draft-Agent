@@ -45,7 +45,7 @@ type teamAccum struct {
 // buildEPLStandings computes the Premier League standings table
 // by iterating over all completed fixtures from GW 1 to current.
 func buildEPLStandings(cfg ServerConfig) (*EPLStandingsResult, error) {
-	teams, err := loadTeams(cfg.RawRoot)
+	teams, err := loadTeams(cfg.rawDir(""))
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func buildEPLStandings(cfg ServerConfig) (*EPLStandingsResult, error) {
 	}
 
 	for gw := 1; gw <= currentGW; gw++ {
-		fixtures, err := loadFixtureResults(cfg.RawRoot, gw)
+		fixtures, err := loadFixtureResults(cfg.rawDir(""), gw)
 		if err != nil {
 			// Missing GW data — skip gracefully
 			continue

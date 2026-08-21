@@ -68,7 +68,7 @@ func buildTransactionAnalysis(cfg ServerConfig, args TransactionAnalysisArgs) (T
 	}
 
 	// Load raw transactions.
-	txPath := filepath.Join(cfg.RawRoot, fmt.Sprintf("league/%d/transactions.json", args.LeagueID))
+	txPath := filepath.Join(cfg.rawDir(""), fmt.Sprintf("league/%d/transactions.json", args.LeagueID))
 	txRaw, err := os.ReadFile(txPath)
 	if err != nil {
 		return TransactionAnalysisOutput{}, fmt.Errorf("transactions not found for league %d: %w", args.LeagueID, err)
@@ -88,7 +88,7 @@ func buildTransactionAnalysis(cfg ServerConfig, args TransactionAnalysisArgs) (T
 	}
 
 	// Load league details for entry names.
-	detailsPath := filepath.Join(cfg.RawRoot, fmt.Sprintf("league/%d/details.json", args.LeagueID))
+	detailsPath := filepath.Join(cfg.rawDir(""), fmt.Sprintf("league/%d/details.json", args.LeagueID))
 	detailsRaw, err := os.ReadFile(detailsPath)
 	if err != nil {
 		return TransactionAnalysisOutput{}, err
@@ -103,7 +103,7 @@ func buildTransactionAnalysis(cfg ServerConfig, args TransactionAnalysisArgs) (T
 	}
 
 	// Load player metadata.
-	elements, teamShort, _, err := loadBootstrapData(cfg.RawRoot)
+	elements, teamShort, _, err := loadBootstrapData(cfg.rawDir(""))
 	if err != nil {
 		return TransactionAnalysisOutput{}, err
 	}

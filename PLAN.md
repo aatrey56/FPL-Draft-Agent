@@ -15,10 +15,13 @@ per section. Status: `[ ]` todo, `[~]` in progress, `[x]` done.
 - [x] Phase A.2 per-GW panel -> `player_gameweeks.parquet` (GAMEWEEK_INGEST_SPEC). 29747 rows, 38 GWs, 841 players (409 DGW + 409 blank rows correctly flagged); 6 tests pass.
 - [x] Eval harness + naive baseline (`backend.ml.eval`). One command backtests any signal vs the last-season-points baseline, per position (Spearman + top-N). Result: baseline Spearman 0.42-0.66; ICT beats it for DEF/MID; per-90 alone loses (minutes matter). Confirms the "define accurate = beat baseline at ranking" framing.
 
-## Phase 2 — Draft board (hero, target ~mid Aug)
-- [ ] Season projection model (PROJECTION_MODEL_SPEC), validated vs 25/26. Acceptance: beats the last-season-points baseline (Spearman) per position on the 2024-25 backtest.
-- [ ] `draft_board` + `draft_assistant` + `player_card` tools, wired to Claude Desktop. Acceptance: returns a tiered, roster-aware board for the configured league.
+## Phase 2 — Draft board (hero)  ✅ DONE (2026-08-20, PR #144/#146)
+- [x] Season projection model (PROJECTION_MODEL_SPEC), validated vs 25/26 + 24/25 holdouts. Honest outcome: ties the baseline for GKP/DEF/FWD (selection floor), genuine MID edge (points-calibrated ICT); FWD 24-25 miss documented in ISSUES.md.
+- [x] `draft_board` + `player_card` tools, wired to Claude Desktop (394-player tiered board; `draft_assistant` folded into Claude + draft_board). Draft happened mid-Aug with the board live.
 
 ## Phase 3 — Weekly co-pilot (season start onward)
-- [ ] Match xP model (MATCH_MODEL_SPEC). Acceptance: beats FPL `ep_next` (Spearman) on a 25/26 walk-forward, per position.
-- [ ] `my_week`, `waiver_plan`, `trade_check`, `league_pulse` tools.
+- [ ] Match xP model (MATCH_MODEL_SPEC). Acceptance: beats FPL `ep_next` (Spearman) on a 25/26 walk-forward, per position. **Start after GW1 completes (Mon 2026-08-24).**
+- [x] `waiver_plan` (roster-aware add/drop, stream-vs-upgrade labels, unprojected-player safety) — 2026-08-20/21.
+- [x] `my_week` v1 (heuristic start/sit + attention flags) — 2026-08-21; match model upgrades its scoring later.
+- [x] `trade_check` + `league_pulse` — 2026-08-21.
+- [x] Season-aware legacy tools + drop_radar + `.env` config (LEAGUE_ID/ENTRY_ID/API key).

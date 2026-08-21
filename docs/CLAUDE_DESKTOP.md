@@ -1,21 +1,35 @@
 # Connecting Claude Desktop (or Claude Code) to the FPL co-pilot
 
-The Go MCP server serves 30 tools over Streamable HTTP at `/mcp`, including the
-decision layer: `draft_board`, `player_card`, `waiver_plan`, `drop_radar`.
-Claude (on a Max plan) is the client — there is no in-app LLM.
+The Go MCP server serves 34 tools over Streamable HTTP at `/mcp`, including the
+decision layer: `draft_board`, `player_card`, `waiver_plan`, `my_week`,
+`trade_check`, `league_pulse`, `drop_radar`, `team_env`. Claude (on a Max
+plan) is the client — there is no in-app LLM.
+
+## 0. One-time setup: `.env` at the repo root
+
+```bash
+# from the repo root — generates a random API key and stores your ids
+printf 'LEAGUE_ID=%s\nENTRY_ID=%s\nFPL_MCP_API_KEY=%s\n' \
+  <your-league-id> <your-entry-id> "$(openssl rand -hex 16)" >> .env
+```
+
+`FPL_MCP_API_KEY` is not issued by anyone — it is a password you invent so
+only clients that know it can call your server. Both Go binaries and the
+Python CLIs read `.env` automatically (a real exported env var always wins).
+`.env` is gitignored; ids never go in tracked files.
 
 ## 1. Start the server
 
 ```bash
 cd apps/mcp-server
-FPL_MCP_API_KEY=<your-random-secret> go run ./fpl-server \
-  --raw-root ../../data/raw --derived-root ../../data/derived \
+go run ./fpl-server --raw-root ../../data/raw --derived-root ../../data/derived \
   --default-season 2026-27
 ```
 
-Path convention: the flat roots are the 2025-26 archive; the decision tools
-read season-nested paths (`data/raw/<season>/`, `data/derived/<season>/`) using
-`--default-season` unless a call passes `season` explicitly.
+Path convention: flat roots are the 2025-26 archive; every tool resolves
+season-nested paths (`data/raw/<season>/`, …) from `--default-season` unless a
+call passes `season` explicitly. To browse last season, run a second instance
+with `--default-season 2025-26`.
 
 ## 2. Connect a client
 
@@ -23,7 +37,7 @@ read season-nested paths (`data/raw/<season>/`, `data/derived/<season>/`) using
 
 ```bash
 claude mcp add fpl --transport http http://localhost:8080/mcp \
-  --header "X-API-Key: <your-random-secret>"
+  --header "X-API-Key: $(grep '^FPL_MCP_API_KEY=' .env | cut -d= -f2)"
 ```
 
 **Claude Desktop** (custom connector → local servers need a stdio bridge):
@@ -34,7 +48,7 @@ claude mcp add fpl --transport http http://localhost:8080/mcp \
     "fpl": {
       "command": "npx",
       "args": ["-y", "mcp-remote", "http://localhost:8080/mcp",
-               "--header", "X-API-Key:<your-random-secret>"]
+               "--header", "X-API-Key:<value from .env>"]
     }
   }
 }
@@ -42,19 +56,34 @@ claude mcp add fpl --transport http http://localhost:8080/mcp \
 
 ## 3. Keep the artifacts fresh (the weekly loop)
 
-The decision tools serve files the pipeline writes. Before waivers each week:
+The decision tools serve files the pipeline writes. Before waivers each week
+(ids come from `.env` — nothing to type):
 
 ```bash
 # fetch: game state, league, transactions + element-status snapshot
-cd apps/mcp-server && go run ./cmd/dev --league <LEAGUE_ID> --season 2026-27 \
-  --raw-root ../../data/raw --derived-root ../../data/derived --fast --refresh-now
+cd apps/mcp-server && go run ./cmd/dev --season 2026-27 \
+  --raw-root ../../data/raw --derived-root ../../data/derived --refresh-now
 
-# derive: ownership events + waiver plan (+ projections/history after ingests)
+# derive: ownership events, waiver plan, start/sit
 cd ../backend
-python -m backend.ml.ownership --league <LEAGUE_ID>
-python -m backend.ml.waiver    --league <LEAGUE_ID> --entry <ENTRY_ID>
+python -m backend.ml.ownership
+python -m backend.ml.waiver
+python -m backend.ml.myweek
 ```
 
-Then ask Claude things like *"run my waiver plan — who do I add and drop, and
-which of those are streams vs season upgrades?"* or *"player card for
-Maddison — should I worry?"*.
+After any ingest refresh also run `python -m backend.ml.serve_export`
+(player history for player_card).
+
+## 4. Ask real questions
+
+- *"Run my waiver plan — which adds are streams vs season upgrades? Anything
+  in unprojected_squad I should judge myself?"*
+- *"my_week — who starts, and what needs my attention before the deadline?"*
+- *"Player card for Maddison — no projection? Show me his history and search
+  the web for his current form before I decide."*
+- *"trade_check: I give X and Y, I get Z — worth it?"*
+- *"league_pulse for my league — who's hot on the wire?"* (pair with
+  `drop_radar`)
+
+The quantitative floor comes from the tools; have Claude layer live news,
+lineups, and manager context on top with web search at decision time.

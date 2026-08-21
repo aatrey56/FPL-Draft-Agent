@@ -4,14 +4,6 @@ Tracked defects found during the reshape, not yet fixed. Newest first.
 
 ## Pre-existing
 
-- **`render_game_status` crashes on out-of-range dates** — `apps/backend/backend/agent.py:1869`.
-  A property test (`test_agent_hypothesis.py::TestRenderGameStatusProperty::test_never_crashes`)
-  raises `OverflowError: date value out of range` on an extreme kickoff timestamp
-  (e.g. `0001-01-01T00:00:00Z`). Fails identically on `origin/main` — predates the
-  reshape. Fix: guard the date parse/format against year-underflow. Low priority
-  (only real FPL timestamps occur in practice), but the test is currently
-  deselected in CI runs until fixed.
-
 - **Eval predictors limited to season-aggregate columns** — `apps/backend/backend/ml/eval.py`.
   `expected_goal_involvements` lives only in the per-GW panel, not
   `player_seasons.parquet`, so xGI-based predictors can't be scored by the season
@@ -32,3 +24,13 @@ Tracked defects found during the reshape, not yet fixed. Newest first.
   #16 for 2026-27. Multi-year weighted history (or GW-panel form context)
   would moderate this; meanwhile `player_card` should always show multi-season
   history next to the projection so a human can catch buy-low cases.
+
+- **Players under `PRIOR_MINUTES_FLOOR` (500 min) in 2025-26 have no
+  projection at all** — the Maddison case: 34 injury minutes in 25/26, six
+  strong prior seasons, absent from the board. Serving-side safety shipped
+  2026-08-21 (waiver_plan never auto-drops unprojected squad players and lists
+  them in `unprojected_squad`; player_card falls back to history + live news;
+  trade_check warns instead of valuing them at zero). The projection-side fix —
+  project from the last healthy season with a decay + `injury_return` risk
+  flag — is open; in practice the match model's early-minutes signal will
+  resolve these players within a few GWs.

@@ -10,6 +10,7 @@ package main
 //	player_card  <- projections + data/derived/ml/player_history.json
 //	             + data/raw/<season>/bootstrap/bootstrap-static.json (live news)
 //	waiver_plan  <- data/derived/<season>/ml/waiver_plan.json
+//	my_week      <- data/derived/<season>/ml/my_week.json
 //	drop_radar   <- data/derived/<season>/ml/ownership_events.json
 //
 // Season-aware paths use ServerConfig.DefaultSeason unless the call passes an
@@ -51,6 +52,27 @@ func (cfg ServerConfig) season(override string) string {
 		return override
 	}
 	return cfg.DefaultSeason
+}
+
+// ArchiveSeason is the season stored at the flat roots (data/raw, data/derived)
+// from before the season-nested layout existed. It never gets a season segment.
+const ArchiveSeason = "2025-26"
+
+// rawDir resolves the raw-data directory for a season: <root>/<season> for
+// current seasons, the flat root for the 2025-26 archive (or no season at all).
+func (cfg ServerConfig) rawDir(override string) string {
+	if s := cfg.season(override); s != "" && s != ArchiveSeason {
+		return filepath.Join(cfg.RawRoot, s)
+	}
+	return cfg.RawRoot
+}
+
+// derivedDir is rawDir for the derived root.
+func (cfg ServerConfig) derivedDir(override string) string {
+	if s := cfg.season(override); s != "" && s != ArchiveSeason {
+		return filepath.Join(cfg.DerivedRoot, s)
+	}
+	return cfg.DerivedRoot
 }
 
 func readJSONFile(path string, v any) error {
@@ -141,47 +163,82 @@ func playerCardHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 		if err != nil {
 			return toolError(err), nil, nil
 		}
-		var match *projectionRow
-		for i := range rows {
-			if strings.Contains(strings.ToLower(rows[i].WebName), needle) {
-				if match != nil {
-					return toolError(fmt.Errorf("ambiguous name %q (matches %s and %s) — be more specific",
-						args.Name, match.WebName, rows[i].WebName)), nil, nil
-				}
-				match = &rows[i]
-			}
+		match, err := resolveProjection(rows, args.Name)
+		if err != nil {
+			return toolError(err), nil, nil
 		}
-		if match == nil {
-			return toolError(fmt.Errorf("no projected player matches %q (promoted/new players have no projection)", args.Name)), nil, nil
-		}
-
-		// Multi-season history — the reversion safeguard: the projection must
-		// never be shown without the player's history next to it.
+		// Multi-season history — the reversion safeguard: no card is served
+		// without the player's history next to it.
 		history := map[string][]historyRow{}
 		historyPath := filepath.Join(cfg.DerivedRoot, "ml/player_history.json")
 		if err := readJSONFile(historyPath, &history); err != nil {
 			return toolError(err), nil, nil
 		}
-		seasons := history[fmt.Sprintf("%d", match.Code)]
 
-		// Live availability from the season bootstrap (best effort).
-		news := map[string]any{}
-		bootstrapPath := filepath.Join(cfg.RawRoot, cfg.season(args.Season), "bootstrap/bootstrap-static.json")
-		var bootstrap struct {
-			Elements []struct {
-				Code                     int    `json:"code"`
-				Status                   string `json:"status"`
-				News                     string `json:"news"`
-				ChanceOfPlayingNextRound *int   `json:"chance_of_playing_next_round"`
-			} `json:"elements"`
+		// Season bootstrap: live availability, and the identity fallback for
+		// players the model refused to project (best effort for the former).
+		type bootstrapElement struct {
+			Code                     int    `json:"code"`
+			WebName                  string `json:"web_name"`
+			Status                   string `json:"status"`
+			News                     string `json:"news"`
+			ChanceOfPlayingNextRound *int   `json:"chance_of_playing_next_round"`
 		}
-		if err := readJSONFile(bootstrapPath, &bootstrap); err == nil {
+		var bootstrap struct {
+			Elements []bootstrapElement `json:"elements"`
+		}
+		bootstrapPath := filepath.Join(cfg.rawDir(args.Season), "bootstrap/bootstrap-static.json")
+		bootstrapErr := readJSONFile(bootstrapPath, &bootstrap)
+
+		availability := func(el bootstrapElement) map[string]any {
+			return map[string]any{
+				"status": el.Status, "news": el.News,
+				"chance_of_playing_next_round": el.ChanceOfPlayingNextRound,
+			}
+		}
+
+		if match == nil {
+			// The Maddison case: under the minutes floor last season (long
+			// injury), promoted, or newly signed — the model refuses to guess,
+			// but the card must still show who they were and how they are now.
+			var el *bootstrapElement
+			for i := range bootstrap.Elements {
+				if strings.ToLower(bootstrap.Elements[i].WebName) == needle {
+					el = &bootstrap.Elements[i]
+					break
+				}
+			}
+			if el == nil {
+				for i := range bootstrap.Elements {
+					if strings.Contains(strings.ToLower(bootstrap.Elements[i].WebName), needle) {
+						if el != nil {
+							return toolError(fmt.Errorf("ambiguous name %q (matches %s and %s) — be more specific",
+								args.Name, el.WebName, bootstrap.Elements[i].WebName)), nil, nil
+						}
+						el = &bootstrap.Elements[i]
+					}
+				}
+			}
+			if el == nil {
+				if bootstrapErr != nil {
+					return toolError(fmt.Errorf("no projected player matches %q (and no season bootstrap to fall back to: %v)", args.Name, bootstrapErr)), nil, nil
+				}
+				return toolError(fmt.Errorf("no player matches %q in projections or the current season", args.Name)), nil, nil
+			}
+			return toolMarshal(map[string]any{
+				"projection":     nil,
+				"web_name":       el.WebName,
+				"season_history": history[fmt.Sprintf("%d", el.Code)],
+				"availability":   availability(*el),
+				"note":           "No projection: under 500 league minutes in 2025-26 (long injury), promoted, or new to the league — the model refuses to guess rather than assume zero. Judge from season_history and availability/news; treat early-season minutes as the real signal.",
+			})
+		}
+
+		news := map[string]any{}
+		if bootstrapErr == nil {
 			for _, el := range bootstrap.Elements {
 				if el.Code == match.Code {
-					news = map[string]any{
-						"status": el.Status, "news": el.News,
-						"chance_of_playing_next_round": el.ChanceOfPlayingNextRound,
-					}
+					news = availability(el)
 					break
 				}
 			}
@@ -189,7 +246,7 @@ func playerCardHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 
 		return toolMarshal(map[string]any{
 			"projection":     match,
-			"season_history": seasons,
+			"season_history": history[fmt.Sprintf("%d", match.Code)],
 			"availability":   news,
 			"note":           "Judge the projection against season_history: a one-season dip (injury) or spike may revert — the model has no multi-year reversion (see ISSUES.md).",
 		})
@@ -206,13 +263,33 @@ type WaiverPlanArgs struct {
 
 func waiverPlanHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, WaiverPlanArgs) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, args WaiverPlanArgs) (*mcp.CallToolResult, any, error) {
-		path := filepath.Join(cfg.DerivedRoot, cfg.season(args.Season), "ml/waiver_plan.json")
+		path := filepath.Join(cfg.derivedDir(args.Season), "ml/waiver_plan.json")
 		var plan map[string]any
 		if err := readJSONFile(path, &plan); err != nil {
 			return toolError(err), nil, nil
 		}
-		plan["note"] = "labels: upgrade = better now and all season; stream = next-3-GW help only (plan to re-drop); hold = tough fixtures now but better rest-of-season. Regenerate with: python -m backend.ml.waiver"
+		plan["note"] = "labels: upgrade = better now and all season; stream = next-3-GW help only (plan to re-drop); hold = tough fixtures now but better rest-of-season. unprojected_squad = players the model cannot value (never auto-dropped — check their player_card). Regenerate with: python -m backend.ml.waiver"
 		return toolMarshal(plan)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// my_week
+// ---------------------------------------------------------------------------
+
+type MyWeekArgs struct {
+	Season string `json:"season,omitempty" jsonschema:"Season (default: server default season)"`
+}
+
+func myWeekHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, MyWeekArgs) (*mcp.CallToolResult, any, error) {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args MyWeekArgs) (*mcp.CallToolResult, any, error) {
+		path := filepath.Join(cfg.derivedDir(args.Season), "ml/my_week.json")
+		var week map[string]any
+		if err := readJSONFile(path, &week); err != nil {
+			return toolError(err), nil, nil
+		}
+		week["note"] = "gw_xp = projection/38 × fixture multiplier × availability (heuristic until the match xP model lands). attention = players needing a human call before the deadline; unprojected players are never scored as zero-value certainty. Regenerate with: python -m backend.ml.myweek"
+		return toolMarshal(week)
 	}
 }
 
@@ -227,7 +304,7 @@ type DropRadarArgs struct {
 
 func dropRadarHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, DropRadarArgs) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, args DropRadarArgs) (*mcp.CallToolResult, any, error) {
-		path := filepath.Join(cfg.DerivedRoot, cfg.season(args.Season), "ml/ownership_events.json")
+		path := filepath.Join(cfg.derivedDir(args.Season), "ml/ownership_events.json")
 		var events []map[string]any
 		if err := readJSONFile(path, &events); err != nil {
 			return toolError(err), nil, nil

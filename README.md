@@ -1,255 +1,120 @@
-# FPL Draft Agent
+# FPL Draft Co-Pilot
 
-An end-to-end **Fantasy Premier League Draft** toolkit.  Ask any question about your league in natural language — the agent calls the right data tools and returns a clear, structured answer.
+A **draft + weekly-manager co-pilot** for Fantasy Premier League Draft.
+A Go MCP server exposes 34 tools over locally-cached FPL Draft API data; a
+Python ML pipeline turns seven seasons of history into projections and
+weekly recommendations; **Claude (Desktop or Code) is the client** — you ask
+questions in natural language, Claude calls the decision tools and layers
+live web research on top.
 
-The stack is:
-- **Go MCP server** — exposes 30 tools backed by locally-cached FPL Draft API data
-- **Python backend** — chat API, scheduled reports, and a WebSocket endpoint
-- **Web UI** — chat interface with tool-call visibility and one-click report generation
+```
+FPL API → Go fetcher → data/<season>/ → Python ML (projections, waivers,
+start/sit) → Go MCP server (:8080, 34 tools) → Claude Desktop / Claude Code
+```
 
----
+## The decision layer
 
-## What it does
-
-### Chat
-
-Open the UI and ask questions in plain English:
-
-- *"Show my waiver recommendations for GW 28"*
-- *"What's our league table?"*
-- *"How has Salah done each gameweek this season?"*
-- *"Head to head record between Alpha FC and Beta United?"*
-- *"Show me my season stats"*
-- *"Who's had the best fixture run lately?"*
-- *"What did people add and drop this week across the league?"*
-
-The agent routes simple questions directly using a keyword table, and falls back to an LLM (GPT-4.1 by default) for complex multi-step queries.
-
-### Scheduled reports
-
-The scheduler generates Markdown + JSON reports on a configurable cron:
-
-| Schedule | Reports generated |
+| Tool | Answers |
 |---|---|
-| Tuesday 11:00 | League summary, waiver recommendations, trades summary |
-| Friday 23:00 | Waiver recommendations, starting XI, waiver FA summary |
+| `draft_board` | Who do I draft? Tiered, VOR-ranked projections per position |
+| `player_card` | Who is this player? Projection + 7-season history + live news (falls back to history for unprojected players) |
+| `waiver_plan` | Who do I add/drop? Roster-aware, labeled `upgrade` / `stream` / `hold` over two horizons |
+| `my_week` | Who starts this GW? Best XI, bench, and attention flags (injuries, blanks, unknowns) |
+| `trade_check` | Is this trade good? Give vs get on season value + starter scarcity (VOR) |
+| `league_pulse` | What's happening? Standings, named transactions, game clock |
+| `drop_radar` | Who hit the wire? Ownership diffs from element-status snapshots |
+| `team_env` | Shootout or stalemate? Per-team points/xG generated and conceded, by position and venue |
 
-Reports are saved to `reports/gw_<N>/` and served at `/reports` in the browser.
+Plus the 26 data-layer tools (standings, matchups, fixtures, transactions,
+per-GW player stats, …) — all season-aware: flat `data/` roots are the
+2025-26 archive, current seasons nest under `data/{raw,derived}/<season>/`.
 
-### MCP Tools (22 total)
+## The models (honest by design)
 
-| Group | Tools |
-|---|---|
-| League & standings | `league_summary`, `standings`, `league_entries` |
-| Matchups & performance | `matchup_breakdown`, `lineup_efficiency`, `manager_schedule`, `manager_streak`, `manager_season` |
-| Transactions & waivers | `transactions`, `waiver_targets`, `waiver_recommendations`, `ownership_scarcity`, `transaction_analysis` |
-| Players & fixtures | `fixtures`, `fixture_difficulty`, `player_form`, `player_lookup`, `player_gw_stats` |
-| Manager utilities | `manager_lookup`, `current_roster`, `draft_picks`, `head_to_head` |
+- **Season projection** (`backend/ml/projection.py`): closed-form ridge +
+  persistence candidates per position, chosen by walk-forward validation with
+  the naive baseline *in the candidate zoo* — where nothing beats
+  last-season-points, the model honestly *is* last-season-points. Measured
+  outcome: ties the baseline for GKP/DEF/FWD, real MID edge via
+  points-calibrated ICT. Deterministic, no deep learning, drivers explainable.
+- **Match xP model** (`backend/ml/MATCH_MODEL_SPEC.md`): in progress — trained
+  on the 29,747-row per-GW panel, must beat FPL's own `ep_next` to ship.
+  Replaces the current per-GW heuristic (projection/38 × fixture multiplier ×
+  availability) inside `waiver_plan` / `my_week`.
+- Players the model cannot value (long injury last season, promoted, new
+  signings) are **surfaced for human judgment, never scored as zero** — the
+  tools refuse to guess rather than quietly recommend dropping a returning star.
 
----
+## Quickstart
 
-## How to run it
-
-### Prerequisites
-
-- **Go 1.23+** — `go version`
-- **Python 3.11+** — `python3 --version`
-- An **OpenAI API key** (optional; required for LLM-powered answers)
-- Your **FPL Draft league ID** (visible in the URL on draft.premierleague.com)
-
-### 1. Clone and configure
-
-```bash
-git clone https://github.com/aatrey56/FPL-Draft-Agent.git
-cd FPL-Draft-Agent
-cp .env.example .env
-```
-
-Edit `.env`:
-
-```dotenv
-LEAGUE_ID=999999          # replace with your league ID
-ENTRY_ID=888888          # replace with your entry (team) ID
-OPENAI_API_KEY=sk-...    # required for LLM answers
-FPL_MCP_API_KEY=secret   # any strong random string
-```
-
-See `.env.example` for all options with explanations.
-
-### 2. Fetch FPL data (Go)
-
-This pulls data from the FPL Draft API into `data/raw/` and `data/derived/`.
+Prerequisites: Go 1.25+, Python 3.11+.
 
 ```bash
-go run ./apps/mcp-server/cmd/dev --league 999999 --gw-max 0
+git clone https://github.com/aatrey56/FPL-Draft-Agent.git && cd FPL-Draft-Agent
+pip install -r apps/backend/requirements.txt -r apps/backend/requirements-ml.txt
+
+# one-time config — ids from draft.premierleague.com URLs, key is any random string
+printf 'LEAGUE_ID=<yours>\nENTRY_ID=<yours>\nFPL_MCP_API_KEY=%s\n' \
+  "$(openssl rand -hex 16)" >> .env
 ```
 
-Replace `999999` with your league ID.  This takes ~30 seconds on a fast connection.
-
-### 3. Start the MCP server (Go)
+Weekly loop (both Go binaries and the Python CLIs read `.env` automatically):
 
 ```bash
-export FPL_MCP_API_KEY="secret"
-go run ./apps/mcp-server/fpl-server --addr :8080 --path /mcp
+# 1. fetch: game state, league, transactions, element-status snapshot
+cd apps/mcp-server && go run ./cmd/dev --season 2026-27 \
+  --raw-root ../../data/raw --derived-root ../../data/derived --refresh-now
+
+# 2. derive: ownership events, waiver plan, start/sit
+cd ../backend
+python -m backend.ml.ownership && python -m backend.ml.waiver && python -m backend.ml.myweek
+
+# 3. serve
+cd ../mcp-server && go run ./fpl-server \
+  --raw-root ../../data/raw --derived-root ../../data/derived --default-season 2026-27
 ```
 
-The server starts on port 8080 and exposes all 22 tools at `/mcp`.
-
-### 4. Start the Python backend + UI
+Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r apps/backend/requirements.txt
-
-export FPL_MCP_API_KEY="secret"
-export OPENAI_API_KEY="sk-..."   # optional
-
-PYTHONPATH=apps/backend uvicorn backend.server:app --reload --port 8000
+claude mcp add fpl --transport http http://localhost:8080/mcp \
+  --header "X-API-Key: $(grep '^FPL_MCP_API_KEY=' .env | cut -d= -f2)"
 ```
 
-Open in your browser:
-- **Chat UI:** http://localhost:8000/ui
-- **Reports:** http://localhost:8000/reports
-
-> **Tip:** Set `START_GO_SERVER=false` in `.env` if you manage the Go server separately. When `START_GO_SERVER=true` (default), the Python backend starts the Go server automatically.
-
-### Using `.env` (recommended for development)
-
-Instead of setting environment variables manually, put everything in `.env` at the repo root:
-
-```dotenv
-LEAGUE_ID=999999
-ENTRY_ID=888888
-FPL_MCP_API_KEY=secret
-OPENAI_API_KEY=sk-...
-START_GO_SERVER=true
-CACHE_REFRESH_ON_START=true
-```
-
-Then just run:
-
-```bash
-PYTHONPATH=apps/backend uvicorn backend.server:app --reload --port 8000
-```
-
-The backend loads `.env` automatically on startup.
-
----
-
-## CLI
-
-Generate reports from the command line without the UI:
-
-```bash
-# Waiver recommendations
-PYTHONPATH=apps/backend python -m backend.cli --type waivers --gw 0
-
-# League summary
-PYTHONPATH=apps/backend python -m backend.cli --type league_summary --gw 0
-
-# Starting XI
-PYTHONPATH=apps/backend python -m backend.cli --type starting_xi --gw 0
-
-# Trades/transactions summary
-PYTHONPATH=apps/backend python -m backend.cli --type trades --gw 0
-```
-
-`--gw 0` auto-resolves to the current gameweek (waiver/starting XI use GW+1).
-
----
-
-## Scheduler (automated reports)
-
-```bash
-PYTHONPATH=apps/backend python -m backend.scheduler
-```
-
-Generates reports on a Tuesday/Friday cron.  Timezone defaults to `America/New_York`; override with `REPORTS_TZ=Europe/London` in `.env`.
-
----
+> *"Run my waiver plan — which adds are streams vs season upgrades?"* ·
+> *"my_week: who starts and what needs my attention?"* ·
+> *"trade_check: I give X, I get Y — worth it?"*
 
 ## Project layout
 
 ```
 apps/
-  mcp-server/           Go MCP server
-    fpl-server/         Tool handlers + HTTP server
-    cmd/dev/            FPL data fetcher
-  backend/              Python API, agent, scheduler, reports
-    backend/            Package source
-    tests/              pytest test suite (51 tests)
-  web/                  Web UI (chat + reports browser)
-data/                   Raw/derived FPL data (git-ignored)
-reports/                Generated GW reports (git-ignored)
-scripts/
-  preflight.sh          CI validation (go vet, go test, ruff, pytest)
-.env.example            Annotated environment variable reference
+  mcp-server/            Go module
+    fpl-server/          34 MCP tool handlers + HTTP server (X-API-Key auth)
+    cmd/dev/             FPL data fetcher (the only live-API component)
+    internal/            fetch, store, ledger, points, summary, config
+  backend/               Python package
+    backend/ml/          ingestion → parquet, projection model, waiver_plan,
+                         my_week, drop-radar, specs (treat *_SPEC.md as contracts)
+    tests/               pytest suite (300 tests, no network)
+data/                    Raw + derived FPL data (gitignored; flat = 25/26 archive)
+docs/                    Setup + design docs
+PLAN.md / STATE.md / ISSUES.md   Living roadmap, checkpoint, known issues
 ```
 
----
+## CI
 
-## CI checks
+Required checks on every PR to `main` (strict, 1 review): Go
+(vet/test/gofmt), Python 3.11 + 3.12 (ruff + pytest), gitleaks secret scan,
+artifacts-guard, plus an automated Claude code review. Run locally:
+`bash scripts/preflight.sh`.
 
-| Check | What runs |
-|---|---|
-| Go | `go vet ./...`, `go test ./...`, `gofmt` diff check |
-| Python | `py_compile` on all source files, `ruff check`, `pytest` |
+Configuration reference: `.env.example` (every variable annotated). League
+and entry ids live in `.env` only — never in tracked files.
 
-Run locally:
+## Legacy
 
-```bash
-bash scripts/preflight.sh
-```
-
----
-
-## Configuration reference
-
-Copy `.env.example` to `.env` — every variable has a comment explaining what it controls and how to find its value.  Key variables:
-
-| Variable | Default | Description |
-|---|---|---|
-| `LEAGUE_ID` | `999999` | Your FPL Draft league ID |
-| `ENTRY_ID` | `888888` | Your team (entry) ID |
-| `FPL_MCP_API_KEY` | *(none)* | Shared secret for the MCP server |
-| `OPENAI_API_KEY` | *(none)* | OpenAI key for LLM-powered answers |
-| `OPENAI_MODEL` | `gpt-4.1` | OpenAI model to use |
-| `START_GO_SERVER` | `true` | Auto-start Go server from Python backend |
-| `CACHE_REFRESH_ON_START` | `true` | Refresh FPL data on backend startup |
-| `REPORTS_TZ` | `America/New_York` | Scheduler timezone |
-
----
-
-## Adding screenshots or a demo GIF
-
-To show the chat UI and reports in action, follow these steps:
-
-1. **Take screenshots** of:
-   - The chat UI at `http://localhost:8000/ui` with a sample question and answer
-   - The reports browser at `http://localhost:8000/reports` showing generated reports
-   - A sample generated report (e.g. `reports/gw_28/waiver_recommendations.md`)
-
-2. **Record a demo GIF** using a tool like [Kap](https://getkap.co/) (macOS), [ScreenToGif](https://www.screentogif.com/) (Windows), or [peek](https://github.com/phw/peek) (Linux):
-   - Show: opening the UI → typing a question → seeing the answer + tool trace → clicking a report
-
-3. **Add to the repo:**
-   ```
-   docs/
-     screenshots/
-       chat-ui.png
-       reports-browser.png
-     demo.gif
-   ```
-
-4. **Embed in this README** below this section:
-
-   ```markdown
-   ## Demo
-
-   ![Chat UI showing a waiver question with tool trace](docs/screenshots/chat-ui.png)
-
-   ![Demo GIF](docs/demo.gif)
-   ```
-
-> Tip: keep GIFs under 10 MB; use [ezgif.com](https://ezgif.com/optimize) to optimise if needed.  For video, consider linking to a YouTube/Loom recording instead.
+`apps/backend`'s FastAPI chat server, OpenAI agent, RAG index, and
+APScheduler (`server.py`, `agent.py`, `llm.py`, `rag.py`, `scheduler.py`)
+are the pre-MCP-client stack: kept compiling and tested, deprecated, not
+developed. Claude over MCP replaced them.
