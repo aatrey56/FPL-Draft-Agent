@@ -73,21 +73,19 @@ uv run python -m backend.ml.projection --project
 uv run python -m backend.ml.serve_export
 ```
 
-Weekly loop (both Go binaries and the Python CLIs read `.env` automatically):
+Then turn on the autopilot (macOS) — after this, no routine commands at all:
 
 ```bash
-# 1. fetch: game state, league, transactions, element-status snapshot
-cd apps/mcp-server && go run ./cmd/dev --season 2026-27 \
-  --raw-root ../../data/raw --derived-root ../../data/derived --refresh-now
-
-# 2. derive: ownership events, waiver plan, start/sit
-cd ../backend
-uv run python -m backend.ml.ownership && uv run python -m backend.ml.waiver && uv run python -m backend.ml.myweek
-
-# 3. serve
-cd ../mcp-server && go run ./fpl-server \
-  --raw-root ../../data/raw --derived-root ../../data/derived --default-season 2026-27
+make autopilot   # always-on server + data/artifact refresh every 15 min (launchd)
+make update      # after a merge: pull latest code + restart the server
+make stop / make start   # pause / resume without uninstalling
+make tui         # live matchup dashboard in the terminal on game days
+make autopilot-off
 ```
+
+Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
+derive) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
+Non-Mac or cron fans: schedule `scripts/autorefresh.sh` (crontab example inline).
 
 Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):
 

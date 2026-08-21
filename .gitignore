@@ -20,3 +20,5 @@ apps/mcp-server/fpldraft-mcp-server
 
 # compiled Go binaries (never commit build output)
 apps/mcp-server/fpl-server/fpl-server
+.autorefresh.lock/
+.autorefresh.lock/

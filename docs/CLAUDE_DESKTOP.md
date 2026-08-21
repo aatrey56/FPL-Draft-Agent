@@ -24,15 +24,15 @@ Python CLIs read `.env` automatically (a real exported env var always wins).
 ## 1. Start the server
 
 ```bash
-cd apps/mcp-server
-go run ./fpl-server --raw-root ../../data/raw --derived-root ../../data/derived \
-  --default-season 2026-27
+make serve
 ```
 
+(Restart it — Ctrl-C, `make serve` — after every `git pull`: `go run` compiles
+at launch, so a running server never picks up new code.)
+
 Path convention: flat roots are the 2025-26 archive; every tool resolves
-season-nested paths (`data/raw/<season>/`, …) from `--default-season` unless a
-call passes `season` explicitly. To browse last season, run a second instance
-with `--default-season 2025-26`.
+season-nested paths from `--default-season` unless a call passes `season`.
+To browse last season, run a second instance with `--default-season 2025-26`.
 
 ## 2. Connect a client
 
@@ -63,19 +63,16 @@ The decision tools serve files the pipeline writes. Before waivers each week
 (ids come from `.env` — nothing to type):
 
 ```bash
-# fetch: game state, league, transactions + element-status snapshot
-cd apps/mcp-server && go run ./cmd/dev --season 2026-27 \
-  --raw-root ../../data/raw --derived-root ../../data/derived --refresh-now
-
-# derive: ownership events, waiver plan, start/sit
-cd ../backend
-uv run python -m backend.ml.ownership
-uv run python -m backend.ml.waiver
-uv run python -m backend.ml.myweek
+make weekly     # fetch + ownership + waiver + my_week
 ```
 
-After any ingest refresh also run `uv run python -m backend.ml.serve_export`
-(player history for player_card).
+During matches, keep `gw_live` fresh in a second terminal:
+
+```bash
+make matchday   # full fetch every 5 minutes; Ctrl-C when the day's games end
+```
+
+Automate weekly with cron: see the crontab example in scripts/weekly.sh.
 
 ## 3b. Fresh machine? Bootstrap the ML artifacts once
 

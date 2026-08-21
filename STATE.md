@@ -105,3 +105,9 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
   player_lookup, player_form, fixtures, fixture_difficulty (team_env + the
   match model cover fixture context). Builders kept and tested; handlers and
   dead helpers removed.
+- Autopilot (macOS launchd): make autopilot installs always-on server +
+  15-min fetch/derive agent (logs in ~/.fplcopilot/); make update = pull +
+  server restart; make autopilot-off removes.
+- Matchday TUI (cmd/tui, bubbletea): live H2H dashboard over local snapshots
+  — my matchup default, arrows cycle all matchups, r = fetch now, --once for
+  CI-safe single-frame render. make tui.
