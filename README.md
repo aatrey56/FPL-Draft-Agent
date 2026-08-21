@@ -78,12 +78,13 @@ Then turn on the autopilot (macOS) — after this, no routine commands at all:
 ```bash
 make autopilot   # always-on server + data/artifact refresh every 15 min (launchd)
 make update      # after a merge: pull latest code + restart the server
+make stop / make start   # pause / resume without uninstalling
 make autopilot-off
 ```
 
 Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
 derive) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
-Non-Mac or cron fans: `scripts/weekly.sh` has a crontab example inline.
+Non-Mac or cron fans: schedule `scripts/autorefresh.sh` (crontab example inline).
 
 Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):
 

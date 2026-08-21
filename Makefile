@@ -18,9 +18,9 @@ derive:
 ## weekly: the whole weekly loop (fetch + derive)
 weekly: fetch derive
 
-## matchday: refresh loop while games are on (Ctrl-C to stop; INTERVAL=seconds)
+## matchday: manual 5-min refresh loop (only needed if autopilot is off)
 matchday:
-	bash scripts/matchday.sh
+	while true; do $(MAKE) fetch; date; sleep 300; done
 
 ## preflight: full local CI (Go vet/test/fmt + uv sync/ruff/pytest)
 preflight:
@@ -42,3 +42,11 @@ restart-server:
 update:
 	git pull --ff-only
 	-launchctl kickstart -k gui/$$(id -u)/com.fplcopilot.server
+
+## stop / start: pause or resume the autopilot agents without uninstalling
+stop:
+	-launchctl bootout gui/$$(id -u)/com.fplcopilot.server
+	-launchctl bootout gui/$$(id -u)/com.fplcopilot.refresh
+start:
+	launchctl bootstrap gui/$$(id -u) $$HOME/Library/LaunchAgents/com.fplcopilot.server.plist
+	launchctl bootstrap gui/$$(id -u) $$HOME/Library/LaunchAgents/com.fplcopilot.refresh.plist
