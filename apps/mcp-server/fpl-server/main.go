@@ -486,6 +486,11 @@ func main() {
 	}, teamEnvHandler(cfg))
 
 	addTool(server, &registry, &mcp.Tool{
+		Name:        "gw_live",
+		Description: "Live gameweek matchup tracker: my XI vs my H2H opponent with in-play points per player, bench points, and who has played (refresh the fetcher during matches)",
+	}, gwLiveHandler(cfg))
+
+	addTool(server, &registry, &mcp.Tool{
 		Name:        "league_pulse",
 		Description: "League state in one call: standings, recent transactions (named), and the game clock (current/next GW, waivers status)",
 	}, leaguePulseHandler(cfg))
