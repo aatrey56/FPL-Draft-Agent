@@ -25,3 +25,20 @@ matchday:
 ## preflight: full local CI (Go vet/test/fmt + uv sync/ruff/pytest)
 preflight:
 	bash scripts/preflight.sh
+
+## autopilot: install the macOS background agents (always-on server + 15-min refresh)
+autopilot:
+	bash scripts/install-autopilot.sh
+
+## autopilot-off: remove the background agents
+autopilot-off:
+	bash scripts/uninstall-autopilot.sh
+
+## restart-server: reload the autopilot server (after code changes)
+restart-server:
+	launchctl kickstart -k gui/$$(id -u)/com.fplcopilot.server
+
+## update: pull latest code and restart the autopilot server
+update:
+	git pull --ff-only
+	-launchctl kickstart -k gui/$$(id -u)/com.fplcopilot.server

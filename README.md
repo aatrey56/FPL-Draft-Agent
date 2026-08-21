@@ -73,19 +73,17 @@ uv run python -m backend.ml.projection --project
 uv run python -m backend.ml.serve_export
 ```
 
-Day to day (all commands read `.env` automatically; see the Makefile):
+Then turn on the autopilot (macOS) — after this, no routine commands at all:
 
 ```bash
-make weekly     # the weekly loop: fetch fresh data + rebuild waiver/my_week artifacts
-make serve      # run the MCP server (restart after every git pull)
-make matchday   # refresh loop while games are on, so gw_live stays live
+make autopilot   # always-on server + data/artifact refresh every 15 min (launchd)
+make update      # after a merge: pull latest code + restart the server
+make autopilot-off
 ```
 
-Automate the weekly loop with cron (Mon+Tue mornings, after GW lockdown):
-
-```
-0 7 * * 1,2 cd $HOME/path/to/fpl-draft-mcp && bash scripts/weekly.sh >> $HOME/.fpl-weekly.log 2>&1
-```
+Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
+derive) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
+Non-Mac or cron fans: `scripts/weekly.sh` has a crontab example inline.
 
 Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):
 
