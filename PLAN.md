@@ -25,3 +25,5 @@ per section. Status: `[ ]` todo, `[~]` in progress, `[x]` done.
 - [x] `my_week` v1 (heuristic start/sit + attention flags) — 2026-08-21; match model upgrades its scoring later.
 - [x] `trade_check` + `league_pulse` — 2026-08-21.
 - [x] Season-aware legacy tools + drop_radar + `.env` config (LEAGUE_ID/ENTRY_ID/API key).
+- [x] gw_live (live H2H tracker) + matchday TUI (bubbletea) + tool surface consolidated 34→14 — 2026-08-21/22.
+- [x] Ops autopilot (launchd server + 15-min refresh) + deadline intelligence (per-GW calendar, TUI countdown, macOS notifications) — 2026-08-22.

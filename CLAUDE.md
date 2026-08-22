@@ -387,6 +387,7 @@ fpl-draft-mcp/
 │   ├── mcp-server/          # Go MCP server (port 8080)
 │   │   ├── cmd/
 │   │   │   ├── dev/                     # the ONLY component that hits the live FPL API
+│   │   │   ├── tui/                     # live matchday dashboard (bubbletea; local snapshots only)
 │   │   │   └── schema-inventory/        # dev utility: dumps API schema registry
 │   │   └── fpl-server/
 │   │       ├── main.go                  # Entry point, registers all 14 tools, auth, /mcp
@@ -396,6 +397,7 @@ fpl-draft-mcp/
 │   │       ├── gw_report.go             # Post-GW review (matchup breakdown + lineup efficiency)
 │   │       ├── manager_card.go          # One manager: record/form/schedule/H2H/draft (composes builders below)
 │   │       ├── epl.go                   # Real PL standings + fixture results
+│   │       ├── deadlines.go             # Per-GW trades/waivers/lock calendar (kickoff-anchored, tz-correct)
 │   │       ├── data_common.go           # Shared bootstrap parsing + game meta
 │   │       ├── manager_*.go / head_to_head.go / draft_picks.go   # Builders composed by manager_card
 │   │       ├── player_gw_stats.go       # Per-GW player stats tool
@@ -421,6 +423,8 @@ fpl-draft-mcp/
 │   └── derived/             # same convention: flat = 2025-26, <season>/ = new seasons
 │       ├── summary/         # league/standings/transactions summaries
 │       └── reports/         # GW markdown reports
+├── Makefile                 # all operations (serve/fetch/derive/weekly/tui/autopilot/update)
+├── scripts/                 # autorefresh + autopilot install/uninstall + preflight + notifications
 ├── CLAUDE.md
 └── README.md
 ```

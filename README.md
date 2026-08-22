@@ -21,10 +21,17 @@ start/sit) → Go MCP server (:8080, 14 tools) → Claude Desktop / Claude Code
 | `waiver_plan` | Who do I add/drop? Roster-aware, labeled `upgrade` / `stream` / `hold` over two horizons |
 | `my_week` | Who starts this GW? Best XI, bench, and attention flags (injuries, blanks, unknowns) |
 | `trade_check` | Is this trade good? Give vs get on season value + starter scarcity (VOR) |
-| `league_pulse` | What's happening? Standings, named transactions, game clock |
+| `league_pulse` | What's happening? Standings, named transactions, game clock + this week's deadlines (trades/waivers/lineup lock, in EST) |
 | `drop_radar` | Who hit the wire? Ownership diffs from element-status snapshots |
 | `team_env` | Shootout or stalemate? Per-team points/xG generated and conceded, by position and venue |
 | `gw_live` | How's my matchup going? Live H2H tracker: both XIs with in-play points (refresh mid-match) |
+
+**Game day:** `make tui` opens a live terminal dashboard — your H2H matchup
+(any matchup, ←/→) with per-player in-play points, manager names, and a
+countdown to the next deadline. The autopilot keeps it fresh and sends macOS
+notifications when a gameweek finalizes and at 24h/3h/2h before every
+deadline — each derived from that GW's own kickoff-anchored clock, so
+midweek and festive schedules follow automatically.
 
 Plus 5 data-layer tools — `manager_card` (one manager: record, form,
 schedule, H2H, draft picks), `current_roster`, `player_gw_stats`, `epl`
@@ -105,13 +112,16 @@ apps/
   mcp-server/            Go module
     fpl-server/          14 MCP tool handlers + HTTP server (X-API-Key auth)
     cmd/dev/             FPL data fetcher (the only live-API component)
+    cmd/tui/             live matchday dashboard (bubbletea)
     internal/            fetch, store, ledger, points, summary, config
   backend/               Python package
     backend/ml/          ingestion → parquet, projection model, waiver_plan,
                          my_week, drop-radar, specs (treat *_SPEC.md as contracts)
-    tests/               pytest suite (300 tests, no network)
+    tests/               pytest suite (306 tests, no network)
 data/                    Raw + derived FPL data (gitignored; flat = 25/26 archive)
 docs/                    Setup + design docs
+scripts/                 autorefresh (launchd/cron), autopilot install, preflight, notifications
+Makefile                 every operation: serve/fetch/derive/weekly/tui/autopilot/update/...
 PLAN.md / STATE.md / ISSUES.md   Living roadmap, checkpoint, known issues
 ```
 
