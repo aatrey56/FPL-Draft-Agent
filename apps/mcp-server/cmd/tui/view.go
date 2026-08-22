@@ -243,6 +243,53 @@ func (m *model) railBody(width int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// scoresStrip renders the real PL scoreboard: live green with minutes,
+// finished dim with a check, upcoming with EST kickoff.
+func (m *model) scoresStrip(width int) string {
+	if len(m.snap.Fixtures) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(m.snap.Fixtures))
+	for _, f := range m.snap.Fixtures {
+		switch {
+		case f.Finished:
+			parts = append(parts, styDim.Render(fmt.Sprintf("%s %d-%d %s ✓", f.Home, f.HS, f.AS, f.Away)))
+		case f.Started:
+			min := ""
+			if f.Minutes > 0 {
+				min = fmt.Sprintf(" %d'", f.Minutes)
+			}
+			parts = append(parts, styLive.Render(fmt.Sprintf("%s %d-%d %s%s ●", f.Home, f.HS, f.AS, f.Away, min)))
+		default:
+			label := "TBD"
+			if !f.Kickoff.IsZero() {
+				label = f.Kickoff.In(eastern).Format("Mon 3:04PM")
+			}
+			parts = append(parts, styDim.Render(fmt.Sprintf("%s v %s %s", f.Home, f.Away, label)))
+		}
+	}
+	sep := styDim.Render("  ·  ")
+	var lines []string
+	cur := ""
+	for _, p := range parts {
+		candidate := cur
+		if candidate != "" {
+			candidate += sep
+		}
+		candidate += p
+		if lipgloss.Width(candidate) > width-4 && cur != "" {
+			lines = append(lines, cur)
+			cur = p
+			continue
+		}
+		cur = candidate
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return " " + strings.Join(lines, "\n ")
+}
+
 func (m *model) header(width int) string {
 	title := styFg.Bold(true).Render(fmt.Sprintf("FPL DRAFT · GW%d", m.snap.GW)) + "  " + styLive.Render("◍ LIVE")
 	due := ""
@@ -309,5 +356,9 @@ func (m *model) View() string {
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, matchupPanel, " ", rail)
 	}
 
-	return m.header(w) + "\n" + screen + "\n" + m.footer(w)
+	out := m.header(w)
+	if strip := m.scoresStrip(w); strip != "" {
+		out += "\n" + strip
+	}
+	return out + "\n" + screen + "\n" + m.footer(w)
 }

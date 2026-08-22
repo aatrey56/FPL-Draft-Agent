@@ -56,6 +56,15 @@ type railItem struct {
 	Note  string
 }
 
+type fixtureRow struct {
+	Home, Away string
+	HS, AS     int
+	Started    bool
+	Finished   bool
+	Minutes    int
+	Kickoff    time.Time
+}
+
 type snapshot struct {
 	GW        int
 	Matchups  []matchup
@@ -63,6 +72,7 @@ type snapshot struct {
 	NextDue   string
 	Standings []standingRow
 	NeedsYou  []railItem
+	Fixtures  []fixtureRow
 }
 
 type model struct {
@@ -171,10 +181,14 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			} `json:"stats"`
 		} `json:"elements"`
 		Fixtures []struct {
-			TeamH    int  `json:"team_h"`
-			TeamA    int  `json:"team_a"`
-			Started  bool `json:"started"`
-			Finished bool `json:"finished"`
+			TeamH       int    `json:"team_h"`
+			TeamA       int    `json:"team_a"`
+			TeamHScore  *int   `json:"team_h_score"`
+			TeamAScore  *int   `json:"team_a_score"`
+			Started     bool   `json:"started"`
+			Finished    bool   `json:"finished"`
+			Minutes     int    `json:"minutes"`
+			KickoffTime string `json:"kickoff_time"`
 		} `json:"fixtures"`
 	}
 	_ = readJSON(filepath.Join(dir, fmt.Sprintf("gw/%d/live.json", gw)), &live) // pre-kickoff: zeros
@@ -214,6 +228,23 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	for _, t := range bootstrap.Teams {
 		teamShort[t.ID] = t.ShortName
 	}
+	for _, f := range live.Fixtures {
+		row := fixtureRow{
+			Home: teamShort[f.TeamH], Away: teamShort[f.TeamA],
+			Started: f.Started, Finished: f.Finished, Minutes: f.Minutes,
+		}
+		if f.TeamHScore != nil {
+			row.HS = *f.TeamHScore
+		}
+		if f.TeamAScore != nil {
+			row.AS = *f.TeamAScore
+		}
+		if t, err := time.Parse(time.RFC3339, f.KickoffTime); err == nil {
+			row.Kickoff = t
+		}
+		snap.Fixtures = append(snap.Fixtures, row)
+	}
+	sort.Slice(snap.Fixtures, func(i, j int) bool { return snap.Fixtures[i].Kickoff.Before(snap.Fixtures[j].Kickoff) })
 	positions := map[int]string{1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
 	info := map[int]playerRow{}
 	for _, e := range bootstrap.Elements {
