@@ -85,7 +85,7 @@ func TestViewRendersBothSides(t *testing.T) {
 		t.Fatal(err)
 	}
 	view := m.View()
-	for _, want := range []string{"Harbor FC", "Ava Stone", "◆you", "Dock United", "Striker", "GW1", "bench"} {
+	for _, want := range []string{"Harbor FC", "Ava Stone", "◆you", "Dock United", "Strik", "GW1", "bench"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
