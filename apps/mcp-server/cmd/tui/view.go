@@ -140,7 +140,7 @@ func maxPoints(mu matchup) int {
 
 // squadColumn renders one side's rows for the given half-width.
 func squadColumn(s side, half int, showBars, collapseBench bool, maxPts int) string {
-	fixed := 2 + 5 + 5 + 5 + 4 // glyph+space, pos, team, mins, pts
+	fixed := 2 + 5 + 5 + 5 + 8 // glyph+space, pos, team, mins, pts + bonus suffix
 	nameW := clamp(half-fixed-10, 8, 18)
 	barW := 0
 	if showBars {
