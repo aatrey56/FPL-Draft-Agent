@@ -104,3 +104,20 @@ on a fresh machine yet — its tool errors cleanly until then.)
 
 The quantitative floor comes from the tools; have Claude layer live news,
 lineups, and manager context on top with web search at decision time.
+
+## 5. The FPL week, on autopilot
+
+League settings put the three deadlines 24h apart, each Eastern-afternoon
+(published per-event by the API; league_pulse serves them under `deadlines`,
+and the TUI header counts down to the next one):
+
+| When (typical)      | What                                   | Automated?                          |
+|---------------------|----------------------------------------|-------------------------------------|
+| Wed ~1:30 PM EST    | trades due                             | reminder notification (24h)         |
+| Thu ~1:30 PM EST    | waivers due -> free agency opens       | notifications (24h + 3h); plan kept fresh |
+| Fri ~1:30 PM EST    | lineup lock (90 min before kickoff)    | notifications (24h + 2h)            |
+| Fri-Mon             | matches                                | autopilot refresh; gw_live + TUI    |
+| Morning after last match ~4:00 AM EST | scores final ("lockdown") | next tick fetches finals + notifies "GW final" |
+
+The only human steps left: approve waiver claims and set the lineup on
+draft.premierleague.com, and ask Claude what to do about either.

@@ -43,6 +43,7 @@ type snapshot struct {
 	GW       int
 	Matchups []matchup
 	Loaded   time.Time
+	NextDue  string // e.g. "waivers due Thu 1:30 PM EST (in 5d16h)"
 }
 
 type model struct {
@@ -136,6 +137,14 @@ func load(dir string, league, entry, gwArg int) (snapshot, int, error) {
 			ID        int    `json:"id"`
 			ShortName string `json:"short_name"`
 		} `json:"teams"`
+		Events struct {
+			Data []struct {
+				ID           int    `json:"id"`
+				DeadlineTime string `json:"deadline_time"`
+				WaiversTime  string `json:"waivers_time"`
+				TradesTime   string `json:"trades_time"`
+			} `json:"data"`
+		} `json:"events"`
 	}
 	if err := readJSON(filepath.Join(dir, "bootstrap/bootstrap-static.json"), &bootstrap); err != nil {
 		return snap, 0, err
@@ -197,7 +206,65 @@ func load(dir string, league, entry, gwArg int) (snapshot, int, error) {
 	if len(snap.Matchups) == 0 {
 		return snap, 0, fmt.Errorf("no matchups found for GW %d", gw)
 	}
+	snap.NextDue = nextDeadline(bootstrapEventsForCountdown(bootstrap.Events.Data), time.Now())
 	return snap, myIndex, nil
+}
+
+type countdownEvent struct {
+	Label string
+	At    time.Time
+}
+
+func bootstrapEventsForCountdown(events []struct {
+	ID           int    `json:"id"`
+	DeadlineTime string `json:"deadline_time"`
+	WaiversTime  string `json:"waivers_time"`
+	TradesTime   string `json:"trades_time"`
+}) []countdownEvent {
+	out := []countdownEvent{}
+	for _, e := range events {
+		for _, pair := range []struct{ label, iso string }{
+			{fmt.Sprintf("GW%d trades due", e.ID), e.TradesTime},
+			{fmt.Sprintf("GW%d waivers due", e.ID), e.WaiversTime},
+			{fmt.Sprintf("GW%d lineup lock", e.ID), e.DeadlineTime},
+		} {
+			if t, err := time.Parse(time.RFC3339, pair.iso); err == nil {
+				out = append(out, countdownEvent{Label: pair.label, At: t})
+			}
+		}
+	}
+	return out
+}
+
+var eastern = func() *time.Location {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}()
+
+// nextDeadline picks the soonest future deadline and formats a countdown.
+func nextDeadline(events []countdownEvent, now time.Time) string {
+	var best *countdownEvent
+	for i := range events {
+		if events[i].At.After(now) && (best == nil || events[i].At.Before(best.At)) {
+			best = &events[i]
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	d := best.At.Sub(now).Round(time.Minute)
+	var in string
+	if h := int(d.Hours()); h >= 24 {
+		in = fmt.Sprintf("in %dd%dh", h/24, h%24)
+	} else if h >= 1 {
+		in = fmt.Sprintf("in %dh%02dm", h, int(d.Minutes())%60)
+	} else {
+		in = fmt.Sprintf("in %dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%s %s EST (%s)", best.Label, best.At.In(eastern).Format("Mon 3:04 PM"), in)
 }
 
 func (m *model) reload() error {
@@ -304,6 +371,9 @@ func (m *model) View() string {
 			m.selected+1, len(m.snap.Matchups), m.snap.Loaded.Format("15:04:05")))
 	if m.status != "" {
 		header += "  " + dimStyle.Render(m.status)
+	}
+	if m.snap.NextDue != "" {
+		header += "\n" + mineStyle.Render("⏰ "+m.snap.NextDue)
 	}
 	left := colStyle.Render(renderSide(mu.A, mu.A.EntryID == m.entry))
 	right := renderSide(mu.B, mu.B.EntryID == m.entry)

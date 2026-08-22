@@ -19,3 +19,5 @@ trap 'rmdir "$LOCK"' EXIT
 echo "=== autorefresh $(date) ==="
 make fetch
 make derive
+# Deadline + state-change notifications (macOS; harmless no-op elsewhere).
+python3 scripts/notify_state.py || true

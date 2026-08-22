@@ -111,3 +111,8 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
 - Matchday TUI (cmd/tui, bubbletea): live H2H dashboard over local snapshots
   — my matchup default, arrows cycle all matchups, r = fetch now, --once for
   CI-safe single-frame render. make tui.
+- Deadline intelligence (2026-08-21 late): league_pulse serves per-GW
+  trades/waivers/lineup deadlines + kickoff window + points-final estimate
+  (UTC + EST); TUI header counts down to the next deadline; autopilot emits
+  macOS notifications on GW-final/waivers-processed transitions and 24h/3h/2h
+  deadline thresholds (scripts/notify_state.py, tested).
