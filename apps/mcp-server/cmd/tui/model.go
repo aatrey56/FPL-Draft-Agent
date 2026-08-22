@@ -188,14 +188,15 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			} `json:"stats"`
 		} `json:"elements"`
 		Fixtures []struct {
-			TeamH       int    `json:"team_h"`
-			TeamA       int    `json:"team_a"`
-			TeamHScore  *int   `json:"team_h_score"`
-			TeamAScore  *int   `json:"team_a_score"`
-			Started     bool   `json:"started"`
-			Finished    bool   `json:"finished"`
-			Minutes     int    `json:"minutes"`
-			KickoffTime string `json:"kickoff_time"`
+			TeamH        int    `json:"team_h"`
+			TeamA        int    `json:"team_a"`
+			TeamHScore   *int   `json:"team_h_score"`
+			TeamAScore   *int   `json:"team_a_score"`
+			Started      bool   `json:"started"`
+			Finished     bool   `json:"finished"`
+			FinishedProv bool   `json:"finished_provisional"`
+			Minutes      int    `json:"minutes"`
+			KickoffTime  string `json:"kickoff_time"`
 		} `json:"fixtures"`
 	}
 	_ = readJSON(filepath.Join(dir, fmt.Sprintf("gw/%d/live.json", gw)), &live) // pre-kickoff: zeros
@@ -203,8 +204,9 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	type fxState struct{ started, finished bool }
 	fixtureByTeam := map[int]fxState{}
 	for _, f := range live.Fixtures {
-		fixtureByTeam[f.TeamH] = fxState{f.Started, f.Finished}
-		fixtureByTeam[f.TeamA] = fxState{f.Started, f.Finished}
+		done := f.Finished || f.FinishedProv
+		fixtureByTeam[f.TeamH] = fxState{f.Started, done}
+		fixtureByTeam[f.TeamA] = fxState{f.Started, done}
 	}
 
 	var bootstrap struct {
@@ -238,7 +240,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	for _, f := range live.Fixtures {
 		row := fixtureRow{
 			Home: teamShort[f.TeamH], Away: teamShort[f.TeamA],
-			Started: f.Started, Finished: f.Finished, Minutes: f.Minutes,
+			Started: f.Started, Finished: f.Finished || f.FinishedProv, Minutes: f.Minutes,
 		}
 		if f.TeamHScore != nil {
 			row.HS = *f.TeamHScore

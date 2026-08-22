@@ -249,11 +249,11 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 	if len(m.snap.Fixtures) == 0 {
 		return ""
 	}
-	parts := make([]string, 0, len(m.snap.Fixtures))
+	var finished, liveParts, upcoming []string
 	for _, f := range m.snap.Fixtures {
 		switch {
 		case f.Finished:
-			parts = append(parts, styDim.Render(fmt.Sprintf("%s %d-%d %s ✓", f.Home, f.HS, f.AS, f.Away)))
+			finished = append(finished, styDim.Render(fmt.Sprintf("%s %d-%d %s ✓", f.Home, f.HS, f.AS, f.Away)))
 		case f.Started:
 			if !includeLive {
 				continue
@@ -262,15 +262,16 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 			if f.Minutes > 0 {
 				min = fmt.Sprintf(" %d'", f.Minutes)
 			}
-			parts = append(parts, styLive.Render(fmt.Sprintf("%s %d-%d %s%s ●", f.Home, f.HS, f.AS, f.Away, min)))
+			liveParts = append(liveParts, styLive.Render(fmt.Sprintf("%s %d-%d %s%s ●", f.Home, f.HS, f.AS, f.Away, min)))
 		default:
 			label := "TBD"
 			if !f.Kickoff.IsZero() {
 				label = f.Kickoff.In(eastern).Format("Mon 3:04PM")
 			}
-			parts = append(parts, styDim.Render(fmt.Sprintf("%s v %s %s", f.Home, f.Away, label)))
+			upcoming = append(upcoming, styDim.Render(fmt.Sprintf("%s v %s %s", f.Home, f.Away, label)))
 		}
 	}
+	parts := append(append(finished, liveParts...), upcoming...)
 	sep := styDim.Render("  ·  ")
 	var lines []string
 	cur := ""
@@ -380,6 +381,12 @@ func (m *model) View() string {
 	}
 	if liveW > 0 {
 		mainW--
+	}
+	// Keep the matchup pane compact; the rail absorbs the slack.
+	if md == wide && mainW > 66 {
+		slack := mainW - 66
+		mainW = 66
+		railW = clamp(railW+slack, 36, 60)
 	}
 
 	matchupPanel := Panel(
