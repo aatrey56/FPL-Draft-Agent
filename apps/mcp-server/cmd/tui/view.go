@@ -655,31 +655,15 @@ func (m *model) View() string {
 				w, m.focus == 0) + "\n" + m.footer()
 	}
 
-	leagueW, liveW, txW := 0, 0, 0
-	if md == wide {
-		leagueW = clamp(w/4, 30, 36)
-		if len(m.snap.Matches) > 0 {
-			liveW = clamp(w/6, 20, 24)
-		}
-		txW = clamp(w-66-leagueW-liveW-3, 0, 30)
-		if txW < 18 || m.matchView {
-			txW = 0 // the match view borrows this room for uncut lineups
-		}
+	// Wide layout is a 2×2 grid: Live | Matchup on top, League | Transactions
+	// below. Each row spans the full width, so panels get more room.
+	liveW := 0
+	if md == wide && len(m.snap.Matches) > 0 {
+		liveW = clamp(w/6, 20, 24)
 	}
-	mainW := w - leagueW - liveW - txW
-	for _, pw := range []int{leagueW, liveW, txW} {
-		if pw > 0 {
-			mainW--
-		}
-	}
-	capW := 66
-	if m.matchView {
-		capW = 92
-	}
-	if md == wide && mainW > capW {
-		slack := mainW - capW
-		mainW = capW
-		leagueW = clamp(leagueW+slack, 30, 44)
+	mainW := w - liveW - boolToInt(liveW > 0)
+	if md == wide && mainW > 96 {
+		mainW = 96
 	}
 
 	mainTitle := fmt.Sprintf("Matchup %d/%d", m.selected+1, len(m.snap.Matchups))
@@ -705,7 +689,9 @@ func (m *model) View() string {
 		livePanel := Panel(gamesTitle, gamesHint, m.liveBody(liveW-4, m.focus == 1), liveW, m.focus == 1)
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, livePanel, " ", screen)
 	}
-	if leagueW > 0 {
+	if md == wide {
+		leagueW := clamp(w/2, 30, 50)
+		txW := clamp(w-leagueW-1, 18, 50)
 		leagueTitle, leagueHint := "League", "tab ↑↓ ↵"
 		leagueBody := m.railBody(leagueW-4, m.focus == 2)
 		if m.sugView {
@@ -713,11 +699,8 @@ func (m *model) View() string {
 			leagueBody = m.sugDetailBody(leagueW - 4)
 		}
 		league := Panel(leagueTitle, leagueHint, leagueBody, leagueW, m.focus == 2)
-		screen = lipgloss.JoinHorizontal(lipgloss.Top, screen, " ", league)
-	}
-	if txW > 0 {
 		tx := Panel("Transactions", "↑↓ ↵", m.txBody(txW-4, m.focus == 3), txW, m.focus == 3)
-		screen = lipgloss.JoinHorizontal(lipgloss.Top, screen, " ", tx)
+		screen += "\n" + lipgloss.JoinHorizontal(lipgloss.Top, league, " ", tx)
 	}
 
 	out := m.header(w)
