@@ -80,6 +80,7 @@ func TestLoadBuildsMatchupsAndFindsMine(t *testing.T) {
 
 func TestViewRendersBothSides(t *testing.T) {
 	m := newModel(fixtureDir(t), t.TempDir(), 5, 501, 0)
+	m.w = 160
 	if err := m.reload(); err != nil {
 		t.Fatal(err)
 	}

@@ -43,19 +43,23 @@ func clockLabel(minute int) string {
 	return fmt.Sprintf("%d'", minute)
 }
 
-// ptsLabel shows points with confirmed bonus stripped out and shown (or the
-// live provisional bonus) in parentheses: "8 (3)".
+// ptsLabel shows points (confirmed bonus stripped out) plus a RESERVED
+// 4-char bonus slot — "(3)" or blanks — so every row is exactly 8 wide and
+// the columns stay aligned.
 func ptsLabel(points, bonus, prov int) string {
 	base := points - bonus
 	shown := bonus
 	if shown == 0 {
 		shown = prov
 	}
+	suffix := "    "
 	if shown > 0 {
-		return fmt.Sprintf("%3d %s", base, styYou.Render(fmt.Sprintf("(%d)", shown)))
+		suffix = styYou.Render(fmt.Sprintf("(%d)", shown)) + " "
 	}
-	return fmt.Sprintf("%3d", base)
+	return fmt.Sprintf("%3d ", base) + suffix
 }
+
+const ptsSlotW = 8
 
 func clamp(v, lo, hi int) int {
 	if v < lo {
@@ -113,9 +117,9 @@ func glyphStyle(g string, pts int) lipgloss.Style {
 
 func playerLine(p playerRow, half, barW, maxPts int) string {
 	pts := ptsLabel(p.Points, p.Bonus, p.Prov)
-	// Everything except the name, measured exactly; the name gets the rest.
-	fixedTail := fmt.Sprintf(" %-4s %3d' ", p.Team, p.Minutes)
-	overhead := 2 + 5 + lipgloss.Width(fixedTail) + lipgloss.Width(pts) + barW + boolToInt(barW > 0)
+	// Everything except the name is constant-width; the name gets the rest.
+	fixedTail := fmt.Sprintf(" %-3s %2d' ", p.Team, p.Minutes)
+	overhead := 2 + 5 + lipgloss.Width(fixedTail) + ptsSlotW + barW + boolToInt(barW > 0)
 	nameW := clamp(half-overhead, 6, 20)
 	name := ansi.Truncate(p.Name, nameW, "…")
 	base := p.Glyph + " " + fmt.Sprintf("%-4s", p.Pos) +
@@ -376,8 +380,8 @@ func (m *model) matchLineups(md matchDetail, width int) string {
 		b.WriteString(styFg.Bold(true).Render(club) + " " + styDim.Render(form) + " " + styDim.Render("(FPL positions)") + "\n")
 		row := func(glyph string, sty lipgloss.Style, p clubPlayer) string {
 			pts := ptsLabel(p.Points, p.Bonus, p.Prov)
-			clock := clockLabel(p.Minutes)
-			overhead := 2 + 5 + 1 + lipgloss.Width(clock) + 1 + lipgloss.Width(pts)
+			clock := fmt.Sprintf("%4s", clockLabel(p.Minutes))
+			overhead := 2 + 5 + 1 + 4 + 1 + ptsSlotW
 			nameW := clamp(half-overhead, 6, 20)
 			name := ansi.Truncate(p.Name, nameW, "…")
 			return sty.Render(glyph+" "+fmt.Sprintf("%-4s", p.Pos)+name+
@@ -541,14 +545,22 @@ func (m *model) header(width int) string {
 	if m.snap.NextDue != "" {
 		due = styYou.Render(m.snap.NextDue)
 	}
+	clock := styFg.Bold(true).Render(time.Now().In(eastern).Format("3:04:05 PM") + " EST")
 	stamp := styDim.Render("data "+m.snap.Loaded.Format("15:04:05")) + " " + styLive.Render("●")
-	gap1 := width - lipgloss.Width(title) - lipgloss.Width(due) - lipgloss.Width(stamp) - 8
-	if gap1 < 2 {
-		due = ""
-		gap1 = width - lipgloss.Width(title) - lipgloss.Width(stamp) - 8
+	if m.status != "" {
+		stamp += "  " + styDim.Render(m.status)
 	}
-	lead := min(8, max(2, gap1/4))
-	line := "  " + title + strings.Repeat(" ", lead) + due + strings.Repeat(" ", max(1, gap1-lead)) + stamp + "  "
+	parts := []string{title, due, clock, stamp}
+	line := " "
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		line += " " + p + "  "
+	}
+	if pad := width - lipgloss.Width(line) - 2; pad > 0 {
+		line += strings.Repeat(" ", pad)
+	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(ruleC).Width(width - 2)
 	return box.Render(line)
 }
