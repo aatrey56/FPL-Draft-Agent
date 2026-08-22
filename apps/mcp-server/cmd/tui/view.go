@@ -117,8 +117,10 @@ func scoreBar(me, opp, width int) string {
 
 func glyphStyle(g string, pts int) lipgloss.Style {
 	switch g {
-	case "●", "◉":
+	case "●":
 		return styLive
+	case "◉":
+		return styFg
 	case "✓":
 		if pts > 0 {
 			return styLive
@@ -290,7 +292,56 @@ func (m *model) liveScore(entryID int) string {
 	return strings.Repeat(" ", 7)
 }
 
-func (m *model) railBody(width int) string {
+// wrapText greedily wraps words to the given width.
+func wrapText(text string, width int) []string {
+	var lines []string
+	cur := ""
+	for _, word := range strings.Fields(text) {
+		candidate := cur
+		if candidate != "" {
+			candidate += " "
+		}
+		candidate += word
+		if lipgloss.Width(candidate) > width && cur != "" {
+			lines = append(lines, cur)
+			cur = word
+			continue
+		}
+		cur = candidate
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+// sugDetailBody replaces the League body with the selected suggestion in
+// full — nothing truncated. Esc returns to the table.
+func (m *model) sugDetailBody(width int) string {
+	if len(m.snap.NeedsYou) == 0 {
+		return styDim.Render("no suggestions")
+	}
+	r := m.snap.NeedsYou[clamp(m.sugSel, 0, len(m.snap.NeedsYou)-1)]
+	sty := styDim
+	switch r.Glyph {
+	case "⚠":
+		sty = styWarn
+	case "↑":
+		sty = styLive
+	}
+	var b strings.Builder
+	b.WriteString(sty.Render(r.Glyph) + " " + styFg.Bold(true).Render(r.Name))
+	if r.Team != "" {
+		b.WriteString(" " + styDim.Render(r.Team))
+	}
+	b.WriteString("\n\n")
+	for _, ln := range wrapText(r.Note, width-1) {
+		b.WriteString(styFg.Render(ln) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m *model) railBody(width int, focused bool) string {
 	var b strings.Builder
 	if len(m.snap.Standings) > 0 {
 		nameW := clamp(width-22, 8, 17)
@@ -309,7 +360,7 @@ func (m *model) railBody(width int) string {
 	}
 	if len(m.snap.NeedsYou) > 0 {
 		b.WriteString("\n" + styDim.Render("─ Suggestions "+strings.Repeat("─", clamp(width-16, 0, 30))) + "\n")
-		for _, r := range m.snap.NeedsYou {
+		for i, r := range m.snap.NeedsYou {
 			sty := styDim
 			switch r.Glyph {
 			case "⚠":
@@ -317,7 +368,11 @@ func (m *model) railBody(width int) string {
 			case "↑":
 				sty = styLive
 			}
-			b.WriteString(sty.Render(r.Glyph) + " " + styFg.Render(ansi.Truncate(r.Name, width-2, "…")) + "\n")
+			cursor := ""
+			if focused && i == m.sugSel {
+				cursor = styYou.Render("▸ ")
+			}
+			b.WriteString(cursor + sty.Render(r.Glyph) + " " + styFg.Render(ansi.Truncate(r.Name, width-4, "…")) + "\n")
 			b.WriteString("  " + styDim.Render(ansi.Truncate(r.Note, width-3, "…")) + "\n")
 		}
 	}
@@ -345,8 +400,8 @@ func (m *model) txBody(width int, focused bool) string {
 		if focused && i == m.txSel {
 			cursor = styYou.Render("▸ ")
 		}
-		team := ansi.Truncate(mgr.Name, width-4, "…")
-		b.WriteString(cursor + styFg.Render(team) + "\n")
+		team := ansi.Truncate(mgr.Name, width-7, "…")
+		b.WriteString(cursor + styDim.Render(fmt.Sprintf("%2d ", mgr.Pick)) + styFg.Render(team) + "\n")
 		switch {
 		case landed != "":
 			b.WriteString(styLive.Render(ansi.Truncate("    +"+landed, width, "…")) + "\n")
@@ -387,11 +442,11 @@ func (m *model) txDetailBody(width int) string {
 // matchBody renders the match view: both lineups as lists (full names,
 // minutes, points). ←/→ switches between live matches.
 func (m *model) matchBody(width int) string {
-	games := m.gamesList()
+	games := m.snap.Matches
 	if len(games) == 0 {
 		return styDim.Render("no live matches")
 	}
-	sel := clamp(m.liveSel, 0, len(games)-1)
+	sel := clamp(m.matchSel, 0, len(games)-1)
 	md := games[sel]
 
 	scoreLine := fmt.Sprintf("%s %s %s",
@@ -651,7 +706,13 @@ func (m *model) View() string {
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, livePanel, " ", screen)
 	}
 	if leagueW > 0 {
-		league := Panel("League", "tab", m.railBody(leagueW-4), leagueW, m.focus == 2)
+		leagueTitle, leagueHint := "League", "tab ↑↓ ↵"
+		leagueBody := m.railBody(leagueW-4, m.focus == 2)
+		if m.sugView {
+			leagueTitle, leagueHint = "Suggestion", "esc"
+			leagueBody = m.sugDetailBody(leagueW - 4)
+		}
+		league := Panel(leagueTitle, leagueHint, leagueBody, leagueW, m.focus == 2)
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, screen, " ", league)
 	}
 	if txW > 0 {

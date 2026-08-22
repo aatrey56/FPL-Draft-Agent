@@ -179,7 +179,8 @@ func TestPlayedGamesListAfterLiveAndOpenLineups(t *testing.T) {
 		t.Fatalf("played page wrong:\n%s", list)
 	}
 	// Opening the completed game shows its lineup with an FT score line.
-	m.matchView, m.liveSel = true, 0
+	// (matchSel walks the full games list; the completed game is index 1.)
+	m.matchView, m.matchSel = true, 1
 	view := m.matchBody(80)
 	for _, want := range []string{"LEE 2", "0 HUL", "FT", "EarlyBird"} {
 		if !strings.Contains(view, want) {

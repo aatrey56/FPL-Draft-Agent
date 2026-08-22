@@ -77,6 +77,7 @@ type txRow struct {
 
 type managerTx struct {
 	Name string
+	Pick int // this week's waiver pick number
 	Txs  []txRow
 }
 
@@ -124,9 +125,12 @@ type model struct {
 	focus     int // 0 = matchup, 1 = live, 2 = league, 3 = transactions
 	liveSel   int
 	txSel     int
+	sugSel    int
 	gamesPage int // 0 = in-play games, 1 = completed games
+	matchSel  int // index into snap.Matches while the match view is open
 	matchView bool
 	txView    bool
+	sugView   bool
 	w, h      int
 	loadErr   string
 	status    string
@@ -184,11 +188,12 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 
 	var details struct {
 		LeagueEntries []struct {
-			ID        int    `json:"id"`
-			EntryID   int    `json:"entry_id"`
-			EntryName string `json:"entry_name"`
-			FirstName string `json:"player_first_name"`
-			LastName  string `json:"player_last_name"`
+			ID         int    `json:"id"`
+			EntryID    int    `json:"entry_id"`
+			EntryName  string `json:"entry_name"`
+			FirstName  string `json:"player_first_name"`
+			LastName   string `json:"player_last_name"`
+			WaiverPick int    `json:"waiver_pick"`
 		} `json:"league_entries"`
 		Matches []struct {
 			Event        int `json:"event"`
@@ -420,17 +425,20 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		if !p.Starter {
 			return "·"
 		}
+		flagged := p.Avail == "d" || p.Avail == "i" || p.Avail == "s" || p.Avail == "u"
 		fx, known := fixtureByTeam[p.TeamID]
 		switch {
 		case known && fx.finished && p.Minutes > 0:
 			return "✓"
 		case known && fx.finished:
-			return "–"
+			return "✗" // did not play — the only red state
 		case known && fx.started && p.Minutes > 0:
 			return "●"
+		case known && fx.started && flagged:
+			return "⚠" // flagged and not on the pitch — may not be in the squad
 		case known && fx.started:
-			return "✗" // match live, not on the pitch — not in XI, may not be in squad
-		case p.Avail == "d" || p.Avail == "i" || p.Avail == "s":
+			return "◉" // could still come on
+		case flagged:
 			return "⚠"
 		default:
 			return "○"
@@ -533,9 +541,23 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			byMgr[row.TeamName] = append(byMgr[row.TeamName], row)
 		}
 	}
-	// Every manager gets a row (standings order), moves or not.
-	for _, s := range snap.Standings {
-		snap.TxByManager = append(snap.TxByManager, managerTx{Name: s.Name, Txs: byMgr[s.Name]})
+	// Every manager gets a row, ordered by this week's waiver pick.
+	entryOrder := make([]int, 0, len(details.LeagueEntries))
+	for i := range details.LeagueEntries {
+		entryOrder = append(entryOrder, i)
+	}
+	sort.Slice(entryOrder, func(a, b int) bool {
+		ea, eb := details.LeagueEntries[entryOrder[a]], details.LeagueEntries[entryOrder[b]]
+		if ea.WaiverPick != eb.WaiverPick {
+			return ea.WaiverPick < eb.WaiverPick
+		}
+		return ea.EntryName < eb.EntryName
+	})
+	for _, i := range entryOrder {
+		e := details.LeagueEntries[i]
+		snap.TxByManager = append(snap.TxByManager, managerTx{
+			Name: e.EntryName, Pick: e.WaiverPick, Txs: byMgr[e.EntryName],
+		})
 	}
 
 	// Needs-you suggestions: my_week attention + top waiver targets (best effort).
@@ -756,19 +778,31 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "enter":
-			if m.focus == 1 && len(m.gamesList()) > 0 {
+			if games := m.gamesList(); m.focus == 1 && len(games) > 0 {
 				m.matchView, m.txView = !m.matchView, false
+				g := games[clamp(m.liveSel, 0, len(games)-1)]
+				for i, md := range m.snap.Matches {
+					if md.Home == g.Home && md.Away == g.Away {
+						m.matchSel = i
+					}
+				}
+			}
+			if m.focus == 2 && len(m.snap.NeedsYou) > 0 {
+				m.sugView = !m.sugView
 			}
 			if m.focus == 3 && len(m.snap.TxByManager) > 0 {
 				m.txView, m.matchView = !m.txView, false
 			}
 		case "esc":
-			m.matchView, m.txView = false, false
+			m.matchView, m.txView, m.sugView = false, false, false
 		case "tab":
 			m.focus = (m.focus + 1) % 4
 		case "up", "k":
 			if m.focus == 1 {
 				m.liveSel = (m.liveSel + max(1, len(m.gamesList())) - 1) % max(1, len(m.gamesList()))
+			}
+			if m.focus == 2 {
+				m.sugSel = (m.sugSel + max(1, len(m.snap.NeedsYou)) - 1) % max(1, len(m.snap.NeedsYou))
 			}
 			if m.focus == 3 {
 				m.txSel = (m.txSel + max(1, len(m.snap.TxByManager)) - 1) % max(1, len(m.snap.TxByManager))
@@ -777,13 +811,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focus == 1 {
 				m.liveSel = (m.liveSel + 1) % max(1, len(m.gamesList()))
 			}
+			if m.focus == 2 {
+				m.sugSel = (m.sugSel + 1) % max(1, len(m.snap.NeedsYou))
+			}
 			if m.focus == 3 {
 				m.txSel = (m.txSel + 1) % max(1, len(m.snap.TxByManager))
 			}
 		case "left", "h":
 			if m.matchView {
-				if n := len(m.gamesList()); n > 0 {
-					m.liveSel = (m.liveSel + n - 1) % n
+				if n := len(m.snap.Matches); n > 0 {
+					m.matchSel = (m.matchSel + n - 1) % n
 				}
 			} else if m.focus == 1 && m.gamesPages() > 1 {
 				m.gamesPage, m.liveSel = 1-m.gamesPage, 0
@@ -792,8 +829,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "right", "l":
 			if m.matchView {
-				if n := len(m.gamesList()); n > 0 {
-					m.liveSel = (m.liveSel + 1) % n
+				if n := len(m.snap.Matches); n > 0 {
+					m.matchSel = (m.matchSel + 1) % n
 				}
 			} else if m.focus == 1 && m.gamesPages() > 1 {
 				m.gamesPage, m.liveSel = 1-m.gamesPage, 0
