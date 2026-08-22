@@ -33,8 +33,11 @@ type gwLiveStats struct {
 	TotalPoints int `json:"total_points"`
 	GoalsScored int `json:"goals_scored"`
 	Assists     int `json:"assists"`
-	Bonus       int `json:"bonus"`
-	Bps         int `json:"bps"`
+	// Bonus is awarded live by the FPL API during matches and is already
+	// included in TotalPoints — never add it on top. Bps is the running
+	// tally it is derived from, and can still move until the whistle.
+	Bonus int `json:"bonus"`
+	Bps   int `json:"bps"`
 }
 
 func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, GwLiveArgs) (*mcp.CallToolResult, any, error) {
@@ -168,7 +171,8 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 					"slot": p.Position, "starter": starter,
 					"web_name": info.Name, "position": info.Pos, "team": info.Team,
 					"minutes": stats.Minutes, "points": stats.TotalPoints,
-					"goals": stats.GoalsScored, "assists": stats.Assists, "bps": stats.Bps,
+					"goals": stats.GoalsScored, "assists": stats.Assists,
+					"bonus": stats.Bonus, "bps": stats.Bps,
 				})
 			}
 			return map[string]any{
@@ -184,7 +188,7 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 		}
 		result := map[string]any{
 			"gw": gw, "me": me,
-			"note": "In-play points are provisional: bonus is estimated from BPS until the day's last match ends, and everything locks the morning after the GW's final match. Refresh the snapshot with a full (non --fast) fetch.",
+			"note": "Points come straight from the FPL live endpoint and already include any bonus awarded so far — bonus is now published during matches, not after. Bonus can still move while a match is in progress (bps shows the running tally); scores lock the morning after the GW's final match. Refresh the snapshot with a full (non --fast) fetch.",
 		}
 		if opponentEntry != 0 {
 			if opp, err := side(opponentEntry); err == nil {

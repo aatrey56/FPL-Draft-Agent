@@ -49,8 +49,11 @@ func TestGwLiveTracksBothSidesOfTheMatchup(t *testing.T) {
 	})
 	writeFixture(t, filepath.Join(season, "gw/1/live.json"), map[string]any{
 		"elements": map[string]any{
+			// total_points already includes the 3 awarded bonus: the tool
+			// must pass it through, not add bonus on top of it.
 			"1": map[string]any{"stats": map[string]any{
-				"minutes": 45, "total_points": 8, "goals_scored": 1, "bps": 29}},
+				"minutes": 45, "total_points": 8, "goals_scored": 1,
+				"bonus": 3, "bps": 29}},
 			"2": map[string]any{"stats": map[string]any{
 				"minutes": 45, "total_points": 6, "goals_scored": 1}},
 			"3": map[string]any{"stats": map[string]any{
@@ -69,6 +72,9 @@ func TestGwLiveTracksBothSidesOfTheMatchup(t *testing.T) {
 		`"bench_points": 6`, // ...but visible separately
 		`"live_points": 1`,  // opponent's keeper
 		"Striker",
+		`"bonus": 3`,  // awarded bonus is surfaced, not just its bps
+		`"points": 8`, // ...and points stay as the API reported them
+		`"bonus": 0`,  // match in progress, none awarded yet (opp keeper)
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("gw_live missing %q: %s", want, text)
