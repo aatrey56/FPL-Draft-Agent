@@ -22,6 +22,14 @@ var eastern = func() *time.Location {
 	return loc
 }()
 
+var london = func() *time.Location {
+	loc, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}()
+
 type deadlineEvent struct {
 	ID           int    `json:"id"`
 	Name         string `json:"name"`
@@ -95,9 +103,10 @@ func gwDeadlines(cal bootstrapCalendar, id int) map[string]any {
 			out["first_kickoff"] = fmtBoth(first.Format(time.RFC3339))
 			out["last_kickoff"] = fmtBoth(last.Format(time.RFC3339))
 			// 2026-27 rule: scores lock 09:00 UK the morning after the final
-			// match. Approximate 09:00 UK as 08:00 UTC (BST) — labeled estimate.
-			lockDay := last.Add(2*time.Hour).UTC().AddDate(0, 0, 1)
-			lock := time.Date(lockDay.Year(), lockDay.Month(), lockDay.Day(), 8, 0, 0, 0, time.UTC)
+			// match — computed in Europe/London so BST vs GMT (festive
+			// period!) resolves correctly.
+			lockDay := last.Add(2*time.Hour).In(london).AddDate(0, 0, 1)
+			lock := time.Date(lockDay.Year(), lockDay.Month(), lockDay.Day(), 9, 0, 0, 0, london)
 			out["points_final_estimate"] = fmtBoth(lock.Format(time.RFC3339))
 		}
 	}

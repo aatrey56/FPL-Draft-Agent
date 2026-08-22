@@ -107,11 +107,14 @@ lineups, and manager context on top with web search at decision time.
 
 ## 5. The FPL week, on autopilot
 
-League settings put the three deadlines 24h apart, each Eastern-afternoon
-(published per-event by the API; league_pulse serves them under `deadlines`,
-and the TUI header counts down to the next one):
+Every gameweek's clock derives from ITS OWN first kickoff (lock = first
+kickoff − 90 min; waivers = lock − 24h; trades = lock − 48h) — so the times
+below are GW1's shape, not a fixed schedule. Midweek and festive gameweeks
+shift everything, and the system follows automatically: league_pulse,
+the TUI countdown, and the notifications all read the per-event timestamps
+the API publishes, never an assumed weekday/hour.
 
-| When (typical)      | What                                   | Automated?                          |
+| When (GW1 example)  | What                                   | Automated?                          |
 |---------------------|----------------------------------------|-------------------------------------|
 | Wed ~1:30 PM EST    | trades due                             | reminder notification (24h)         |
 | Thu ~1:30 PM EST    | waivers due -> free agency opens       | notifications (24h + 3h); plan kept fresh |

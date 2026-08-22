@@ -59,3 +59,35 @@ func TestBuildDeadlinesCalendar(t *testing.T) {
 		t.Fatal("next GW should omit kickoff fields without fixture data")
 	}
 }
+
+func TestPointsFinalEstimateHandlesWinterTime(t *testing.T) {
+	root := t.TempDir()
+	// Festive fixture: Boxing Day GW, last kickoff Dec 26 20:00 UTC.
+	writeFixture(t, filepath.Join(root, "bootstrap/bootstrap-static.json"), map[string]any{
+		"events": map[string]any{
+			"current": 18, "next": 19,
+			"data": []map[string]any{{"id": 18, "name": "Gameweek 18", "finished": false,
+				"deadline_time": "2026-12-26T11:00:00Z",
+				"waivers_time":  "2026-12-25T11:00:00Z",
+				"trades_time":   "2026-12-24T11:00:00Z"}},
+		},
+		"fixtures": map[string]any{
+			"18": []map[string]any{{"kickoff_time": "2026-12-26T20:00:00Z"}},
+		},
+	})
+	out, err := buildDeadlines(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := out["current"].(map[string]any)
+	// 09:00 UK in December is GMT = 09:00 UTC (not 08:00 as in summer).
+	final := current["points_final_estimate"].(map[string]string)
+	if !strings.HasPrefix(final["utc"], "2026-12-27T09:00") {
+		t.Fatalf("winter lockdown wrong: %q", final["utc"])
+	}
+	// And the varying deadline renders in Eastern correctly (11:00 UTC = 6:00 AM EST-label).
+	lock := current["lineup_lock"].(map[string]string)
+	if !strings.Contains(lock["est"], "6:00 AM") {
+		t.Fatalf("winter eastern time wrong: %q", lock["est"])
+	}
+}
