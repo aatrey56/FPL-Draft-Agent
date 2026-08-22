@@ -23,12 +23,17 @@ Python CLIs read `.env` automatically (a real exported env var always wins).
 
 ## 1. Start the server
 
+Recommended (macOS): install the autopilot once — always-on server plus a
+fetch+derive refresh every 15 minutes and deadline notifications:
+
 ```bash
-make serve
+make autopilot        # undo: make autopilot-off · pause/resume: make stop / make start
+make update           # after every merged PR: pull + restart the server
 ```
 
-(Restart it — Ctrl-C, `make serve` — after every `git pull`: `go run` compiles
-at launch, so a running server never picks up new code.)
+Manual alternative: `make serve` in a terminal (Ctrl-C to stop; restart after
+every `git pull` — `go run` compiles at launch, so a running server never
+picks up new code).
 
 Path convention: flat roots are the 2025-26 archive; every tool resolves
 season-nested paths from `--default-season` unless a call passes `season`.
