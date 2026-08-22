@@ -65,14 +65,20 @@ type fixtureRow struct {
 	Kickoff    time.Time
 }
 
+type txRow struct {
+	TeamName string
+	In, Out  string
+	Accepted bool
+}
+
 type snapshot struct {
-	GW        int
-	Matchups  []matchup
-	Loaded    time.Time
-	NextDue   string
-	Standings []standingRow
-	NeedsYou  []railItem
-	Fixtures  []fixtureRow
+	GW           int
+	Matchups     []matchup
+	Loaded       time.Time
+	NextDue      string
+	Standings    []standingRow
+	Fixtures     []fixtureRow
+	Transactions []txRow
 }
 
 type model struct {
@@ -83,7 +89,8 @@ type model struct {
 	gwArg    int
 	snap     snapshot
 	selected int
-	focus    int // 0 = matchup panel, 1 = rail
+	focus    int // 0 = matchup, 1 = live games, 2 = rail
+	liveSel  int
 	w, h     int
 	loadErr  string
 	status   string
@@ -338,47 +345,28 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		})
 	}
 
-	// Needs-You rail: real my_week attention + top waiver recs (best effort).
-	var week struct {
-		Attention []struct {
-			WebName  string   `json:"web_name"`
-			Position string   `json:"position"`
-			Warnings []string `json:"warnings"`
-		} `json:"attention"`
+	// Recent transactions for the rail (best effort).
+	var txFile struct {
+		Transactions []struct {
+			Added      string `json:"added"`
+			ElementIn  int    `json:"element_in"`
+			ElementOut int    `json:"element_out"`
+			Entry      int    `json:"entry"`
+			Result     string `json:"result"`
+		} `json:"transactions"`
 	}
-	if err := readJSON(filepath.Join(derived, "ml/my_week.json"), &week); err == nil {
-		for _, a := range week.Attention {
-			for _, w := range a.Warnings {
-				g, note := "⚠", w
-				switch {
-				case strings.Contains(w, "no projection"):
-					g, note = "?", "unprojected"
-				case strings.Contains(w, "blank"):
-					g, note = "◇", "blank GW"
-				case strings.Contains(w, "availability"):
-					note = strings.TrimPrefix(w, "availability ")
-				}
-				snap.NeedsYou = append(snap.NeedsYou, railItem{Glyph: g, Name: a.WebName, Note: note})
-				break // one line per player
-			}
-		}
-	}
-	var plan struct {
-		Recommendations []struct {
-			Add        string  `json:"add"`
-			AddTeam    string  `json:"add_team"`
-			Label      string  `json:"label"`
-			SeasonGain float64 `json:"season_gain"`
-		} `json:"recommendations"`
-	}
-	if err := readJSON(filepath.Join(derived, "ml/waiver_plan.json"), &plan); err == nil {
-		for i, r := range plan.Recommendations {
-			if i >= 3 {
+	if err := readJSON(filepath.Join(dir, fmt.Sprintf("league/%d/transactions.json", league)), &txFile); err == nil {
+		txs := txFile.Transactions
+		sort.Slice(txs, func(i, j int) bool { return txs[i].Added > txs[j].Added })
+		for i, t := range txs {
+			if i >= 7 {
 				break
 			}
-			snap.NeedsYou = append(snap.NeedsYou, railItem{
-				Glyph: "↑", Name: r.Add, Team: r.AddTeam,
-				Note: fmt.Sprintf("wire · %s +%.0f", r.Label, r.SeasonGain),
+			snap.Transactions = append(snap.Transactions, txRow{
+				TeamName: nameByEntry[t.Entry],
+				In:       info[t.ElementIn].Name,
+				Out:      info[t.ElementOut].Name,
+				Accepted: t.Result == "a",
 			})
 		}
 	}
@@ -559,11 +547,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "tab":
-			m.focus = 1 - m.focus
+			m.focus = (m.focus + 1) % 3
 		case "left", "h":
-			m.selected = (m.selected + len(m.snap.Matchups) - 1) % max(1, len(m.snap.Matchups))
+			if m.focus == 1 {
+				m.liveSel = (m.liveSel + max(1, liveCount(m.snap)) - 1) % max(1, liveCount(m.snap))
+			} else {
+				m.selected = (m.selected + len(m.snap.Matchups) - 1) % max(1, len(m.snap.Matchups))
+			}
 		case "right", "l", "m":
-			m.selected = (m.selected + 1) % max(1, len(m.snap.Matchups))
+			if m.focus == 1 {
+				m.liveSel = (m.liveSel + 1) % max(1, liveCount(m.snap))
+			} else {
+				m.selected = (m.selected + 1) % max(1, len(m.snap.Matchups))
+			}
 		case "r":
 			if !m.fetching {
 				m.fetching = true
@@ -573,4 +569,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// liveCount is the number of in-play fixtures.
+func liveCount(s snapshot) int {
+	n := 0
+	for _, f := range s.Fixtures {
+		if f.Started && !f.Finished {
+			n++
+		}
+	}
+	return n
 }
