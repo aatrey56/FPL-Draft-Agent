@@ -6,12 +6,12 @@ name: Claude Issue Agent
 # Trigger (manual):     workflow_dispatch with an issue_number input.
 #
 # What it does:
-#   1. Checks out `dev` and creates a branch  claude/issue-<number>-<run_id>
+#   1. Checks out `main` and creates a branch  claude/issue-<number>-<run_id>
 #   2. Sets up Go + Python environments and installs all dependencies.
 #   3. Builds a task prompt from the issue body and runs Claude Code.
 #   4. Claude edits files directly in the working directory.
 #   5. Runs scripts/preflight.sh (ruff, pytest, go vet, go test).
-#   6. On success: commits, pushes the branch, and opens a draft PR → dev.
+#   6. On success: commits, pushes the branch, and opens a draft PR → main.
 #   7. On failure: posts a preflight log comment on the issue; no PR is opened.
 #
 # Required secret: CLAUDE_CODE_OAUTH_TOKEN (added automatically by the Claude GitHub App)
@@ -105,10 +105,10 @@ jobs:
           fi
 
       # ── Checkout + branch ──────────────────────────────────────────────────
-      - name: Checkout dev
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: dev
+          ref: main
           fetch-depth: 0
 
       - name: Create work branch
@@ -274,8 +274,8 @@ jobs:
             const issueTitle  = "${{ steps.fetch_issue.outputs.title }}";
             const branch      = process.env.BRANCH;
 
-            // List files changed relative to dev.
-            const files = execSync("git diff --name-only origin/dev...HEAD")
+            // List files changed relative to main.
+            const files = execSync("git diff --name-only origin/main...HEAD")
               .toString().trim();
             const fileLines = files
               ? files.split("\n").map(f => `- \`${f}\``).join("\n")
@@ -300,7 +300,7 @@ jobs:
               repo:  context.repo.repo,
               title: `Claude: ${issueTitle} (#${issueNumber})`,
               head:  branch,
-              base:  "dev",
+              base:  "main",
               body,
               draft: true,
             });
