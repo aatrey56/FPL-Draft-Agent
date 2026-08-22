@@ -245,21 +245,57 @@ func (m *model) railBody(width int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// txBody renders the week's transactions for every manager.
-func (m *model) txBody(width int) string {
-	if len(m.snap.Transactions) == 0 {
+// txBody lists every manager with their latest successful move; ↑↓ selects,
+// enter opens the full week (waivers + free agents) for that manager.
+func (m *model) txBody(width int, focused bool) string {
+	if len(m.snap.TxByManager) == 0 {
 		return styDim.Render("no transactions yet")
 	}
 	var b strings.Builder
-	for _, t := range m.snap.Transactions {
+	for i, mgr := range m.snap.TxByManager {
+		latest := ""
+		for _, t := range mgr.Txs {
+			if t.Accepted {
+				latest = t.In
+				break
+			}
+		}
+		cursor := "  "
+		if focused && i == m.txSel {
+			cursor = styYou.Render("▸ ")
+		}
+		team := ansi.Truncate(mgr.Name, width-4, "…")
+		b.WriteString(cursor + styFg.Render(team) + "\n")
+		if latest != "" {
+			b.WriteString(styLive.Render(ansi.Truncate("    +"+latest, width, "…")) + "\n")
+		} else {
+			b.WriteString(styDim.Render("    no move landed") + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// txDetailBody shows every transaction the selected manager made this week.
+func (m *model) txDetailBody(width int) string {
+	if len(m.snap.TxByManager) == 0 {
+		return styDim.Render("no transactions")
+	}
+	sel := clamp(m.txSel, 0, len(m.snap.TxByManager)-1)
+	mgr := m.snap.TxByManager[sel]
+	kinds := map[string]string{"w": "waiver", "f": "free agent", "t": "trade"}
+	var b strings.Builder
+	b.WriteString(styFg.Bold(true).Render(mgr.Name) + styDim.Render(fmt.Sprintf("  ·  %d moves this week", len(mgr.Txs))) + "\n\n")
+	for _, t := range mgr.Txs {
 		mark := styLive.Render("✓")
 		if !t.Accepted {
 			mark = styDim.Render("✗")
 		}
-		team := ansi.Truncate(t.TeamName, width-2, "…")
-		b.WriteString(fmt.Sprintf("%s %s", mark, team) + "\n")
-		b.WriteString(styLive.Render(ansi.Truncate("  +"+t.In, width, "…")) + "\n")
-		b.WriteString(styDim.Render(ansi.Truncate("  −"+t.Out, width, "…")) + "\n")
+		kind := kinds[t.Kind]
+		if kind == "" {
+			kind = t.Kind
+		}
+		b.WriteString(fmt.Sprintf("%s %-10s %s  %s\n", mark, styDim.Render(kind),
+			styLive.Render("+"+t.In), styDim.Render("−"+t.Out)))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -275,24 +311,43 @@ func (m *model) matchBody(width int) string {
 	md := m.snap.Matches[sel]
 	half := (width - 3) / 2
 
+	// Formation grid: GKP row, then DEF / MID / FWD rows shaped like the
+	// actual formation. Cells show name + points; subbed-off players dim.
 	col := func(club, form string, xi, subs []clubPlayer) string {
 		var b strings.Builder
-		b.WriteString(styFg.Bold(true).Render(club) + " " + styDim.Render(form) + "\n")
-		nameW := clamp(half-12, 8, 16)
+		b.WriteString(styFg.Bold(true).Render(club) + " " + styDim.Render(form) + "\n\n")
+		rows := map[string][]clubPlayer{}
 		for _, p := range xi {
-			name := ansi.Truncate(p.Name, nameW, "…")
-			line := fmt.Sprintf("%-4s %s%s %3d' %2d", p.Pos, name,
-				strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))), p.Minutes, p.Points)
-			if p.Minutes > 0 && p.Minutes < md.Minute {
-				b.WriteString(styDim.Render("◐ "+line) + "\n") // subbed off
-			} else if p.Minutes > 0 {
-				b.WriteString(styLive.Render("● "+line) + "\n")
-			} else {
-				b.WriteString(styDim.Render("○ "+line) + "\n")
+			rows[p.Pos] = append(rows[p.Pos], p)
+		}
+		for _, pos := range []string{"GKP", "DEF", "MID", "FWD"} {
+			line := rows[pos]
+			if len(line) == 0 {
+				continue
 			}
+			cellW := clamp(half/len(line)-1, 5, 14)
+			cells := make([]string, 0, len(line))
+			for _, p := range line {
+				label := ansi.Truncate(p.Name, cellW-2, "…")
+				if p.Points != 0 {
+					label += styDim.Render(fmt.Sprintf(" %d", p.Points))
+				}
+				if p.Minutes > 0 && p.Minutes < md.Minute-2 {
+					label = styDim.Render(ansi.Strip(label)) // subbed off
+				} else {
+					label = styLive.Render(ansi.Strip(label))
+				}
+				cells = append(cells, label)
+			}
+			row := strings.Join(cells, "  ")
+			if pad := (half - lipgloss.Width(row)) / 2; pad > 0 {
+				row = strings.Repeat(" ", pad) + row
+			}
+			b.WriteString(row + "\n\n")
 		}
 		if len(subs) > 0 {
 			b.WriteString(styDim.Render("─ subs on ─────────") + "\n")
+			nameW := clamp(half-12, 8, 16)
 			for _, p := range subs {
 				name := ansi.Truncate(p.Name, nameW, "…")
 				b.WriteString(styDim.Render(fmt.Sprintf("◒ %-4s %s%s %3d' %2d", p.Pos, name,
@@ -414,7 +469,7 @@ func (m *model) header(width int) string {
 }
 
 func (m *model) footer(width int) string {
-	keys := styDim.Render("←→ switch    tab panel    ↵ match view    r refresh    q quit")
+	keys := styDim.Render("←→ matchup    tab panel    ↑↓ select    ↵ open    esc back    r refresh    q quit")
 	right := ""
 	if m.status != "" {
 		right = styDim.Render(m.status) + " " + styLive.Render("●")
@@ -470,12 +525,15 @@ func (m *model) View() string {
 	if m.matchView && len(m.snap.Matches) > 0 {
 		mainTitle = "Match"
 		mainBody = m.matchBody(mainW - 4)
+	} else if m.txView && len(m.snap.TxByManager) > 0 {
+		mainTitle = "Transactions"
+		mainBody = m.txDetailBody(mainW - 4)
 	}
-	matchupPanel := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView)
+	matchupPanel := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView)
 
 	screen := matchupPanel
 	if liveW > 0 {
-		livePanel := Panel("Live", "↵", m.liveBody(liveW-4, m.focus == 1), liveW, m.focus == 1)
+		livePanel := Panel("Live", "↑↓ ↵", m.liveBody(liveW-4, m.focus == 1), liveW, m.focus == 1)
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, screen, " ", livePanel)
 	}
 	if leagueW > 0 {
@@ -483,7 +541,7 @@ func (m *model) View() string {
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, screen, " ", league)
 	}
 	if txW > 0 {
-		tx := Panel("Transactions", "", m.txBody(txW-4), txW, false)
+		tx := Panel("Transactions", "↑↓ ↵", m.txBody(txW-4, m.focus == 3), txW, m.focus == 3)
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, screen, " ", tx)
 	}
 

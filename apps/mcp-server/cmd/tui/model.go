@@ -68,7 +68,13 @@ type fixtureRow struct {
 type txRow struct {
 	TeamName string
 	In, Out  string
+	Kind     string // w = waiver, f = free agent
 	Accepted bool
+}
+
+type managerTx struct {
+	Name string
+	Txs  []txRow
 }
 
 type clubPlayer struct {
@@ -95,6 +101,7 @@ type snapshot struct {
 	Standings    []standingRow
 	Fixtures     []fixtureRow
 	Transactions []txRow
+	TxByManager  []managerTx
 	NeedsYou     []railItem
 	Matches      []matchDetail // one per in-play fixture, liveSel-aligned
 }
@@ -107,9 +114,11 @@ type model struct {
 	gwArg     int
 	snap      snapshot
 	selected  int
-	focus     int // 0 = matchup, 1 = live games, 2 = rail
+	focus     int // 0 = matchup, 1 = live, 2 = league, 3 = transactions
 	liveSel   int
+	txSel     int
 	matchView bool
+	txView    bool
 	w, h      int
 	loadErr   string
 	status    string
@@ -438,22 +447,32 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			ElementIn  int    `json:"element_in"`
 			ElementOut int    `json:"element_out"`
 			Entry      int    `json:"entry"`
+			Kind       string `json:"kind"`
 			Result     string `json:"result"`
 		} `json:"transactions"`
 	}
 	if err := readJSON(filepath.Join(dir, fmt.Sprintf("league/%d/transactions.json", league)), &txFile); err == nil {
 		txs := txFile.Transactions
 		sort.Slice(txs, func(i, j int) bool { return txs[i].Added > txs[j].Added })
-		for i, t := range txs {
-			if i >= 7 {
-				break
-			}
-			snap.Transactions = append(snap.Transactions, txRow{
+		byMgr := map[string][]txRow{}
+		order := []string{}
+		for _, t := range txs {
+			row := txRow{
 				TeamName: nameByEntry[t.Entry],
 				In:       info[t.ElementIn].Name,
 				Out:      info[t.ElementOut].Name,
+				Kind:     t.Kind,
 				Accepted: t.Result == "a",
-			})
+			}
+			snap.Transactions = append(snap.Transactions, row)
+			if _, seen := byMgr[row.TeamName]; !seen {
+				order = append(order, row.TeamName)
+			}
+			byMgr[row.TeamName] = append(byMgr[row.TeamName], row)
+		}
+		sort.Strings(order)
+		for _, name := range order {
+			snap.TxByManager = append(snap.TxByManager, managerTx{Name: name, Txs: byMgr[name]})
 		}
 	}
 
@@ -675,24 +694,33 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			if m.focus == 1 && liveCount(m.snap) > 0 {
-				m.matchView = !m.matchView
+				m.matchView, m.txView = !m.matchView, false
+			}
+			if m.focus == 3 && len(m.snap.TxByManager) > 0 {
+				m.txView, m.matchView = !m.txView, false
 			}
 		case "esc":
-			m.matchView = false
+			m.matchView, m.txView = false, false
 		case "tab":
-			m.focus = (m.focus + 1) % 3
-		case "left", "h":
+			m.focus = (m.focus + 1) % 4
+		case "up", "k":
 			if m.focus == 1 {
 				m.liveSel = (m.liveSel + max(1, liveCount(m.snap)) - 1) % max(1, liveCount(m.snap))
-			} else {
-				m.selected = (m.selected + len(m.snap.Matchups) - 1) % max(1, len(m.snap.Matchups))
 			}
-		case "right", "l", "m":
+			if m.focus == 3 {
+				m.txSel = (m.txSel + max(1, len(m.snap.TxByManager)) - 1) % max(1, len(m.snap.TxByManager))
+			}
+		case "down", "j":
 			if m.focus == 1 {
 				m.liveSel = (m.liveSel + 1) % max(1, liveCount(m.snap))
-			} else {
-				m.selected = (m.selected + 1) % max(1, len(m.snap.Matchups))
 			}
+			if m.focus == 3 {
+				m.txSel = (m.txSel + 1) % max(1, len(m.snap.TxByManager))
+			}
+		case "left", "h":
+			m.selected = (m.selected + len(m.snap.Matchups) - 1) % max(1, len(m.snap.Matchups))
+		case "right", "l":
+			m.selected = (m.selected + 1) % max(1, len(m.snap.Matchups))
 		case "r":
 			if !m.fetching {
 				m.fetching = true

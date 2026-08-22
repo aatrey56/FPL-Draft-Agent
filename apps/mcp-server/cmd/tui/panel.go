@@ -13,7 +13,7 @@ import (
 // Panel renders body inside a rounded box of exactly `width` columns with the
 // title in the top border. focused switches the border to the accent colour.
 func Panel(title, hint, body string, width int, focused bool) string {
-	bc := ruleC
+	bc := mutedC
 	if focused {
 		bc = accentC
 	}
