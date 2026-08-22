@@ -116,3 +116,9 @@ Branch model: **trunk-based** — feature branch -> PR -> `main` (dev/stage reti
   (UTC + EST); TUI header counts down to the next deadline; autopilot emits
   macOS notifications on GW-final/waivers-processed transitions and 24h/3h/2h
   deadline thresholds (scripts/notify_state.py, tested).
+- TUI redesign (design-kit implementation, 2026-08-22): async load off the
+  event loop (mtime-gated tea.Cmd), WindowSizeMsg breakpoint ladder
+  (wide/medium/narrow/minimal), theme.go + titled focusable panels, diverging
+  score bar, status glyphs, per-player point bars, side rail (league
+  standings + real my_week/waiver_plan "needs you" items), tab focus,
+  --width for --once renders.
