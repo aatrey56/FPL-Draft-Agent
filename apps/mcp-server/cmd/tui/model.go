@@ -286,7 +286,10 @@ func (m *model) reload() error {
 
 func (m *model) Init() tea.Cmd {
 	_ = m.reload()
-	return doTick()
+	// Kick one live fetch immediately, then every minute (self-feeding).
+	m.fetching = true
+	m.status = "fetching…"
+	return tea.Batch(doTick(), doFetchTick(), runFetch())
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -294,6 +297,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tick:
 		_ = m.reload()
 		return m, doTick()
+	case fetchTick:
+		if m.fetching {
+			return m, doFetchTick()
+		}
+		m.fetching = true
+		m.status = "auto-refreshing…"
+		return m, tea.Batch(doFetchTick(), runFetch())
 	case refreshDone:
 		m.fetching = false
 		if msg.err != nil {

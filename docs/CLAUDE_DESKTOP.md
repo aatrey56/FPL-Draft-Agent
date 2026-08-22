@@ -71,10 +71,12 @@ The decision tools serve files the pipeline writes. Before waivers each week
 make weekly     # fetch + ownership + waiver + my_week
 ```
 
-During matches, keep `gw_live` fresh in a second terminal:
+During matches, `make tui` is self-feeding (auto-fetches live points every
+60s while open; `r` forces one now). Headless alternative — keep `gw_live`
+fresh for Claude without the dashboard:
 
 ```bash
-make matchday   # near-live: live points every 60s + full refresh every 10 min; Ctrl-C after the games
+make matchday   # live points every 60s + full refresh every 10 min; Ctrl-C after
 ```
 
 Automate weekly with cron: see the crontab example in scripts/weekly.sh.
