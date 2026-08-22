@@ -29,6 +29,7 @@ type playerRow struct {
 
 type side struct {
 	Name    string
+	Manager string
 	EntryID int
 	Total   int
 	Bench   int
@@ -93,6 +94,8 @@ func load(dir string, league, entry, gwArg int) (snapshot, int, error) {
 			ID        int    `json:"id"`
 			EntryID   int    `json:"entry_id"`
 			EntryName string `json:"entry_name"`
+			FirstName string `json:"player_first_name"`
+			LastName  string `json:"player_last_name"`
 		} `json:"league_entries"`
 		Matches []struct {
 			Event        int `json:"event"`
@@ -105,9 +108,11 @@ func load(dir string, league, entry, gwArg int) (snapshot, int, error) {
 	}
 	entryByLE := map[int]int{}
 	nameByEntry := map[int]string{}
+	managerByEntry := map[int]string{}
 	for _, e := range details.LeagueEntries {
 		entryByLE[e.ID] = e.EntryID
 		nameByEntry[e.EntryID] = e.EntryName
+		managerByEntry[e.EntryID] = strings.TrimSpace(e.FirstName + " " + e.LastName)
 	}
 
 	var live struct {
@@ -146,7 +151,7 @@ func load(dir string, league, entry, gwArg int) (snapshot, int, error) {
 	}
 
 	buildSide := func(entryID int) side {
-		s := side{Name: nameByEntry[entryID], EntryID: entryID}
+		s := side{Name: nameByEntry[entryID], Manager: managerByEntry[entryID], EntryID: entryID}
 		var picks struct {
 			Picks []struct {
 				Element  int `json:"element"`
@@ -264,8 +269,11 @@ func renderSide(s side, mine bool) string {
 	if mine {
 		name = mineStyle.Render(name + " (you)")
 	}
-	b.WriteString(fmt.Sprintf("%s\n%s  %s\n\n",
-		name,
+	b.WriteString(name + "\n")
+	if s.Manager != "" {
+		b.WriteString(dimStyle.Render(s.Manager) + "\n")
+	}
+	b.WriteString(fmt.Sprintf("%s  %s\n\n",
 		scoreStyle.Render(fmt.Sprintf("%3d pts", s.Total)),
 		dimStyle.Render(fmt.Sprintf("%d/11 played · bench %d", s.Played, s.Bench))))
 	for _, p := range s.Players {

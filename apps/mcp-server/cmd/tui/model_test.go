@@ -27,7 +27,7 @@ func fixtureDir(t *testing.T) string {
 	write(t, filepath.Join(dir, "game/game.json"), map[string]any{"current_event": 1})
 	write(t, filepath.Join(dir, "league/5/details.json"), map[string]any{
 		"league_entries": []map[string]any{
-			{"id": 71, "entry_id": 501, "entry_name": "Harbor FC"},
+			{"id": 71, "entry_id": 501, "entry_name": "Harbor FC", "player_first_name": "Ava", "player_last_name": "Stone"},
 			{"id": 72, "entry_id": 502, "entry_name": "Dock United"},
 			{"id": 73, "entry_id": 503, "entry_name": "Pier Rovers"},
 			{"id": 74, "entry_id": 504, "entry_name": "Quay Town"},
@@ -84,7 +84,7 @@ func TestViewRendersBothSides(t *testing.T) {
 		t.Fatal(err)
 	}
 	view := m.View()
-	for _, want := range []string{"Harbor FC", "(you)", "Dock United", "Striker", "GW1", "bench"} {
+	for _, want := range []string{"Harbor FC", "Ava Stone", "(you)", "Dock United", "Striker", "GW1", "bench"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
