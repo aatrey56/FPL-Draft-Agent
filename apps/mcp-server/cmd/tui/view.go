@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -32,6 +33,28 @@ func (m *model) mode() mode {
 	default:
 		return minimal // scoreboard + top scorers only
 	}
+}
+
+// clockLabel renders a live match clock, showing HT at the interval.
+func clockLabel(minute int) string {
+	if minute == 45 {
+		return "HT"
+	}
+	return fmt.Sprintf("%d'", minute)
+}
+
+// ptsLabel shows points with confirmed bonus stripped out and shown (or the
+// live provisional bonus) in parentheses: "8 (3)".
+func ptsLabel(points, bonus, prov int) string {
+	base := points - bonus
+	shown := bonus
+	if shown == 0 {
+		shown = prov
+	}
+	if shown > 0 {
+		return fmt.Sprintf("%3d %s", base, styYou.Render(fmt.Sprintf("(%d)", shown)))
+	}
+	return fmt.Sprintf("%3d", base)
 }
 
 func clamp(v, lo, hi int) int {
@@ -72,7 +95,7 @@ func scoreBar(me, opp, width int) string {
 
 func glyphStyle(g string, pts int) lipgloss.Style {
 	switch g {
-	case "●":
+	case "●", "◉":
 		return styLive
 	case "✓":
 		if pts > 0 {
@@ -92,10 +115,10 @@ func playerLine(p playerRow, nameW, barW, maxPts int) string {
 	name := ansi.Truncate(p.Name, nameW, "…")
 	base := p.Glyph + " " + fmt.Sprintf("%-4s", p.Pos) +
 		name + strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))) + " " +
-		fmt.Sprintf("%-4s %3d' %3d", p.Team, p.Minutes, p.Points)
-	line := glyphStyle(p.Glyph, p.Points).Render(base)
+		fmt.Sprintf("%-4s %3d' ", p.Team, p.Minutes)
+	line := glyphStyle(p.Glyph, p.Points).Render(base) + ptsLabel(p.Points, p.Bonus, p.Prov)
 	if !p.Starter {
-		line = styDim.Render(base)
+		line = styDim.Render(base) + ptsLabel(p.Points, p.Bonus, p.Prov)
 	}
 	if barW > 0 {
 		line += " " + styLive.Render(barStr(p.Points, maxPts, barW))
@@ -300,84 +323,120 @@ func (m *model) txDetailBody(width int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// matchBody renders the full match view for the selected live game: both
-// clubs' actual XIs (from the starts flag), minutes, FPL points, formation,
-// and the substitutes who have come on.
+// matchBody renders the match view. Page 0: both lineups as lists (full
+// names, minutes, points). Page 1/2: one club's formation grid, full width,
+// names uncut. ←/→ turns pages.
 func (m *model) matchBody(width int) string {
 	if len(m.snap.Matches) == 0 {
 		return styDim.Render("no live matches")
 	}
 	sel := clamp(m.liveSel, 0, len(m.snap.Matches)-1)
 	md := m.snap.Matches[sel]
-	half := (width - 3) / 2
-
-	// Formation grid: GKP row, then DEF / MID / FWD rows shaped like the
-	// actual formation. Cells show name + points; subbed-off players dim.
-	col := func(club, form string, xi, subs []clubPlayer) string {
-		var b strings.Builder
-		b.WriteString(styFg.Bold(true).Render(club) + " " + styDim.Render(form) + "\n\n")
-		rows := map[string][]clubPlayer{}
-		for _, p := range xi {
-			rows[p.Pos] = append(rows[p.Pos], p)
-		}
-		for _, pos := range []string{"GKP", "DEF", "MID", "FWD"} {
-			line := rows[pos]
-			if len(line) == 0 {
-				continue
-			}
-			cellW := clamp(half/len(line)-1, 5, 14)
-			cells := make([]string, 0, len(line))
-			for _, p := range line {
-				label := ansi.Truncate(p.Name, cellW-2, "…")
-				if p.Points != 0 {
-					label += styDim.Render(fmt.Sprintf(" %d", p.Points))
-				}
-				if p.Minutes > 0 && p.Minutes < md.Minute-2 {
-					label = styDim.Render(ansi.Strip(label)) // subbed off
-				} else {
-					label = styLive.Render(ansi.Strip(label))
-				}
-				cells = append(cells, label)
-			}
-			row := strings.Join(cells, "  ")
-			if pad := (half - lipgloss.Width(row)) / 2; pad > 0 {
-				row = strings.Repeat(" ", pad) + row
-			}
-			b.WriteString(row + "\n\n")
-		}
-		if len(subs) > 0 {
-			b.WriteString(styDim.Render("─ subs on ─────────") + "\n")
-			nameW := clamp(half-12, 8, 16)
-			for _, p := range subs {
-				name := ansi.Truncate(p.Name, nameW, "…")
-				b.WriteString(styDim.Render(fmt.Sprintf("◒ %-4s %s%s %3d' %2d", p.Pos, name,
-					strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))), p.Minutes, p.Points)) + "\n")
-			}
-		}
-		return strings.TrimRight(b.String(), "\n")
-	}
 
 	scoreLine := fmt.Sprintf("%s %s %s",
 		styScore.Render(fmt.Sprintf("%s %d", md.Home, md.HS)),
 		styDim.Render("—"),
 		styScore.Render(fmt.Sprintf("%d %s", md.AS, md.Away)))
 	if md.Minute > 0 {
-		scoreLine += "  " + styLive.Render(fmt.Sprintf("%d'", md.Minute))
+		scoreLine += "  " + styLive.Render(clockLabel(md.Minute))
 	}
+	pages := []string{"lineups", md.Home + " formation", md.Away + " formation"}
+	scoreLine += "   " + styDim.Render(fmt.Sprintf("‹ %s ›", pages[clamp(m.matchPage, 0, 2)]))
 	if pad := (width - lipgloss.Width(scoreLine)) / 2; pad > 0 {
 		scoreLine = strings.Repeat(" ", pad) + scoreLine
 	}
 
-	cols := lipgloss.JoinHorizontal(lipgloss.Top,
+	var body string
+	switch clamp(m.matchPage, 0, 2) {
+	case 0:
+		body = m.matchLineups(md, width)
+	case 1:
+		body = m.matchFormation(md.Home, md.HomeForm, md.HomeXI, md.HomeSubs, md.Minute, width)
+	default:
+		body = m.matchFormation(md.Away, md.AwayForm, md.AwayXI, md.AwaySubs, md.Minute, width)
+	}
+	return scoreLine + "\n\n" + body
+}
+
+// matchLineups: both clubs side by side, list form, names uncut.
+func (m *model) matchLineups(md matchDetail, width int) string {
+	half := (width - 3) / 2
+	col := func(club, form string, xi, subs []clubPlayer) string {
+		var b strings.Builder
+		b.WriteString(styFg.Bold(true).Render(club) + " " + styDim.Render(form) + "\n")
+		for _, p := range xi {
+			line := fmt.Sprintf("%-4s %-16s %s %s", p.Pos, p.Name, clockLabel(p.Minutes), ptsLabel(p.Points, p.Bonus, p.Prov))
+			switch {
+			case p.Minutes > 0 && p.Minutes < md.Minute-2:
+				b.WriteString(styDim.Render("◐ ") + styDim.Render(line) + "\n")
+			case p.Minutes > 0:
+				b.WriteString(styLive.Render("● "+line) + "\n")
+			default:
+				b.WriteString(styDim.Render("○ "+line) + "\n")
+			}
+		}
+		if len(subs) > 0 {
+			b.WriteString(styDim.Render("─ subs on ─────────") + "\n")
+			for _, p := range subs {
+				b.WriteString(styDim.Render(fmt.Sprintf("◒ %-4s %-16s %d' ", p.Pos, p.Name, p.Minutes)) + ptsLabel(p.Points, p.Bonus, p.Prov) + "\n")
+			}
+		}
+		return strings.TrimRight(b.String(), "\n")
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().Width(half).Render(col(md.Home, md.HomeForm, md.HomeXI, md.HomeSubs)),
 		styDim.Render("│ "),
 		col(md.Away, md.AwayForm, md.AwayXI, md.AwaySubs))
-
-	return scoreLine + "\n\n" + cols
 }
 
-// scoresStrip renders the real PL scoreboard: live green with minutes,
-// finished dim with a check, upcoming with EST kickoff.
+// matchFormation: one club across the full width — formation-shaped rows with
+// uncut names, then the subs who have come on.
+func (m *model) matchFormation(club, form string, xi, subs []clubPlayer, minute, width int) string {
+	var b strings.Builder
+	title := styFg.Bold(true).Render(club) + " " + styDim.Render(form)
+	if pad := (width - lipgloss.Width(title)) / 2; pad > 0 {
+		title = strings.Repeat(" ", pad) + title
+	}
+	b.WriteString(title + "\n\n")
+	rows := map[string][]clubPlayer{}
+	for _, p := range xi {
+		rows[p.Pos] = append(rows[p.Pos], p)
+	}
+	for _, pos := range []string{"GKP", "DEF", "MID", "FWD"} {
+		line := rows[pos]
+		if len(line) == 0 {
+			continue
+		}
+		cells := make([]string, 0, len(line))
+		for _, p := range line {
+			label := p.Name
+			if pts := p.Points - p.Bonus; pts != 0 || p.Bonus > 0 || p.Prov > 0 {
+				label += " " + strings.TrimSpace(ansi.Strip(ptsLabel(p.Points, p.Bonus, p.Prov)))
+			}
+			if p.Minutes > 0 && p.Minutes < minute-2 {
+				label = styDim.Render(label)
+			} else {
+				label = styLive.Render(label)
+			}
+			cells = append(cells, label)
+		}
+		row := strings.Join(cells, "   ")
+		if pad := (width - lipgloss.Width(row)) / 2; pad > 0 {
+			row = strings.Repeat(" ", pad) + row
+		}
+		b.WriteString(row + "\n\n")
+	}
+	if len(subs) > 0 {
+		b.WriteString(styDim.Render("─ subs on ─────────────────") + "\n")
+		for _, p := range subs {
+			b.WriteString(styDim.Render(fmt.Sprintf("◒ %-4s %-16s %d' ", p.Pos, p.Name, p.Minutes)) + ptsLabel(p.Points, p.Bonus, p.Prov) + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// scoresStrip shows finished and upcoming fixtures (live ones get their own
+// panel at wide widths). Today's games render green, tomorrow's baby blue.
 func (m *model) scoresStrip(width int, includeLive bool) string {
 	if len(m.snap.Fixtures) == 0 {
 		return ""
@@ -391,17 +450,25 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 			if !includeLive {
 				continue
 			}
-			min := ""
-			if f.Minutes > 0 {
-				min = fmt.Sprintf(" %d'", f.Minutes)
-			}
-			liveParts = append(liveParts, styLive.Render(fmt.Sprintf("%s %d-%d %s%s ●", f.Home, f.HS, f.AS, f.Away, min)))
+			liveParts = append(liveParts, styLive.Render(fmt.Sprintf("%s %d-%d %s %s ●", f.Home, f.HS, f.AS, f.Away, clockLabel(f.Minutes))))
 		default:
 			label := "TBD"
+			sty := styDim
 			if !f.Kickoff.IsZero() {
-				label = f.Kickoff.In(eastern).Format("Mon 3:04PM")
+				koDay := f.Kickoff.In(eastern).Format("2006-01-02")
+				now := time.Now().In(eastern)
+				switch koDay {
+				case now.Format("2006-01-02"):
+					sty = styLive
+					label = f.Kickoff.In(eastern).Format("3:04PM")
+				case now.AddDate(0, 0, 1).Format("2006-01-02"):
+					sty = styTmrw
+					label = f.Kickoff.In(eastern).Format("Mon 3:04PM")
+				default:
+					label = f.Kickoff.In(eastern).Format("Mon 3:04PM")
+				}
 			}
-			upcoming = append(upcoming, styDim.Render(fmt.Sprintf("%s v %s %s", f.Home, f.Away, label)))
+			upcoming = append(upcoming, sty.Render(fmt.Sprintf("%s v %s %s", f.Home, f.Away, label)))
 		}
 	}
 	parts := append(append(finished, liveParts...), upcoming...)
@@ -436,7 +503,7 @@ func (m *model) liveBody(width int, focused bool) string {
 		if !f.Started || f.Finished {
 			continue
 		}
-		line := fmt.Sprintf("%s %d-%d %s %d'", f.Home, f.HS, f.AS, f.Away, f.Minutes)
+		line := fmt.Sprintf("%s %d-%d %s %s", f.Home, f.HS, f.AS, f.Away, clockLabel(f.Minutes))
 		if focused && i == m.liveSel {
 			b.WriteString(styYou.Render("▸ "+line) + "\n")
 		} else {

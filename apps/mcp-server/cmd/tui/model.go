@@ -26,8 +26,10 @@ type playerRow struct {
 	Avail   string // bootstrap status: a/d/i/s/u
 	Minutes int
 	Points  int
+	Bonus   int // confirmed bonus (already inside Points)
+	Prov    int // provisional bonus from live BPS (not yet in Points)
 	Starter bool
-	Glyph   string // ● live, ✓ played, – DNP, ○ not yet, ⚠ doubt, · bench
+	Glyph   string // ● on pitch, ◉ in squad could appear, ✓ played, – DNP, ○ not yet, ⚠ doubt, · bench
 }
 
 type side struct {
@@ -82,6 +84,8 @@ type clubPlayer struct {
 	Pos     string
 	Minutes int
 	Points  int
+	Bonus   int
+	Prov    int
 	Start   bool
 }
 
@@ -118,6 +122,7 @@ type model struct {
 	liveSel   int
 	txSel     int
 	matchView bool
+	matchPage int // 0 lineups, 1 home formation, 2 away formation
 	txView    bool
 	w, h      int
 	loadErr   string
@@ -214,6 +219,8 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 				Minutes     int `json:"minutes"`
 				TotalPoints int `json:"total_points"`
 				Starts      int `json:"starts"`
+				Bonus       int `json:"bonus"`
+				Bps         int `json:"bps"`
 			} `json:"stats"`
 		} `json:"elements"`
 		Fixtures []struct {
@@ -290,6 +297,50 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			Team: teamShort[e.Team], TeamID: e.Team, Avail: e.Status}
 	}
 
+	// Provisional bonus per live fixture: rank appeared players by BPS; ties
+	// share the higher award (FPL's rule, approximated).
+	teamFixture := map[int]int{}
+	for i, f := range live.Fixtures {
+		teamFixture[f.TeamH] = i
+		teamFixture[f.TeamA] = i
+	}
+	type bpsEntry struct{ id, bps int }
+	byFixture := map[int][]bpsEntry{}
+	for _, e := range bootstrap.Elements {
+		st := live.Elements[fmt.Sprintf("%d", e.ID)].Stats
+		if fi, ok := teamFixture[e.Team]; ok && st.Minutes > 0 {
+			byFixture[fi] = append(byFixture[fi], bpsEntry{e.ID, st.Bps})
+		}
+	}
+	provBonus := map[int]int{}
+	for fi, entries := range byFixture {
+		if fi < 0 || fi >= len(live.Fixtures) {
+			continue
+		}
+		f := live.Fixtures[fi]
+		if !f.Started || f.Finished || f.FinishedProv {
+			continue
+		}
+		sort.Slice(entries, func(a, b int) bool { return entries[a].bps > entries[b].bps })
+		award, prevBps, prevAward := 3, -1, 3
+		for rank, en := range entries {
+			if rank >= 3 && en.bps != prevBps {
+				break
+			}
+			if en.bps == prevBps {
+				provBonus[en.id] = prevAward
+			} else {
+				provBonus[en.id] = award
+				prevAward = award
+			}
+			prevBps = en.bps
+			award = 3 - rank - 1
+			if award < 1 {
+				award = 1
+			}
+		}
+	}
+
 	// Per-club appearances for the match view, and a derived game clock (the
 	// fixture "minutes" field is unreliable in-play; use max player minutes).
 	appearances := map[int][]clubPlayer{} // club team id -> appeared players
@@ -302,6 +353,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		appearances[e.Team] = append(appearances[e.Team], clubPlayer{
 			Name: e.WebName, Pos: positions[e.ElementType],
 			Minutes: st.Minutes, Points: st.TotalPoints, Start: st.Starts > 0,
+			Bonus: st.Bonus, Prov: provBonus[e.ID],
 		})
 		if st.Minutes > maxMin[e.Team] {
 			maxMin[e.Team] = st.Minutes
@@ -366,6 +418,8 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			return "–"
 		case known && fx.started && p.Minutes > 0:
 			return "●"
+		case known && fx.started:
+			return "◉" // match live, hasn't appeared — could still come on
 		case p.Avail == "d" || p.Avail == "i" || p.Avail == "s":
 			return "⚠"
 		default:
@@ -391,6 +445,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			row.Starter = p.Position <= 11
 			st := live.Elements[fmt.Sprintf("%d", p.Element)].Stats
 			row.Minutes, row.Points = st.Minutes, st.TotalPoints
+			row.Bonus, row.Prov = st.Bonus, provBonus[p.Element]
 			row.Glyph = glyph(row)
 			if row.Starter {
 				s.Total += row.Points
@@ -695,6 +750,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if m.focus == 1 && liveCount(m.snap) > 0 {
 				m.matchView, m.txView = !m.matchView, false
+				m.matchPage = 0
 			}
 			if m.focus == 3 && len(m.snap.TxByManager) > 0 {
 				m.txView, m.matchView = !m.txView, false
@@ -718,9 +774,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.txSel = (m.txSel + 1) % max(1, len(m.snap.TxByManager))
 			}
 		case "left", "h":
-			m.selected = (m.selected + len(m.snap.Matchups) - 1) % max(1, len(m.snap.Matchups))
+			if m.matchView {
+				m.matchPage = (m.matchPage + 2) % 3
+			} else {
+				m.selected = (m.selected + len(m.snap.Matchups) - 1) % max(1, len(m.snap.Matchups))
+			}
 		case "right", "l":
-			m.selected = (m.selected + 1) % max(1, len(m.snap.Matchups))
+			if m.matchView {
+				m.matchPage = (m.matchPage + 1) % 3
+			} else {
+				m.selected = (m.selected + 1) % max(1, len(m.snap.Matchups))
+			}
 		case "r":
 			if !m.fetching {
 				m.fetching = true

@@ -22,4 +22,5 @@ var (
 	styWarn  = lipgloss.NewStyle().Foreground(alertC)
 	styFg    = lipgloss.NewStyle().Foreground(fgC)
 	styYou   = lipgloss.NewStyle().Bold(true).Foreground(accentC)
+	styTmrw  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#2E7BB5", Dark: "#9BD3F0"})
 )
