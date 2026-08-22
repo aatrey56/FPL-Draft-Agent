@@ -261,10 +261,17 @@ func leaguePulseHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolReq
 		game := map[string]any{}
 		_ = readJSONFile(filepath.Join(rawDir, "game/game.json"), &game)
 
+		// The week's calendar: trades/waivers/lineup deadlines (best effort).
+		deadlines, err := buildDeadlines(rawDir)
+		if err != nil {
+			deadlines = map[string]any{"error": err.Error()}
+		}
+
 		return toolMarshal(map[string]any{
 			"standings":    standings,
 			"transactions": transactions,
 			"game":         game,
+			"deadlines":    deadlines,
 			"note":         "kind: w=waiver, f=free agent, t=trade; result: a=accepted, d=denied. Pair with drop_radar for who is newly on the wire.",
 		})
 	}
