@@ -26,12 +26,14 @@ import (
 
 func main() {
 	var (
-		rawRoot = flag.String("raw-root", "data/raw", "root directory for raw JSON")
-		season  = flag.String("season", "2026-27", "season label")
-		league  = flag.Int("league", 0, "draft league id (default: LEAGUE_ID from .env)")
-		entry   = flag.Int("entry", 0, "my entry id (default: ENTRY_ID from .env)")
-		gw      = flag.Int("gw", 0, "gameweek (0 = current)")
-		once    = flag.Bool("once", false, "render one frame to stdout and exit")
+		rawRoot     = flag.String("raw-root", "data/raw", "root directory for raw JSON")
+		derivedRoot = flag.String("derived-root", "data/derived", "root directory for derived JSON (waiver/my_week rail)")
+		season      = flag.String("season", "2026-27", "season label")
+		league      = flag.Int("league", 0, "draft league id (default: LEAGUE_ID from .env)")
+		entry       = flag.Int("entry", 0, "my entry id (default: ENTRY_ID from .env)")
+		gw          = flag.Int("gw", 0, "gameweek (0 = current)")
+		once        = flag.Bool("once", false, "render one frame to stdout and exit")
+		width       = flag.Int("width", 130, "frame width for --once renders")
 	)
 	flag.Parse()
 
@@ -54,9 +56,11 @@ func main() {
 	}
 
 	dir := filepath.Join(*rawRoot, *season)
-	m := newModel(dir, *league, *entry, *gw)
+	derived := filepath.Join(*derivedRoot, *season)
+	m := newModel(dir, derived, *league, *entry, *gw)
 
 	if *once {
+		m.w = *width
 		if err := m.reload(); err != nil {
 			fmt.Fprintln(os.Stderr, "load:", err)
 			os.Exit(1)

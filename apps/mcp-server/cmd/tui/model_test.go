@@ -62,7 +62,7 @@ func fixtureDir(t *testing.T) string {
 }
 
 func TestLoadBuildsMatchupsAndFindsMine(t *testing.T) {
-	snap, myIndex, err := load(fixtureDir(t), 5, 502, 0)
+	snap, myIndex, err := load(fixtureDir(t), t.TempDir(), 5, 502, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,12 +79,12 @@ func TestLoadBuildsMatchupsAndFindsMine(t *testing.T) {
 }
 
 func TestViewRendersBothSides(t *testing.T) {
-	m := newModel(fixtureDir(t), 5, 501, 0)
+	m := newModel(fixtureDir(t), t.TempDir(), 5, 501, 0)
 	if err := m.reload(); err != nil {
 		t.Fatal(err)
 	}
 	view := m.View()
-	for _, want := range []string{"Harbor FC", "Ava Stone", "(you)", "Dock United", "Striker", "GW1", "bench"} {
+	for _, want := range []string{"Harbor FC", "Ava Stone", "◆you", "Dock United", "Striker", "GW1", "bench"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -92,7 +92,7 @@ func TestViewRendersBothSides(t *testing.T) {
 }
 
 func TestLoadErrorsWithoutData(t *testing.T) {
-	if _, _, err := load(t.TempDir(), 5, 501, 0); err == nil {
+	if _, _, err := load(t.TempDir(), t.TempDir(), 5, 501, 0); err == nil {
 		t.Fatal("expected error on empty dir")
 	}
 }

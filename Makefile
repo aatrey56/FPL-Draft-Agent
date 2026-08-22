@@ -57,4 +57,4 @@ start:
 
 ## tui: live matchup dashboard in the terminal (game days; ←/→ switch matchup, r refresh, q quit)
 tui:
-	cd apps/mcp-server && go run ./cmd/tui --raw-root ../../data/raw
+	cd apps/mcp-server && go run ./cmd/tui --raw-root ../../data/raw --derived-root ../../data/derived
