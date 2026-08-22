@@ -18,18 +18,15 @@ type mode int
 const (
 	minimal mode = iota
 	narrow
-	medium
 	wide
 )
 
 func (m *model) mode() mode {
 	switch {
-	case m.w >= 120:
-		return wide // matchup + side rail
-	case m.w >= 96:
-		return medium // matchup only, both squads, bars
+	case m.w >= 90:
+		return wide // 2×2 grid — fits a half-screen terminal split
 	case m.w >= 72:
-		return narrow // both squads, no bars, bench collapsed
+		return narrow // matchup only, no bars, bench collapsed
 	default:
 		return minimal // scoreboard + top scorers only
 	}
@@ -258,7 +255,7 @@ func (m *model) matchupBody(width int) string {
 	}
 
 	collapse := md <= narrow
-	bars := md >= medium
+	bars := md == wide
 	cols := lipgloss.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().Width(half).Render(squadColumn(mu.A, half, bars, collapse, mp)),
 		styDim.Render("│ "),
