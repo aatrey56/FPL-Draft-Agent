@@ -61,6 +61,24 @@ func ptsLabel(points, bonus, prov int) string {
 
 const ptsSlotW = 8
 
+// gaLabel renders goal involvement ("2G 1A") padded to a fixed slot so the
+// lineup columns stay aligned whatever the scoreline.
+func gaLabel(goals, assists, width int) string {
+	parts := []string{}
+	if goals > 0 {
+		parts = append(parts, fmt.Sprintf("%dG", goals))
+	}
+	if assists > 0 {
+		parts = append(parts, fmt.Sprintf("%dA", assists))
+	}
+	label := strings.Join(parts, " ")
+	pad := strings.Repeat(" ", max(0, width-lipgloss.Width(label)))
+	if label == "" {
+		return pad
+	}
+	return styScore.Render(label) + pad
+}
+
 func clamp(v, lo, hi int) int {
 	if v < lo {
 		return lo
@@ -106,7 +124,7 @@ func glyphStyle(g string, pts int) lipgloss.Style {
 			return styLive
 		}
 		return styFg
-	case "⚠":
+	case "⚠", "✗":
 		return styWarn
 	case "·", "–":
 		return styDim
@@ -290,7 +308,7 @@ func (m *model) railBody(width int) string {
 		}
 	}
 	if len(m.snap.NeedsYou) > 0 {
-		b.WriteString("\n" + styDim.Render("─ suggestions "+strings.Repeat("─", clamp(width-16, 0, 30))) + "\n")
+		b.WriteString("\n" + styDim.Render("─ Suggestions "+strings.Repeat("─", clamp(width-16, 0, 30))) + "\n")
 		for _, r := range m.snap.NeedsYou {
 			sty := styDim
 			switch r.Glyph {
@@ -299,10 +317,8 @@ func (m *model) railBody(width int) string {
 			case "↑":
 				sty = styLive
 			}
-			name := ansi.Truncate(r.Name, 13, "…")
-			note := ansi.Truncate(r.Note, max(6, width-17), "…")
-			b.WriteString(fmt.Sprintf("%s %s %s\n", sty.Render(r.Glyph),
-				name+strings.Repeat(" ", max(0, 13-lipgloss.Width(name))), styDim.Render(note)))
+			b.WriteString(sty.Render(r.Glyph) + " " + styFg.Render(ansi.Truncate(r.Name, width-2, "…")) + "\n")
+			b.WriteString("  " + styDim.Render(ansi.Truncate(r.Note, width-3, "…")) + "\n")
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -316,11 +332,13 @@ func (m *model) txBody(width int, focused bool) string {
 	}
 	var b strings.Builder
 	for i, mgr := range m.snap.TxByManager {
-		latest := ""
+		landed, missed := "", ""
 		for _, t := range mgr.Txs {
-			if t.Accepted {
-				latest = t.In
-				break
+			if t.Accepted && landed == "" {
+				landed = t.In
+			}
+			if !t.Accepted && missed == "" {
+				missed = t.In
 			}
 		}
 		cursor := "  "
@@ -329,10 +347,13 @@ func (m *model) txBody(width int, focused bool) string {
 		}
 		team := ansi.Truncate(mgr.Name, width-4, "…")
 		b.WriteString(cursor + styFg.Render(team) + "\n")
-		if latest != "" {
-			b.WriteString(styLive.Render(ansi.Truncate("    +"+latest, width, "…")) + "\n")
-		} else {
-			b.WriteString(styDim.Render("    no move landed") + "\n")
+		switch {
+		case landed != "":
+			b.WriteString(styLive.Render(ansi.Truncate("    +"+landed, width, "…")) + "\n")
+		case missed != "":
+			b.WriteString(styWarn.Render(ansi.Truncate("    ✗"+missed, width, "…")) + "\n")
+		default:
+			b.WriteString(styDim.Render("    no transactions") + "\n")
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -366,11 +387,12 @@ func (m *model) txDetailBody(width int) string {
 // matchBody renders the match view: both lineups as lists (full names,
 // minutes, points). ←/→ switches between live matches.
 func (m *model) matchBody(width int) string {
-	if len(m.snap.Matches) == 0 {
+	games := m.gamesList()
+	if len(games) == 0 {
 		return styDim.Render("no live matches")
 	}
-	sel := clamp(m.liveSel, 0, len(m.snap.Matches)-1)
-	md := m.snap.Matches[sel]
+	sel := clamp(m.liveSel, 0, len(games)-1)
+	md := games[sel]
 
 	scoreLine := fmt.Sprintf("%s %s %s",
 		styScore.Render(fmt.Sprintf("%s %d", md.Home, md.HS)),
@@ -381,8 +403,8 @@ func (m *model) matchBody(width int) string {
 	} else if md.Minute > 0 {
 		scoreLine += "  " + styLive.Render(clockLabel(md.Minute))
 	}
-	if len(m.snap.Matches) > 1 {
-		scoreLine += "   " + styDim.Render(fmt.Sprintf("‹ %d/%d ›", sel+1, len(m.snap.Matches)))
+	if len(games) > 1 {
+		scoreLine += "   " + styDim.Render(fmt.Sprintf("‹ %d/%d ›", sel+1, len(games)))
 	}
 	if pad := (width - lipgloss.Width(scoreLine)) / 2; pad > 0 {
 		scoreLine = strings.Repeat(" ", pad) + scoreLine
@@ -393,6 +415,10 @@ func (m *model) matchBody(width int) string {
 // matchLineups: both clubs side by side, list form, names uncut.
 func (m *model) matchLineups(md matchDetail, width int) string {
 	half := (width - 3) / 2
+	gaW := 0
+	if half >= 34 {
+		gaW = 6 // reserved "3G 2A" slot so goal rows stay aligned
+	}
 	col := func(club string, xi, subs []clubPlayer) string {
 		var b strings.Builder
 		b.WriteString(styFg.Bold(true).Render(club) + "\n")
@@ -400,10 +426,17 @@ func (m *model) matchLineups(md matchDetail, width int) string {
 			pts := ptsLabel(p.Points, p.Bonus, p.Prov)
 			clock := fmt.Sprintf("%4s", clockLabel(p.Minutes))
 			overhead := 2 + 5 + 1 + 4 + 1 + ptsSlotW
+			if gaW > 0 {
+				overhead += gaW + 1
+			}
 			nameW := clamp(half-overhead, 6, 20)
 			name := ansi.Truncate(p.Name, nameW, "…")
-			return sty.Render(glyph+" "+fmt.Sprintf("%-4s", p.Pos)+name+
-				strings.Repeat(" ", max(0, nameW-lipgloss.Width(name)))+" "+clock+" ") + pts
+			line := sty.Render(glyph + " " + fmt.Sprintf("%-4s", p.Pos) + name +
+				strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))) + " " + clock + " ")
+			if gaW > 0 {
+				line += gaLabel(p.Goals, p.Assists, gaW) + " "
+			}
+			return line + pts
 		}
 		for _, p := range xi {
 			switch {
@@ -488,14 +521,15 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 	return " " + strings.Join(lines, "\n ")
 }
 
-// liveBody lists every started game — in-play first (green, with clock),
-// completed after (dim, FT). Any of them opens the lineups view with enter.
+// liveBody renders one page of the games panel: in-play games on page 1,
+// completed games on page 2 (←/→ flips). Enter opens the lineups view.
 func (m *model) liveBody(width int, focused bool) string {
-	if len(m.snap.Matches) == 0 {
+	games := m.gamesList()
+	if len(games) == 0 {
 		return styDim.Render("no games yet")
 	}
 	var b strings.Builder
-	for i, g := range m.snap.Matches {
+	for i, g := range games {
 		label, sty := clockLabel(g.Minute), styLive
 		if g.Finished {
 			label, sty = "FT", styDim
@@ -506,6 +540,13 @@ func (m *model) liveBody(width int, focused bool) string {
 		} else {
 			b.WriteString(sty.Render("  "+line) + "\n")
 		}
+	}
+	if m.gamesPages() > 1 {
+		page := 1
+		if games[0].Finished {
+			page = 2
+		}
+		b.WriteString(styDim.Render(fmt.Sprintf("‹ %d/2 ›", page)) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -566,8 +607,8 @@ func (m *model) View() string {
 			liveW = clamp(w/6, 20, 24)
 		}
 		txW = clamp(w-66-leagueW-liveW-3, 0, 30)
-		if txW < 18 {
-			txW = 0
+		if txW < 18 || m.matchView {
+			txW = 0 // the match view borrows this room for uncut lineups
 		}
 	}
 	mainW := w - leagueW - liveW - txW
@@ -576,9 +617,13 @@ func (m *model) View() string {
 			mainW--
 		}
 	}
-	if md == wide && mainW > 66 {
-		slack := mainW - 66
-		mainW = 66
+	capW := 66
+	if m.matchView {
+		capW = 92
+	}
+	if md == wide && mainW > capW {
+		slack := mainW - capW
+		mainW = capW
 		leagueW = clamp(leagueW+slack, 30, 44)
 	}
 
@@ -595,11 +640,14 @@ func (m *model) View() string {
 
 	screen := matchupPanel
 	if liveW > 0 {
-		gamesTitle := "Live"
-		if liveCount(m.snap) == 0 {
+		gamesTitle, gamesHint := "Live", "↑↓ ↵"
+		if games := m.gamesList(); len(games) > 0 && games[0].Finished {
 			gamesTitle = "Played"
 		}
-		livePanel := Panel(gamesTitle, "↑↓ ↵", m.liveBody(liveW-4, m.focus == 1), liveW, m.focus == 1)
+		if m.gamesPages() > 1 {
+			gamesHint = "←→ ↑↓ ↵"
+		}
+		livePanel := Panel(gamesTitle, gamesHint, m.liveBody(liveW-4, m.focus == 1), liveW, m.focus == 1)
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, livePanel, " ", screen)
 	}
 	if leagueW > 0 {

@@ -170,12 +170,16 @@ func TestPlayedGamesListAfterLiveAndOpenLineups(t *testing.T) {
 	if m.snap.Matches[0].Finished || !m.snap.Matches[1].Finished {
 		t.Fatalf("live game must list before the played one: %+v", m.snap.Matches)
 	}
-	list := m.liveBody(30, true)
-	if !strings.Contains(list, "ARS 1-0 COV") || !strings.Contains(list, "LEE 2-0 HUL FT") {
-		t.Fatalf("games list wrong:\n%s", list)
+	// Page 1 holds the live game, page 2 the completed one.
+	if list := m.liveBody(30, true); !strings.Contains(list, "ARS 1-0 COV") || strings.Contains(list, "LEE") {
+		t.Fatalf("live page wrong:\n%s", list)
+	}
+	m.gamesPage = 1
+	if list := m.liveBody(30, true); !strings.Contains(list, "LEE 2-0 HUL FT") || strings.Contains(list, "ARS") {
+		t.Fatalf("played page wrong:\n%s", list)
 	}
 	// Opening the completed game shows its lineup with an FT score line.
-	m.matchView, m.liveSel = true, 1
+	m.matchView, m.liveSel = true, 0
 	view := m.matchBody(80)
 	for _, want := range []string{"LEE 2", "0 HUL", "FT", "EarlyBird"} {
 		if !strings.Contains(view, want) {
