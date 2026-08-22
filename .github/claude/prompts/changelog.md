@@ -1,8 +1,7 @@
 You are Claude Code generating a structured changelog for the FPL Draft Agent repository.
 
-This runs automatically when code crosses one of two gated branch transitions:
-- `dev → stage`   → generates a **pre-release** changelog
-- `stage → main`  → generates a **release** changelog
+This runs when a release is cut from `main` (trunk-based flow: feature
+branch → PR → main; releases are tagged from main).
 
 The workflow will provide you with:
 - The transition type and version label
