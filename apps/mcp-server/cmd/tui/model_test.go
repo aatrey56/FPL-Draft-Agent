@@ -131,3 +131,55 @@ func TestMatchViewRendersClubXIs(t *testing.T) {
 		}
 	}
 }
+
+func TestPlayedGamesListAfterLiveAndOpenLineups(t *testing.T) {
+	dir := fixtureDir(t)
+	write(t, filepath.Join(dir, "bootstrap/bootstrap-static.json"), map[string]any{
+		"elements": []map[string]any{
+			{"id": 1, "web_name": "Striker", "element_type": 4, "team": 1},
+			{"id": 2, "web_name": "Benchman", "element_type": 3, "team": 1},
+			{"id": 3, "web_name": "OppKeeper", "element_type": 1, "team": 2},
+			{"id": 4, "web_name": "EarlyBird", "element_type": 2, "team": 3},
+		},
+		"teams": []map[string]any{
+			{"id": 1, "short_name": "ARS"}, {"id": 2, "short_name": "COV"},
+			{"id": 3, "short_name": "LEE"}, {"id": 4, "short_name": "HUL"},
+		},
+	})
+	// Fixture order in the file is finished-first; the list must still put
+	// the live game on top and the completed one after it, marked FT.
+	write(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
+		"elements": map[string]any{
+			"1": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 2, "starts": 1}},
+			"4": map[string]any{"stats": map[string]any{"minutes": 90, "total_points": 6, "starts": 1}},
+		},
+		"fixtures": []map[string]any{
+			{"team_h": 3, "team_a": 4, "team_h_score": 2, "team_a_score": 0,
+				"started": true, "finished": true, "minutes": 90},
+			{"team_h": 1, "team_a": 2, "team_h_score": 1, "team_a_score": 0,
+				"started": true, "finished": false},
+		},
+	})
+	m := newModel(dir, t.TempDir(), 5, 501, 0)
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.snap.Matches) != 2 {
+		t.Fatalf("expected live + played matches, got %d", len(m.snap.Matches))
+	}
+	if m.snap.Matches[0].Finished || !m.snap.Matches[1].Finished {
+		t.Fatalf("live game must list before the played one: %+v", m.snap.Matches)
+	}
+	list := m.liveBody(30, true)
+	if !strings.Contains(list, "ARS 1-0 COV") || !strings.Contains(list, "LEE 2-0 HUL FT") {
+		t.Fatalf("games list wrong:\n%s", list)
+	}
+	// Opening the completed game shows its lineup with an FT score line.
+	m.matchView, m.liveSel = true, 1
+	view := m.matchBody(80)
+	for _, want := range []string{"LEE 2", "0 HUL", "FT", "EarlyBird"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("played-game lineups missing %q:\n%s", want, view)
+		}
+	}
+}

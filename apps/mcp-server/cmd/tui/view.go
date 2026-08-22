@@ -376,7 +376,9 @@ func (m *model) matchBody(width int) string {
 		styScore.Render(fmt.Sprintf("%s %d", md.Home, md.HS)),
 		styDim.Render("—"),
 		styScore.Render(fmt.Sprintf("%d %s", md.AS, md.Away)))
-	if md.Minute > 0 {
+	if md.Finished {
+		scoreLine += "  " + styDim.Render("FT")
+	} else if md.Minute > 0 {
 		scoreLine += "  " + styLive.Render(clockLabel(md.Minute))
 	}
 	if len(m.snap.Matches) > 1 {
@@ -486,25 +488,24 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 	return " " + strings.Join(lines, "\n ")
 }
 
-// liveBody lists in-play fixtures; the selected one is highlighted when the
-// panel holds focus.
+// liveBody lists every started game — in-play first (green, with clock),
+// completed after (dim, FT). Any of them opens the lineups view with enter.
 func (m *model) liveBody(width int, focused bool) string {
+	if len(m.snap.Matches) == 0 {
+		return styDim.Render("no games yet")
+	}
 	var b strings.Builder
-	i := 0
-	for _, f := range m.snap.Fixtures {
-		if !f.Started || f.Finished {
-			continue
+	for i, g := range m.snap.Matches {
+		label, sty := clockLabel(g.Minute), styLive
+		if g.Finished {
+			label, sty = "FT", styDim
 		}
-		line := fmt.Sprintf("%s %d-%d %s %s", f.Home, f.HS, f.AS, f.Away, clockLabel(f.Minutes))
+		line := fmt.Sprintf("%s %d-%d %s %s", g.Home, g.HS, g.AS, g.Away, label)
 		if focused && i == m.liveSel {
 			b.WriteString(styYou.Render("▸ "+line) + "\n")
 		} else {
-			b.WriteString(styLive.Render("  "+line) + "\n")
+			b.WriteString(sty.Render("  "+line) + "\n")
 		}
-		i++
-	}
-	if i == 0 {
-		b.WriteString(styDim.Render("no games in play"))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -561,7 +562,7 @@ func (m *model) View() string {
 	leagueW, liveW, txW := 0, 0, 0
 	if md == wide {
 		leagueW = clamp(w/4, 30, 36)
-		if liveCount(m.snap) > 0 {
+		if len(m.snap.Matches) > 0 {
 			liveW = clamp(w/6, 20, 24)
 		}
 		txW = clamp(w-66-leagueW-liveW-3, 0, 30)
@@ -594,7 +595,11 @@ func (m *model) View() string {
 
 	screen := matchupPanel
 	if liveW > 0 {
-		livePanel := Panel("Live", "↑↓ ↵", m.liveBody(liveW-4, m.focus == 1), liveW, m.focus == 1)
+		gamesTitle := "Live"
+		if liveCount(m.snap) == 0 {
+			gamesTitle = "Played"
+		}
+		livePanel := Panel(gamesTitle, "↑↓ ↵", m.liveBody(liveW-4, m.focus == 1), liveW, m.focus == 1)
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, livePanel, " ", screen)
 	}
 	if leagueW > 0 {

@@ -93,6 +93,7 @@ type clubPlayer struct {
 type matchDetail struct {
 	Home, Away         string
 	HS, AS, Minute     int
+	Finished           bool
 	HomeXI, AwayXI     []clubPlayer
 	HomeSubs, AwaySubs []clubPlayer
 }
@@ -359,6 +360,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 	}
 	posOrder := map[string]int{"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
+	var doneMatches []matchDetail // live matches list first, completed after
 	for i := range snap.Fixtures {
 		f := &snap.Fixtures[i]
 		hID, aID := 0, 0
@@ -373,10 +375,11 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		if m := max(maxMin[hID], maxMin[aID]); f.Started && !f.Finished && m > f.Minutes {
 			f.Minutes = m
 		}
-		if !f.Started || f.Finished {
+		if !f.Started {
 			continue
 		}
-		md := matchDetail{Home: f.Home, Away: f.Away, HS: f.HS, AS: f.AS, Minute: f.Minutes}
+		md := matchDetail{Home: f.Home, Away: f.Away, HS: f.HS, AS: f.AS,
+			Minute: f.Minutes, Finished: f.Finished}
 		split := func(teamID int) (xi, subs []clubPlayer) {
 			players := appearances[teamID]
 			sort.Slice(players, func(a, b int) bool {
@@ -399,8 +402,13 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 		md.HomeXI, md.HomeSubs = split(hID)
 		md.AwayXI, md.AwaySubs = split(aID)
-		snap.Matches = append(snap.Matches, md)
+		if md.Finished {
+			doneMatches = append(doneMatches, md)
+		} else {
+			snap.Matches = append(snap.Matches, md)
+		}
 	}
+	snap.Matches = append(snap.Matches, doneMatches...)
 
 	glyph := func(p playerRow) string {
 		if !p.Starter {
@@ -746,7 +754,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "enter":
-			if m.focus == 1 && liveCount(m.snap) > 0 {
+			if m.focus == 1 && len(m.snap.Matches) > 0 {
 				m.matchView, m.txView = !m.matchView, false
 			}
 			if m.focus == 3 && len(m.snap.TxByManager) > 0 {
@@ -758,14 +766,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focus = (m.focus + 1) % 4
 		case "up", "k":
 			if m.focus == 1 {
-				m.liveSel = (m.liveSel + max(1, liveCount(m.snap)) - 1) % max(1, liveCount(m.snap))
+				m.liveSel = (m.liveSel + max(1, len(m.snap.Matches)) - 1) % max(1, len(m.snap.Matches))
 			}
 			if m.focus == 3 {
 				m.txSel = (m.txSel + max(1, len(m.snap.TxByManager)) - 1) % max(1, len(m.snap.TxByManager))
 			}
 		case "down", "j":
 			if m.focus == 1 {
-				m.liveSel = (m.liveSel + 1) % max(1, liveCount(m.snap))
+				m.liveSel = (m.liveSel + 1) % max(1, len(m.snap.Matches))
 			}
 			if m.focus == 3 {
 				m.txSel = (m.txSel + 1) % max(1, len(m.snap.TxByManager))
