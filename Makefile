@@ -18,9 +18,13 @@ derive:
 ## weekly: the whole weekly loop (fetch + derive)
 weekly: fetch derive
 
-## matchday: manual 5-min refresh loop (only needed if autopilot is off)
+## livefetch: minimal in-play refresh — current GW live points only (~2s)
+livefetch:
+	cd apps/mcp-server && go run ./cmd/dev --season $(SEASON) $(GO_ROOTS) --live-only --refresh-now
+
+## matchday: near-live loop for game days — live points every 60s, full refresh every 10 min
 matchday:
-	while true; do $(MAKE) fetch; date; sleep 300; done
+	bash scripts/matchday.sh
 
 ## preflight: full local CI (Go vet/test/fmt + uv sync/ruff/pytest)
 preflight:

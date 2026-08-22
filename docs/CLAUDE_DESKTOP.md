@@ -74,7 +74,7 @@ make weekly     # fetch + ownership + waiver + my_week
 During matches, keep `gw_live` fresh in a second terminal:
 
 ```bash
-make matchday   # full fetch every 5 minutes; Ctrl-C when the day's games end
+make matchday   # near-live: live points every 60s + full refresh every 10 min; Ctrl-C after the games
 ```
 
 Automate weekly with cron: see the crontab example in scripts/weekly.sh.

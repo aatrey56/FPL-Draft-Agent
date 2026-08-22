@@ -84,7 +84,7 @@ func doTick() tea.Cmd {
 
 func runFetch() tea.Cmd {
 	return func() tea.Msg {
-		cmd := exec.Command("make", "fetch")
+		cmd := exec.Command("make", "livefetch")
 		cmd.Dir = repoRootGuess()
 		return refreshDone{err: cmd.Run()}
 	}

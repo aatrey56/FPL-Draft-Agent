@@ -49,6 +49,7 @@ func main() {
 		summaryRisks    = flag.String("summary-risks", "low,med,high", "comma-separated risk levels for summaries")
 		season          = flag.String("season", "", "season label (e.g. 2026-27): nests raw/derived roots as <root>/<season>. Empty = legacy flat layout (the 2025-26 archive) — pass it for all new-season fetches so old seasons are never overwritten")
 		elementStatus   = flag.Bool("element-status", true, "fetch league element-status (ownership) and archive a timestamped snapshot for the drop-radar")
+		liveOnly        = flag.Bool("live-only", false, "minimal in-play refresh: game meta + current GW live points only (for near-live matchday tracking)")
 	)
 	flag.Parse()
 
@@ -101,6 +102,19 @@ func main() {
 	var game GameMeta
 	if err := json.Unmarshal(gameBody, &game); err != nil {
 		log.Fatal(err)
+	}
+
+	// --live-only: the near-live matchday path. One small GET for the current
+	// GW's live points (plus the game clock already fetched above) and exit —
+	// cheap enough to run every minute during matches.
+	if *liveOnly {
+		gw := game.CurrentEvent
+		if gw == 0 {
+			gw = game.NextEvent
+		}
+		must(client.EventLive(gw, true))
+		log.Printf("live-only refresh: GW %d\n", gw)
+		return
 	}
 
 	refreshBootstrap := forceAll || scheduledActive
