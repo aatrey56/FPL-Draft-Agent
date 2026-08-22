@@ -45,10 +45,11 @@ type side struct {
 type matchup struct{ A, B side }
 
 type standingRow struct {
-	Name   string
-	Record string
-	Total  int
-	Mine   bool
+	Name    string
+	Record  string
+	Total   int
+	Mine    bool
+	EntryID int
 }
 
 type railItem struct {
@@ -92,7 +93,6 @@ type clubPlayer struct {
 type matchDetail struct {
 	Home, Away         string
 	HS, AS, Minute     int
-	HomeForm, AwayForm string
 	HomeXI, AwayXI     []clubPlayer
 	HomeSubs, AwaySubs []clubPlayer
 }
@@ -122,7 +122,6 @@ type model struct {
 	liveSel   int
 	txSel     int
 	matchView bool
-	matchPage int // 0 lineups, 1 home formation, 2 away formation
 	txView    bool
 	w, h      int
 	loadErr   string
@@ -378,7 +377,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			continue
 		}
 		md := matchDetail{Home: f.Home, Away: f.Away, HS: f.HS, AS: f.AS, Minute: f.Minutes}
-		split := func(teamID int) (xi, subs []clubPlayer, form string) {
+		split := func(teamID int) (xi, subs []clubPlayer) {
 			players := appearances[teamID]
 			sort.Slice(players, func(a, b int) bool {
 				if players[a].Start != players[b].Start {
@@ -389,20 +388,17 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 				}
 				return players[a].Minutes > players[b].Minutes
 			})
-			counts := map[string]int{}
 			for _, p := range players {
 				if p.Start {
 					xi = append(xi, p)
-					counts[p.Pos]++
 				} else {
 					subs = append(subs, p)
 				}
 			}
-			form = fmt.Sprintf("%d-%d-%d", counts["DEF"], counts["MID"], counts["FWD"])
 			return
 		}
-		md.HomeXI, md.HomeSubs, md.HomeForm = split(hID)
-		md.AwayXI, md.AwaySubs, md.AwayForm = split(aID)
+		md.HomeXI, md.HomeSubs = split(hID)
+		md.AwayXI, md.AwaySubs = split(aID)
 		snap.Matches = append(snap.Matches, md)
 	}
 
@@ -488,10 +484,11 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	for _, s := range rows {
 		eid := entryByLE[s.LeagueEntry]
 		snap.Standings = append(snap.Standings, standingRow{
-			Name:   nameByEntry[eid],
-			Record: fmt.Sprintf("%d-%d-%d", s.MatchesWon, s.MatchesDrawn, s.MatchesLost),
-			Total:  s.PointsFor,
-			Mine:   eid == entry,
+			Name:    nameByEntry[eid],
+			Record:  fmt.Sprintf("%d-%d-%d", s.MatchesWon, s.MatchesDrawn, s.MatchesLost),
+			Total:   s.PointsFor,
+			Mine:    eid == entry,
+			EntryID: eid,
 		})
 	}
 
@@ -740,7 +737,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "fetch failed: " + msg.err.Error()
 		} else {
-			m.status = "fetched " + time.Now().Format("15:04:05")
+			// Success is silent — the header's "data" stamp is the truth.
+			m.status = ""
 		}
 		return m, nil
 	case tea.KeyMsg:
@@ -750,7 +748,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if m.focus == 1 && liveCount(m.snap) > 0 {
 				m.matchView, m.txView = !m.matchView, false
-				m.matchPage = 0
 			}
 			if m.focus == 3 && len(m.snap.TxByManager) > 0 {
 				m.txView, m.matchView = !m.txView, false
@@ -775,13 +772,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "left", "h":
 			if m.matchView {
-				m.matchPage = (m.matchPage + 2) % 3
+				if n := len(m.snap.Matches); n > 0 {
+					m.liveSel = (m.liveSel + n - 1) % n
+				}
 			} else {
 				m.selected = (m.selected + len(m.snap.Matchups) - 1) % max(1, len(m.snap.Matchups))
 			}
 		case "right", "l":
 			if m.matchView {
-				m.matchPage = (m.matchPage + 1) % 3
+				if n := len(m.snap.Matches); n > 0 {
+					m.liveSel = (m.liveSel + 1) % n
+				}
 			} else {
 				m.selected = (m.selected + 1) % max(1, len(m.snap.Matchups))
 			}
