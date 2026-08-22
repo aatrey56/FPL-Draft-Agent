@@ -111,19 +111,31 @@ func glyphStyle(g string, pts int) lipgloss.Style {
 	}
 }
 
-func playerLine(p playerRow, nameW, barW, maxPts int) string {
+func playerLine(p playerRow, half, barW, maxPts int) string {
+	pts := ptsLabel(p.Points, p.Bonus, p.Prov)
+	// Everything except the name, measured exactly; the name gets the rest.
+	fixedTail := fmt.Sprintf(" %-4s %3d' ", p.Team, p.Minutes)
+	overhead := 2 + 5 + lipgloss.Width(fixedTail) + lipgloss.Width(pts) + barW + boolToInt(barW > 0)
+	nameW := clamp(half-overhead, 6, 20)
 	name := ansi.Truncate(p.Name, nameW, "…")
 	base := p.Glyph + " " + fmt.Sprintf("%-4s", p.Pos) +
-		name + strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))) + " " +
-		fmt.Sprintf("%-4s %3d' ", p.Team, p.Minutes)
-	line := glyphStyle(p.Glyph, p.Points).Render(base) + ptsLabel(p.Points, p.Bonus, p.Prov)
+		name + strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))) + fixedTail
+	sty := glyphStyle(p.Glyph, p.Points)
 	if !p.Starter {
-		line = styDim.Render(base) + ptsLabel(p.Points, p.Bonus, p.Prov)
+		sty = styDim
 	}
+	line := sty.Render(base) + pts
 	if barW > 0 {
 		line += " " + styLive.Render(barStr(p.Points, maxPts, barW))
 	}
 	return line
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func maxPoints(mu matchup) int {
@@ -140,11 +152,9 @@ func maxPoints(mu matchup) int {
 
 // squadColumn renders one side's rows for the given half-width.
 func squadColumn(s side, half int, showBars, collapseBench bool, maxPts int) string {
-	fixed := 2 + 5 + 5 + 5 + 8 // glyph+space, pos, team, mins, pts + bonus suffix
-	nameW := clamp(half-fixed-10, 8, 18)
 	barW := 0
-	if showBars {
-		barW = clamp(half-fixed-nameW-2, 0, 7)
+	if showBars && half > 40 {
+		barW = clamp(half-40, 0, 7)
 	}
 	var b strings.Builder
 	benched := 0
@@ -158,7 +168,7 @@ func squadColumn(s side, half int, showBars, collapseBench bool, maxPts int) str
 				b.WriteString(styDim.Render("─ bench "+strings.Repeat("─", clamp(half-9, 0, 40))) + "\n")
 			}
 		}
-		b.WriteString(playerLine(p, nameW, barW, maxPts) + "\n")
+		b.WriteString(playerLine(p, half, barW, maxPts) + "\n")
 	}
 	if collapseBench && benched > 0 {
 		b.WriteString(styDim.Render(fmt.Sprintf("↓ bench · %d more", benched)) + "\n")
@@ -363,22 +373,30 @@ func (m *model) matchLineups(md matchDetail, width int) string {
 	half := (width - 3) / 2
 	col := func(club, form string, xi, subs []clubPlayer) string {
 		var b strings.Builder
-		b.WriteString(styFg.Bold(true).Render(club) + " " + styDim.Render(form) + "\n")
+		b.WriteString(styFg.Bold(true).Render(club) + " " + styDim.Render(form) + " " + styDim.Render("(FPL positions)") + "\n")
+		row := func(glyph string, sty lipgloss.Style, p clubPlayer) string {
+			pts := ptsLabel(p.Points, p.Bonus, p.Prov)
+			clock := clockLabel(p.Minutes)
+			overhead := 2 + 5 + 1 + lipgloss.Width(clock) + 1 + lipgloss.Width(pts)
+			nameW := clamp(half-overhead, 6, 20)
+			name := ansi.Truncate(p.Name, nameW, "…")
+			return sty.Render(glyph+" "+fmt.Sprintf("%-4s", p.Pos)+name+
+				strings.Repeat(" ", max(0, nameW-lipgloss.Width(name)))+" "+clock+" ") + pts
+		}
 		for _, p := range xi {
-			line := fmt.Sprintf("%-4s %-16s %s %s", p.Pos, p.Name, clockLabel(p.Minutes), ptsLabel(p.Points, p.Bonus, p.Prov))
 			switch {
 			case p.Minutes > 0 && p.Minutes < md.Minute-2:
-				b.WriteString(styDim.Render("◐ ") + styDim.Render(line) + "\n")
+				b.WriteString(row("◐", styDim, p) + "\n")
 			case p.Minutes > 0:
-				b.WriteString(styLive.Render("● "+line) + "\n")
+				b.WriteString(row("●", styLive, p) + "\n")
 			default:
-				b.WriteString(styDim.Render("○ "+line) + "\n")
+				b.WriteString(row("○", styDim, p) + "\n")
 			}
 		}
 		if len(subs) > 0 {
 			b.WriteString(styDim.Render("─ subs on ─────────") + "\n")
 			for _, p := range subs {
-				b.WriteString(styDim.Render(fmt.Sprintf("◒ %-4s %-16s %d' ", p.Pos, p.Name, p.Minutes)) + ptsLabel(p.Points, p.Bonus, p.Prov) + "\n")
+				b.WriteString(row("◒", styDim, p) + "\n")
 			}
 		}
 		return strings.TrimRight(b.String(), "\n")
@@ -393,7 +411,7 @@ func (m *model) matchLineups(md matchDetail, width int) string {
 // uncut names, then the subs who have come on.
 func (m *model) matchFormation(club, form string, xi, subs []clubPlayer, minute, width int) string {
 	var b strings.Builder
-	title := styFg.Bold(true).Render(club) + " " + styDim.Render(form)
+	title := styFg.Bold(true).Render(club) + " " + styDim.Render(form+" (FPL positions)")
 	if pad := (width - lipgloss.Width(title)) / 2; pad > 0 {
 		title = strings.Repeat(" ", pad) + title
 	}
@@ -529,8 +547,8 @@ func (m *model) header(width int) string {
 		due = ""
 		gap1 = width - lipgloss.Width(title) - lipgloss.Width(stamp) - 8
 	}
-	half := max(1, gap1/2)
-	line := "  " + title + strings.Repeat(" ", half) + due + strings.Repeat(" ", max(1, gap1-half)) + stamp + "  "
+	lead := min(8, max(2, gap1/4))
+	line := "  " + title + strings.Repeat(" ", lead) + due + strings.Repeat(" ", max(1, gap1-lead)) + stamp + "  "
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(ruleC).Width(width - 2)
 	return box.Render(line)
 }
@@ -601,7 +619,7 @@ func (m *model) View() string {
 	screen := matchupPanel
 	if liveW > 0 {
 		livePanel := Panel("Live", "↑↓ ↵", m.liveBody(liveW-4, m.focus == 1), liveW, m.focus == 1)
-		screen = lipgloss.JoinHorizontal(lipgloss.Top, screen, " ", livePanel)
+		screen = lipgloss.JoinHorizontal(lipgloss.Top, livePanel, " ", screen)
 	}
 	if leagueW > 0 {
 		league := Panel("League", "tab", m.railBody(leagueW-4), leagueW, m.focus == 2)
