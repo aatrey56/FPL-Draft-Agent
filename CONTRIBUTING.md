@@ -3,19 +3,21 @@
 Thanks for helping improve FPL Draft Agent.
 
 ## Development Setup
-- Go code lives in `apps/mcp-server/`.
-- Python backend lives in `apps/backend/`.
-- Web UI lives in `apps/web/`.
+- Go code lives in `apps/mcp-server/` (server, fetcher, TUI).
+- Python ML pipeline lives in `apps/backend/` (managed by [uv](https://docs.astral.sh/uv/)
+  via `pyproject.toml` + `uv.lock` — `uv sync` once, `uv add <pkg>` for dependencies).
+- `apps/web/` is the deprecated legacy UI (kept for history; not developed).
 
 ## Local Checks
-- Go vet: `go vet ./...` from `apps/mcp-server/`.
-- Go test: `go test ./...` from `apps/mcp-server/`.
-- Go format: `gofmt -w .` from `apps/mcp-server/`.
-- Go mod tidy: `go mod tidy` from `apps/mcp-server/` (ensure no diffs in go.mod/go.sum).
-- Python compile: `python -m compileall apps/backend/backend` from repo root.
-- Python tooling: `pip install ruff pytest` (in your active venv).
-- Python lint: `ruff check` from repo root.
-- Python tests: `PYTHONPATH=apps/backend pytest` from repo root.
+One command runs everything CI runs:
+
+```bash
+make preflight   # go vet/test/gofmt + uv sync + ruff + pytest
+```
+
+Individually: `go test ./...` / `gofmt -w .` / `go mod tidy` from
+`apps/mcp-server/`; `uv run ruff check .` / `uv run pytest` from `apps/backend/`.
+Note: CI enforces `go mod tidy` producing no diff.
 
 ## Pull Requests
 - Keep PRs focused and include a short summary.

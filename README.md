@@ -139,5 +139,5 @@ and entry ids live in `.env` only — never in tracked files.
 
 `apps/backend`'s FastAPI chat server, OpenAI agent, RAG index, and
 APScheduler (`server.py`, `agent.py`, `llm.py`, `rag.py`, `scheduler.py`)
-are the pre-MCP-client stack: kept compiling and tested, deprecated, not
-developed. Claude over MCP replaced them.
+plus the `apps/web` UI are the pre-MCP-client stack: kept for history,
+deprecated, not developed. Claude over MCP replaced them.
