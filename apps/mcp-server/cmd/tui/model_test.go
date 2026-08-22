@@ -96,3 +96,37 @@ func TestLoadErrorsWithoutData(t *testing.T) {
 		t.Fatal("expected error on empty dir")
 	}
 }
+
+func TestMatchViewRendersClubXIs(t *testing.T) {
+	dir := fixtureDir(t)
+	// Give the live file a started fixture and a starter + a sub for one club.
+	write(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
+		"elements": map[string]any{
+			"1": map[string]any{"stats": map[string]any{"minutes": 60, "total_points": 8, "starts": 1}},
+			"2": map[string]any{"stats": map[string]any{"minutes": 15, "total_points": 1, "starts": 0}},
+			"3": map[string]any{"stats": map[string]any{"minutes": 60, "total_points": 2, "starts": 1}},
+		},
+		"fixtures": []map[string]any{{
+			"team_h": 1, "team_a": 2, "team_h_score": 1, "team_a_score": 0,
+			"started": true, "finished": false, "kickoff_time": "2026-08-22T14:00:00Z",
+		}},
+	})
+	m := newModel(dir, t.TempDir(), 5, 501, 0)
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.snap.Matches) != 1 {
+		t.Fatalf("expected 1 live match, got %d", len(m.snap.Matches))
+	}
+	md := m.snap.Matches[0]
+	if md.Minute != 60 {
+		t.Fatalf("derived minute wrong: %d", md.Minute)
+	}
+	m.matchView = true
+	view := m.matchBody(80)
+	for _, want := range []string{"ARS 1", "0 COV", "Striker", "subs on", "Benchman"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("match view missing %q:\n%s", want, view)
+		}
+	}
+}

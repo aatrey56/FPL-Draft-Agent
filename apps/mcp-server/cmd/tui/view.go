@@ -226,21 +226,99 @@ func (m *model) railBody(width int) string {
 			b.WriteString(sty.Render(ansi.Truncate(line, width, "…")) + "\n")
 		}
 	}
-	if len(m.snap.Transactions) > 0 {
-		b.WriteString("\n" + styDim.Render("─ transactions "+strings.Repeat("─", clamp(width-18, 0, 30))) + "\n")
-		for _, t := range m.snap.Transactions {
-			mark := styLive.Render("✓")
-			if !t.Accepted {
-				mark = styDim.Render("✗")
+	if len(m.snap.NeedsYou) > 0 {
+		b.WriteString("\n" + styDim.Render("─ suggestions "+strings.Repeat("─", clamp(width-16, 0, 30))) + "\n")
+		for _, r := range m.snap.NeedsYou {
+			sty := styDim
+			switch r.Glyph {
+			case "⚠":
+				sty = styWarn
+			case "↑":
+				sty = styLive
 			}
-			team := ansi.Truncate(t.TeamName, 12, "…")
-			line := fmt.Sprintf("%s %s%s +%s −%s", mark,
-				team, strings.Repeat(" ", max(0, 12-lipgloss.Width(team))),
-				t.In, t.Out)
-			b.WriteString(ansi.Truncate(line, width, "…") + "\n")
+			name := ansi.Truncate(r.Name, 13, "…")
+			note := ansi.Truncate(r.Note, max(6, width-17), "…")
+			b.WriteString(fmt.Sprintf("%s %s %s\n", sty.Render(r.Glyph),
+				name+strings.Repeat(" ", max(0, 13-lipgloss.Width(name))), styDim.Render(note)))
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// txBody renders the week's transactions for every manager.
+func (m *model) txBody(width int) string {
+	if len(m.snap.Transactions) == 0 {
+		return styDim.Render("no transactions yet")
+	}
+	var b strings.Builder
+	for _, t := range m.snap.Transactions {
+		mark := styLive.Render("✓")
+		if !t.Accepted {
+			mark = styDim.Render("✗")
+		}
+		team := ansi.Truncate(t.TeamName, width-2, "…")
+		b.WriteString(fmt.Sprintf("%s %s", mark, team) + "\n")
+		b.WriteString(styLive.Render(ansi.Truncate("  +"+t.In, width, "…")) + "\n")
+		b.WriteString(styDim.Render(ansi.Truncate("  −"+t.Out, width, "…")) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// matchBody renders the full match view for the selected live game: both
+// clubs' actual XIs (from the starts flag), minutes, FPL points, formation,
+// and the substitutes who have come on.
+func (m *model) matchBody(width int) string {
+	if len(m.snap.Matches) == 0 {
+		return styDim.Render("no live matches")
+	}
+	sel := clamp(m.liveSel, 0, len(m.snap.Matches)-1)
+	md := m.snap.Matches[sel]
+	half := (width - 3) / 2
+
+	col := func(club, form string, xi, subs []clubPlayer) string {
+		var b strings.Builder
+		b.WriteString(styFg.Bold(true).Render(club) + " " + styDim.Render(form) + "\n")
+		nameW := clamp(half-12, 8, 16)
+		for _, p := range xi {
+			name := ansi.Truncate(p.Name, nameW, "…")
+			line := fmt.Sprintf("%-4s %s%s %3d' %2d", p.Pos, name,
+				strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))), p.Minutes, p.Points)
+			if p.Minutes > 0 && p.Minutes < md.Minute {
+				b.WriteString(styDim.Render("◐ "+line) + "\n") // subbed off
+			} else if p.Minutes > 0 {
+				b.WriteString(styLive.Render("● "+line) + "\n")
+			} else {
+				b.WriteString(styDim.Render("○ "+line) + "\n")
+			}
+		}
+		if len(subs) > 0 {
+			b.WriteString(styDim.Render("─ subs on ─────────") + "\n")
+			for _, p := range subs {
+				name := ansi.Truncate(p.Name, nameW, "…")
+				b.WriteString(styDim.Render(fmt.Sprintf("◒ %-4s %s%s %3d' %2d", p.Pos, name,
+					strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))), p.Minutes, p.Points)) + "\n")
+			}
+		}
+		return strings.TrimRight(b.String(), "\n")
+	}
+
+	scoreLine := fmt.Sprintf("%s %s %s",
+		styScore.Render(fmt.Sprintf("%s %d", md.Home, md.HS)),
+		styDim.Render("—"),
+		styScore.Render(fmt.Sprintf("%d %s", md.AS, md.Away)))
+	if md.Minute > 0 {
+		scoreLine += "  " + styLive.Render(fmt.Sprintf("%d'", md.Minute))
+	}
+	if pad := (width - lipgloss.Width(scoreLine)) / 2; pad > 0 {
+		scoreLine = strings.Repeat(" ", pad) + scoreLine
+	}
+
+	cols := lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Width(half).Render(col(md.Home, md.HomeForm, md.HomeXI, md.HomeSubs)),
+		styDim.Render("│ "),
+		col(md.Away, md.AwayForm, md.AwayXI, md.AwaySubs))
+
+	return scoreLine + "\n\n" + cols
 }
 
 // scoresStrip renders the real PL scoreboard: live green with minutes,
@@ -303,11 +381,7 @@ func (m *model) liveBody(width int, focused bool) string {
 		if !f.Started || f.Finished {
 			continue
 		}
-		min := ""
-		if f.Minutes > 0 {
-			min = fmt.Sprintf(" %d'", f.Minutes)
-		}
-		line := fmt.Sprintf("%s %d-%d %s%s", f.Home, f.HS, f.AS, f.Away, min)
+		line := fmt.Sprintf("%s %d-%d %s %d'", f.Home, f.HS, f.AS, f.Away, f.Minutes)
 		if focused && i == m.liveSel {
 			b.WriteString(styYou.Render("▸ "+line) + "\n")
 		} else {
@@ -340,7 +414,7 @@ func (m *model) header(width int) string {
 }
 
 func (m *model) footer(width int) string {
-	keys := styDim.Render("←→ matchup    tab panel    r refresh    q quit")
+	keys := styDim.Render("←→ switch    tab panel    ↵ match view    r refresh    q quit")
 	right := ""
 	if m.status != "" {
 		right = styDim.Render(m.status) + " " + styLive.Render("●")
@@ -368,39 +442,49 @@ func (m *model) View() string {
 				w, m.focus == 0) + "\n" + m.footer(w)
 	}
 
-	railW, liveW := 0, 0
+	leagueW, liveW, txW := 0, 0, 0
 	if md == wide {
-		railW = clamp(w/4+4, 36, 44)
+		leagueW = clamp(w/4, 30, 36)
 		if liveCount(m.snap) > 0 {
-			liveW = clamp(w/6, 20, 26)
+			liveW = clamp(w/6, 20, 24)
+		}
+		txW = clamp(w-66-leagueW-liveW-3, 0, 30)
+		if txW < 18 {
+			txW = 0
 		}
 	}
-	mainW := w - railW - liveW
-	if railW > 0 {
-		mainW--
+	mainW := w - leagueW - liveW - txW
+	for _, pw := range []int{leagueW, liveW, txW} {
+		if pw > 0 {
+			mainW--
+		}
 	}
-	if liveW > 0 {
-		mainW--
-	}
-	// Keep the matchup pane compact; the rail absorbs the slack.
 	if md == wide && mainW > 66 {
 		slack := mainW - 66
 		mainW = 66
-		railW = clamp(railW+slack, 36, 60)
+		leagueW = clamp(leagueW+slack, 30, 44)
 	}
 
-	matchupPanel := Panel(
-		fmt.Sprintf("Matchup %d/%d", m.selected+1, len(m.snap.Matchups)), "← →",
-		m.matchupBody(mainW-4), mainW, m.focus == 0)
+	mainTitle := fmt.Sprintf("Matchup %d/%d", m.selected+1, len(m.snap.Matchups))
+	mainBody := m.matchupBody(mainW - 4)
+	if m.matchView && len(m.snap.Matches) > 0 {
+		mainTitle = "Match"
+		mainBody = m.matchBody(mainW - 4)
+	}
+	matchupPanel := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView)
 
 	screen := matchupPanel
 	if liveW > 0 {
-		livePanel := Panel("Live", "← →", m.liveBody(liveW-4, m.focus == 1), liveW, m.focus == 1)
+		livePanel := Panel("Live", "↵", m.liveBody(liveW-4, m.focus == 1), liveW, m.focus == 1)
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, screen, " ", livePanel)
 	}
-	if railW > 0 {
-		rail := Panel("League · Transactions", "tab", m.railBody(railW-4), railW, m.focus == 2)
-		screen = lipgloss.JoinHorizontal(lipgloss.Top, screen, " ", rail)
+	if leagueW > 0 {
+		league := Panel("League", "tab", m.railBody(leagueW-4), leagueW, m.focus == 2)
+		screen = lipgloss.JoinHorizontal(lipgloss.Top, screen, " ", league)
+	}
+	if txW > 0 {
+		tx := Panel("Transactions", "", m.txBody(txW-4), txW, false)
+		screen = lipgloss.JoinHorizontal(lipgloss.Top, screen, " ", tx)
 	}
 
 	out := m.header(w)

@@ -71,6 +71,22 @@ type txRow struct {
 	Accepted bool
 }
 
+type clubPlayer struct {
+	Name    string
+	Pos     string
+	Minutes int
+	Points  int
+	Start   bool
+}
+
+type matchDetail struct {
+	Home, Away         string
+	HS, AS, Minute     int
+	HomeForm, AwayForm string
+	HomeXI, AwayXI     []clubPlayer
+	HomeSubs, AwaySubs []clubPlayer
+}
+
 type snapshot struct {
 	GW           int
 	Matchups     []matchup
@@ -79,24 +95,27 @@ type snapshot struct {
 	Standings    []standingRow
 	Fixtures     []fixtureRow
 	Transactions []txRow
+	NeedsYou     []railItem
+	Matches      []matchDetail // one per in-play fixture, liveSel-aligned
 }
 
 type model struct {
-	dir      string // season raw dir
-	derived  string // season derived dir
-	league   int
-	entry    int
-	gwArg    int
-	snap     snapshot
-	selected int
-	focus    int // 0 = matchup, 1 = live games, 2 = rail
-	liveSel  int
-	w, h     int
-	loadErr  string
-	status   string
-	fetching bool
-	loading  bool
-	stamp    string // mtime fingerprint of the inputs at last load
+	dir       string // season raw dir
+	derived   string // season derived dir
+	league    int
+	entry     int
+	gwArg     int
+	snap      snapshot
+	selected  int
+	focus     int // 0 = matchup, 1 = live games, 2 = rail
+	liveSel   int
+	matchView bool
+	w, h      int
+	loadErr   string
+	status    string
+	fetching  bool
+	loading   bool
+	stamp     string // mtime fingerprint of the inputs at last load
 }
 
 func newModel(dir, derived string, league, entry, gw int) *model {
@@ -185,6 +204,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			Stats struct {
 				Minutes     int `json:"minutes"`
 				TotalPoints int `json:"total_points"`
+				Starts      int `json:"starts"`
 			} `json:"stats"`
 		} `json:"elements"`
 		Fixtures []struct {
@@ -259,6 +279,70 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	for _, e := range bootstrap.Elements {
 		info[e.ID] = playerRow{Name: e.WebName, Pos: positions[e.ElementType],
 			Team: teamShort[e.Team], TeamID: e.Team, Avail: e.Status}
+	}
+
+	// Per-club appearances for the match view, and a derived game clock (the
+	// fixture "minutes" field is unreliable in-play; use max player minutes).
+	appearances := map[int][]clubPlayer{} // club team id -> appeared players
+	maxMin := map[int]int{}
+	for _, e := range bootstrap.Elements {
+		st := live.Elements[fmt.Sprintf("%d", e.ID)].Stats
+		if st.Minutes == 0 && st.Starts == 0 {
+			continue
+		}
+		appearances[e.Team] = append(appearances[e.Team], clubPlayer{
+			Name: e.WebName, Pos: positions[e.ElementType],
+			Minutes: st.Minutes, Points: st.TotalPoints, Start: st.Starts > 0,
+		})
+		if st.Minutes > maxMin[e.Team] {
+			maxMin[e.Team] = st.Minutes
+		}
+	}
+	posOrder := map[string]int{"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
+	for i := range snap.Fixtures {
+		f := &snap.Fixtures[i]
+		hID, aID := 0, 0
+		for id, short := range teamShort {
+			if short == f.Home {
+				hID = id
+			}
+			if short == f.Away {
+				aID = id
+			}
+		}
+		if m := max(maxMin[hID], maxMin[aID]); f.Started && !f.Finished && m > f.Minutes {
+			f.Minutes = m
+		}
+		if !f.Started || f.Finished {
+			continue
+		}
+		md := matchDetail{Home: f.Home, Away: f.Away, HS: f.HS, AS: f.AS, Minute: f.Minutes}
+		split := func(teamID int) (xi, subs []clubPlayer, form string) {
+			players := appearances[teamID]
+			sort.Slice(players, func(a, b int) bool {
+				if players[a].Start != players[b].Start {
+					return players[a].Start
+				}
+				if posOrder[players[a].Pos] != posOrder[players[b].Pos] {
+					return posOrder[players[a].Pos] < posOrder[players[b].Pos]
+				}
+				return players[a].Minutes > players[b].Minutes
+			})
+			counts := map[string]int{}
+			for _, p := range players {
+				if p.Start {
+					xi = append(xi, p)
+					counts[p.Pos]++
+				} else {
+					subs = append(subs, p)
+				}
+			}
+			form = fmt.Sprintf("%d-%d-%d", counts["DEF"], counts["MID"], counts["FWD"])
+			return
+		}
+		md.HomeXI, md.HomeSubs, md.HomeForm = split(hID)
+		md.AwayXI, md.AwaySubs, md.AwayForm = split(aID)
+		snap.Matches = append(snap.Matches, md)
 	}
 
 	glyph := func(p playerRow) string {
@@ -370,6 +454,47 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 				Out:      info[t.ElementOut].Name,
 				Accepted: t.Result == "a",
 			})
+		}
+	}
+
+	// Needs-you suggestions: my_week attention + top waiver targets (best effort).
+	var week struct {
+		Attention []struct {
+			WebName  string   `json:"web_name"`
+			Warnings []string `json:"warnings"`
+		} `json:"attention"`
+	}
+	if err := readJSON(filepath.Join(derived, "ml/my_week.json"), &week); err == nil {
+		for _, a := range week.Attention {
+			for _, w := range a.Warnings {
+				g, note := "⚠", w
+				switch {
+				case strings.Contains(w, "no projection"):
+					g, note = "?", "unprojected"
+				case strings.Contains(w, "blank"):
+					g, note = "◇", "blank GW"
+				case strings.Contains(w, "availability"):
+					note = strings.TrimPrefix(w, "availability ")
+				}
+				snap.NeedsYou = append(snap.NeedsYou, railItem{Glyph: g, Name: a.WebName, Note: note})
+				break
+			}
+		}
+	}
+	var plan struct {
+		Recommendations []struct {
+			Add        string  `json:"add"`
+			Label      string  `json:"label"`
+			SeasonGain float64 `json:"season_gain"`
+		} `json:"recommendations"`
+	}
+	if err := readJSON(filepath.Join(derived, "ml/waiver_plan.json"), &plan); err == nil {
+		for i, r := range plan.Recommendations {
+			if i >= 3 {
+				break
+			}
+			snap.NeedsYou = append(snap.NeedsYou, railItem{
+				Glyph: "↑", Name: r.Add, Note: fmt.Sprintf("wire · %s +%.0f", r.Label, r.SeasonGain)})
 		}
 	}
 
@@ -548,6 +673,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "enter":
+			if m.focus == 1 && liveCount(m.snap) > 0 {
+				m.matchView = !m.matchView
+			}
+		case "esc":
+			m.matchView = false
 		case "tab":
 			m.focus = (m.focus + 1) % 3
 		case "left", "h":
