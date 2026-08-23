@@ -89,6 +89,13 @@ type nextFixture struct {
 	Kickoff    time.Time
 }
 
+// plRow is one line of the real Premier League table.
+type plRow struct {
+	Pos                int
+	Short              string
+	Played, GD, Points int
+}
+
 type txRow struct {
 	TeamName string
 	In, Out  string
@@ -164,6 +171,7 @@ type snapshot struct {
 	Deadlines    []countdownEvent // all future deadlines, soonest first (Week panel)
 	NextGW       int
 	NextFixtures []nextFixture // next gameweek's schedule (Next week panel)
+	PLTable      []plRow       // live Premier League table (compact layout)
 	Standings    []standingRow
 	Fixtures     []fixtureRow
 	Transactions []txRow
@@ -245,6 +253,78 @@ func readJSON(path string, v any) error {
 		return err
 	}
 	return json.Unmarshal(raw, v)
+}
+
+// loadPLTable computes the live Premier League table from finished fixtures
+// across all gameweeks played so far (past GWs are immutable; the current one
+// updates as games finish).
+func loadPLTable(dir string, currentGW int, teamShort map[int]string) []plRow {
+	type acc struct{ W, D, L, GF, GA int }
+	accum := map[int]*acc{}
+	get := func(id int) *acc {
+		if accum[id] == nil {
+			accum[id] = &acc{}
+		}
+		return accum[id]
+	}
+	for g := 1; g <= currentGW; g++ {
+		var lf struct {
+			Fixtures []struct {
+				TeamH        int  `json:"team_h"`
+				TeamA        int  `json:"team_a"`
+				HS           *int `json:"team_h_score"`
+				AS           *int `json:"team_a_score"`
+				Finished     bool `json:"finished"`
+				FinishedProv bool `json:"finished_provisional"`
+			} `json:"fixtures"`
+		}
+		if readJSON(filepath.Join(dir, fmt.Sprintf("gw/%d/live.json", g)), &lf) != nil {
+			continue
+		}
+		for _, f := range lf.Fixtures {
+			if (!f.Finished && !f.FinishedProv) || f.HS == nil || f.AS == nil {
+				continue
+			}
+			h, a := get(f.TeamH), get(f.TeamA)
+			h.GF += *f.HS
+			h.GA += *f.AS
+			a.GF += *f.AS
+			a.GA += *f.HS
+			switch {
+			case *f.HS > *f.AS:
+				h.W++
+				a.L++
+			case *f.HS < *f.AS:
+				a.W++
+				h.L++
+			default:
+				h.D++
+				a.D++
+			}
+		}
+	}
+	rows := make([]plRow, 0, len(accum))
+	for id, a := range accum {
+		played := a.W + a.D + a.L
+		if played == 0 {
+			continue
+		}
+		rows = append(rows, plRow{Short: teamShort[id], Played: played,
+			GD: a.GF - a.GA, Points: a.W*3 + a.D})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Points != rows[j].Points {
+			return rows[i].Points > rows[j].Points
+		}
+		if rows[i].GD != rows[j].GD {
+			return rows[i].GD > rows[j].GD
+		}
+		return rows[i].Short < rows[j].Short
+	})
+	for i := range rows {
+		rows[i].Pos = i + 1
+	}
+	return rows
 }
 
 // loadMatchEvents reads gw/<gw>/match_events.json (written by the pulse
@@ -966,6 +1046,8 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	sort.SliceStable(snap.NextFixtures, func(a, b int) bool {
 		return snap.NextFixtures[a].Kickoff.Before(snap.NextFixtures[b].Kickoff)
 	})
+
+	snap.PLTable = loadPLTable(dir, gw, teamShort)
 
 	all := bootstrapEventsForCountdown(bootstrap.Events.Data)
 	snap.Deadline = nextDeadlineEvent(all, time.Now())

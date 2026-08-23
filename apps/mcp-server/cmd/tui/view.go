@@ -655,6 +655,22 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 	return " " + strings.Join(lines, "\n ")
 }
 
+// plTableBody renders the live Premier League table compactly: position,
+// club, played, goal difference, points.
+func (m *model) plTableBody(width int) string {
+	if len(m.snap.PLTable) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(styDim.Render(" #  CLUB   P   GD  PTS") + "\n")
+	for _, r := range m.snap.PLTable {
+		gd := fmt.Sprintf("%+d", r.GD)
+		line := fmt.Sprintf("%2d  %-3s  %2d  %3s  %3d", r.Pos, r.Short, r.Played, gd, r.Points)
+		b.WriteString(ansi.Truncate(styFg.Render(line), width, "…") + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // panelBody renders the middle panel's current page.
 func (m *model) panelBody(width int, focused bool) string {
 	switch m.currentPage() {
@@ -666,7 +682,13 @@ func (m *model) panelBody(width int, focused bool) string {
 	case "bonus":
 		return m.bonusBody(width)
 	}
-	return m.liveBody(width, focused)
+	// Games list, with the live Premier League table beneath it — this panel
+	// only exists in the compact (split-screen) layout.
+	body := m.liveBody(width, focused)
+	if tbl := m.plTableBody(width); tbl != "" {
+		body += "\n" + styDim.Render("─ Premier League "+strings.Repeat("─", clamp(width-17, 0, 40))) + "\n" + tbl
+	}
+	return body
 }
 
 // eventsBody is the live feed, newest first: minute, kind, player, points.
@@ -790,8 +812,6 @@ func (m *model) eventDetailBody(width int) string {
 		note = fmt.Sprintf("This added %s to your score.", delta)
 	case ev.Opp && ev.Delta > 0:
 		note = fmt.Sprintf("This added %s to your opponent — it cuts your margin.", delta)
-	case ev.Owner == "" && ev.Delta > 0:
-		note = "A free agent returning — a potential waiver target if the form holds."
 	}
 	if note != "" {
 		for _, ln := range wrapText(note, width-1) {
