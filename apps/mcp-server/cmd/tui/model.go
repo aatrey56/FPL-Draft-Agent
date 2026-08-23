@@ -479,7 +479,11 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			row.Glyph = glyph(row)
 			if row.Starter {
 				s.Total += row.Points
-				if row.Minutes > 0 {
+				// "Played" counts resolved starters: minutes on the board,
+				// or a club whose GW is over (a confirmed DNP still counts —
+				// that slot is done producing).
+				fx, known := fixtureByTeam[row.TeamID]
+				if row.Minutes > 0 || !known || fx.finished {
 					s.Played++
 				}
 			} else {

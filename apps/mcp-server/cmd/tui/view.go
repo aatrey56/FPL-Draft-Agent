@@ -102,31 +102,30 @@ func barStr(pts, maxPts, width int) string {
 	return s
 }
 
-// scoreBar renders the diverging matchup bar: my share in green, rest dim.
+// scoreBar renders the diverging matchup bar: my share lit cyan, rest navy.
+// Solid blocks — fancier glyphs render unevenly in some terminal fonts.
 func scoreBar(me, opp, width int) string {
 	total := me + opp
 	if total == 0 {
-		return styDim.Render(strings.Repeat("░", width))
+		return styBarOff.Render(strings.Repeat("░", width))
 	}
 	filled := clamp(int(float64(me)/float64(total)*float64(width)+0.5), 0, width)
-	return styLive.Render(strings.Repeat("█", filled)) + styDim.Render(strings.Repeat("░", width-filled))
+	return styBarOn.Render(strings.Repeat("█", filled)) + styBarOff.Render(strings.Repeat("░", width-filled))
 }
 
-func glyphStyle(g string, pts int) lipgloss.Style {
+// glyphStyle is the status colour language: green = played/playing,
+// red = confirmed out (DNP, or flagged ⚠ via styWarn), baby blue = has not
+// played yet, dim = bench.
+func glyphStyle(g string) lipgloss.Style {
 	switch g {
-	case "●", "⇄":
+	case "●", "⇄", "✓":
 		return styLive
-	case "◉":
-		return styFg
-	case "✓":
-		if pts > 0 {
-			return styLive
-		}
-		return styFg
-	case "⚠", "✗":
+	case "◉", "○":
+		return styTmrw
+	case "⚠":
+		return styFlag
+	case "✗":
 		return styWarn
-	case "·", "–":
-		return styDim
 	default:
 		return styDim
 	}
@@ -141,7 +140,7 @@ func playerLine(p playerRow, half, barW, maxPts int) string {
 	name := ansi.Truncate(p.Name, nameW, "…")
 	base := p.Glyph + " " + fmt.Sprintf("%-4s", p.Pos) +
 		name + strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))) + fixedTail
-	sty := glyphStyle(p.Glyph, p.Points)
+	sty := glyphStyle(p.Glyph)
 	if !p.Starter && !p.SubIn {
 		sty = styDim
 	}
@@ -248,7 +247,7 @@ func (m *model) matchupBody(width int) string {
 	}
 	mark := func(s side) string {
 		if s.Effective != s.Total {
-			return styDim.Render("⇄")
+			return styTmrw.Render("⇄")
 		}
 		return ""
 	}
@@ -372,11 +371,12 @@ func (m *model) railBody(width int, focused bool) string {
 			case "↑":
 				sty = styLive
 			}
-			cursor := ""
 			if focused && i == m.sugSel {
-				cursor = styYou.Render("▸ ")
+				row := "▸ " + r.Glyph + " " + ansi.Truncate(r.Name, width-6, "…")
+				b.WriteString(stySel.Render(row+strings.Repeat(" ", max(0, width-lipgloss.Width(row)))) + "\n")
+			} else {
+				b.WriteString(sty.Render(r.Glyph) + " " + styFg.Render(ansi.Truncate(r.Name, width-4, "…")) + "\n")
 			}
-			b.WriteString(cursor + sty.Render(r.Glyph) + " " + styFg.Render(ansi.Truncate(r.Name, width-4, "…")) + "\n")
 			b.WriteString("  " + styDim.Render(ansi.Truncate(r.Note, width-3, "…")) + "\n")
 		}
 	}
@@ -400,12 +400,13 @@ func (m *model) txBody(width int, focused bool) string {
 				missed = t.In
 			}
 		}
-		cursor := "  "
-		if focused && i == m.txSel {
-			cursor = styYou.Render("▸ ")
-		}
 		team := ansi.Truncate(mgr.Name, width-7, "…")
-		b.WriteString(cursor + styDim.Render(fmt.Sprintf("%2d ", mgr.Pick)) + styFg.Render(team) + "\n")
+		if focused && i == m.txSel {
+			row := fmt.Sprintf("▸ %2d %s", mgr.Pick, team)
+			b.WriteString(stySel.Render(row+strings.Repeat(" ", max(0, width-lipgloss.Width(row)))) + "\n")
+		} else {
+			b.WriteString("  " + styDim.Render(fmt.Sprintf("%2d ", mgr.Pick)) + styFg.Render(team) + "\n")
+		}
 		switch {
 		case landed != "":
 			b.WriteString(styLive.Render(ansi.Truncate("    +"+landed, width, "…")) + "\n")
@@ -595,7 +596,8 @@ func (m *model) liveBody(width int, focused bool) string {
 		}
 		line := fmt.Sprintf("%s %d-%d %s %s", g.Home, g.HS, g.AS, g.Away, label)
 		if focused && i == m.liveSel {
-			b.WriteString(styYou.Render("▸ "+line) + "\n")
+			row := "▸ " + line
+			b.WriteString(stySel.Render(row+strings.Repeat(" ", max(0, width-lipgloss.Width(row)))) + "\n")
 		} else {
 			b.WriteString(sty.Render("  "+line) + "\n")
 		}
@@ -611,29 +613,24 @@ func (m *model) liveBody(width int, focused bool) string {
 }
 
 func (m *model) header(width int) string {
-	title := styFg.Bold(true).Render(fmt.Sprintf("FPL · GW%d", m.snap.GW)) + "  " + styLive.Render("◍ LIVE")
+	// Full-width tinted banner; every segment carries the bar background.
+	on := func(sty lipgloss.Style) lipgloss.Style { return sty.Background(barBgC) }
+	title := on(styTitle).Render(fmt.Sprintf(" FPL · GW%d ", m.snap.GW)) + on(styLive).Render("◍ LIVE")
 	due := ""
 	if m.snap.NextDue != "" {
-		due = styYou.Render(m.snap.NextDue)
+		due = on(styYou).Render(m.snap.NextDue)
 	}
-	clock := styFg.Bold(true).Render(time.Now().In(eastern).Format("3:04:05 PM") + " EST")
-	stamp := styDim.Render("data "+m.snap.Loaded.Format("15:04:05")) + " " + styLive.Render("●")
+	clock := on(styFg.Bold(true)).Render(time.Now().In(eastern).Format("3:04:05 PM") + " EST")
+	stamp := on(styDim).Render("data "+m.snap.Loaded.Format("15:04:05")) + on(styLive).Render(" ●")
 	if m.status != "" {
-		stamp += "  " + styDim.Render(m.status)
+		stamp += on(styDim).Render("  " + m.status)
 	}
-	parts := []string{title, due, clock, stamp}
-	line := " "
-	for _, p := range parts {
-		if p == "" {
-			continue
-		}
-		line += " " + p + "  "
+	gap := on(styBarFill).Render("   ")
+	line := title + gap + due + gap + clock + gap + stamp
+	if pad := width - lipgloss.Width(line); pad > 0 {
+		line += styBarFill.Render(strings.Repeat(" ", pad))
 	}
-	if pad := width - lipgloss.Width(line) - 2; pad > 0 {
-		line += strings.Repeat(" ", pad)
-	}
-	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(ruleC).Width(width - 2)
-	return box.Render(line)
+	return line
 }
 
 func (m *model) footer() string {
@@ -656,7 +653,7 @@ func (m *model) View() string {
 			Panel(fmt.Sprintf("Matchup %d/%d", m.selected+1, len(m.snap.Matchups)), "← →",
 				sideHeader(mu.A, mu.A.EntryID == m.entry, false, w-6)+"\n\n"+
 					fmt.Sprintf("%s  vs  %s", styScore.Render(fmt.Sprintf("%d", mu.A.Total)), styFg.Bold(true).Render(fmt.Sprintf("%d", mu.B.Total))),
-				w, m.focus == 0) + "\n" + m.footer()
+				w, m.focus == 0, 0) + "\n" + m.footer()
 	}
 
 	// Wide layout is a 2×2 grid: Live | Matchup on top, League | Transactions
@@ -679,7 +676,15 @@ func (m *model) View() string {
 		mainTitle = "Transactions"
 		mainBody = m.txDetailBody(mainW - 4)
 	}
-	matchupPanel := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView)
+	// Panels sharing a grid row pad to the same body height so the row's
+	// bottom edges align.
+	topH := lipgloss.Height(mainBody)
+	liveBody := ""
+	if liveW > 0 {
+		liveBody = m.liveBody(liveW-4, m.focus == 1)
+		topH = max(topH, lipgloss.Height(liveBody))
+	}
+	matchupPanel := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, topH)
 
 	screen := matchupPanel
 	if liveW > 0 {
@@ -690,7 +695,7 @@ func (m *model) View() string {
 		if m.gamesPages() > 1 {
 			gamesHint = "←→ ↑↓ ↵"
 		}
-		livePanel := Panel(gamesTitle, gamesHint, m.liveBody(liveW-4, m.focus == 1), liveW, m.focus == 1)
+		livePanel := Panel(gamesTitle, gamesHint, liveBody, liveW, m.focus == 1, topH)
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, livePanel, " ", screen)
 	}
 	if md == wide {
@@ -702,8 +707,10 @@ func (m *model) View() string {
 			leagueTitle, leagueHint = "Suggestion", "esc"
 			leagueBody = m.sugDetailBody(leagueW - 4)
 		}
-		league := Panel(leagueTitle, leagueHint, leagueBody, leagueW, m.focus == 2)
-		tx := Panel("Transactions", "↑↓ ↵", m.txBody(txW-4, m.focus == 3), txW, m.focus == 3)
+		txBody := m.txBody(txW-4, m.focus == 3)
+		botH := max(lipgloss.Height(leagueBody), lipgloss.Height(txBody))
+		league := Panel(leagueTitle, leagueHint, leagueBody, leagueW, m.focus == 2, botH)
+		tx := Panel("Transactions", "↑↓ ↵", txBody, txW, m.focus == 3, botH)
 		screen += "\n" + lipgloss.JoinHorizontal(lipgloss.Top, league, " ", tx)
 	}
 

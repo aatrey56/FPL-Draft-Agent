@@ -233,6 +233,9 @@ func TestMatchupProjectsAutoSubs(t *testing.T) {
 	if mine.Total != 20 || mine.Effective != 25 {
 		t.Fatalf("total %d effective %d, want 20/25", mine.Total, mine.Effective)
 	}
+	if mine.Played != 11 {
+		t.Fatalf("a confirmed DNP counts as resolved: played %d, want 11", mine.Played)
+	}
 	for _, p := range mine.Players {
 		if p.Name == "BenchDef" && p.Glyph != "⇄" {
 			t.Fatalf("projected sub should carry ⇄, got %q", p.Glyph)
