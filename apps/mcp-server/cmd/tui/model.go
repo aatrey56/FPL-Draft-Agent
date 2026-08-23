@@ -125,16 +125,16 @@ type tickerStat struct {
 	Goals, Assists, Yellow, Red, Points int
 }
 
-// eventRow is one line of the live events feed.
+// eventRow is one line of the events feed, sourced from official match events.
 type eventRow struct {
-	Minute int       // fixture clock when observed; -1 = before the TUI opened
-	Wall   time.Time // EST wall-clock when first observed
+	Min    string    // exact game minute, e.g. "55'", "90+3'"
+	Wall   time.Time // real time the event occurred (from kickoff + clock)
 	Kind   string    // G goal, A assist, Y yellow, R red
 	Name   string
 	Club   string
 	Pos    string
 	TeamID int
-	Delta  int    // points moved with the event
+	Delta  int    // points the event is worth
 	Owner  string // rostering team short name, "" = unowned
 	Mine   bool
 	Opp    bool // owned by this week's opponent
@@ -163,9 +163,9 @@ type snapshot struct {
 	TxByManager  []managerTx
 	NeedsYou     []railItem
 	Matches      []matchDetail // one per in-play fixture, liveSel-aligned
+	Events       []eventRow    // today's official match events (goals/assists/cards)
 	PlayerStats  map[int]tickerStat
 	ClockByTeam  map[int]int
-	PlayedToday  map[int]bool     // clubs whose fixture kicked off today (EST)
 	OwnerByElem  map[int]eventRow // Owner/Mine/Opp template per rostered element
 	BonusRace    []bonusFixture
 }
@@ -184,9 +184,7 @@ type model struct {
 	sugSel    int
 	gamesPage int // index into panelPages()
 	events    []eventRow
-	seeded    bool
-	eventsDay string // EST date the ticker belongs to; rolls over each matchday
-	matchSel  int    // index into snap.Matches while the match view is open
+	matchSel  int // index into snap.Matches while the match view is open
 	matchView bool
 	txView    bool
 	sugView   bool
@@ -240,6 +238,61 @@ func readJSON(path string, v any) error {
 		return err
 	}
 	return json.Unmarshal(raw, v)
+}
+
+// loadMatchEvents reads gw/<gw>/match_events.json (written by the pulse
+// fetcher) into feed rows, keeping only today's EST events and ordering them
+// by occurrence. Points per event come from position; owner tags from the
+// current rosters.
+func loadMatchEvents(dir string, gw int, info map[int]playerRow, owner map[int]eventRow) []eventRow {
+	var file struct {
+		Events []struct {
+			Element int    `json:"element"`
+			Kind    string `json:"kind"`
+			Minute  string `json:"minute"`
+			UTC     string `json:"utc"`
+			Club    string `json:"club"`
+		} `json:"events"`
+	}
+	if err := readJSON(filepath.Join(dir, fmt.Sprintf("gw/%d/match_events.json", gw)), &file); err != nil {
+		return nil
+	}
+	pointsFor := func(kind, pos string) int {
+		switch kind {
+		case "G":
+			switch pos {
+			case "GKP", "DEF":
+				return 6
+			case "MID":
+				return 5
+			default:
+				return 4
+			}
+		case "A":
+			return 3
+		case "Y":
+			return -1
+		case "R":
+			return -3
+		}
+		return 0
+	}
+	today := time.Now().In(eastern).Format("2006-01-02")
+	var out []eventRow
+	for _, e := range file.Events {
+		wall, err := time.Parse(time.RFC3339, e.UTC)
+		if err != nil || wall.In(eastern).Format("2006-01-02") != today {
+			continue
+		}
+		pr := info[e.Element]
+		row := owner[e.Element]
+		row.Min, row.Wall = e.Minute, wall
+		row.Kind, row.Name, row.Club, row.Pos = e.Kind, pr.Name, e.Club, pr.Pos
+		row.TeamID, row.Delta = pr.TeamID, pointsFor(e.Kind, pr.Pos)
+		out = append(out, row)
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].Wall.Before(out[b].Wall) })
+	return out
 }
 
 // inputStamp fingerprints the files whose changes matter mid-match.
@@ -474,8 +527,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 	}
 	posOrder := map[string]int{"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
-	clockByTeam := map[int]int{} // fixture-wide match clock per club
-	playedToday := map[int]bool{}
+	clockByTeam := map[int]int{}  // fixture-wide match clock per club
 	var doneMatches []matchDetail // live matches list first, completed after
 	for i := range snap.Fixtures {
 		f := &snap.Fixtures[i]
@@ -492,10 +544,6 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			f.Minutes = m
 		}
 		clockByTeam[hID], clockByTeam[aID] = f.Minutes, f.Minutes
-		if f.Started && !f.Kickoff.IsZero() &&
-			f.Kickoff.In(eastern).Format("2006-01-02") == time.Now().In(eastern).Format("2006-01-02") {
-			playedToday[hID], playedToday[aID] = true, true
-		}
 		if !f.Started {
 			continue
 		}
@@ -531,7 +579,6 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	}
 	snap.Matches = append(snap.Matches, doneMatches...)
 	snap.ClockByTeam = clockByTeam
-	snap.PlayedToday = playedToday
 
 	// Per-player counting stats for the events ticker (anyone with anything
 	// on the board — a few hundred rows at most).
@@ -768,6 +815,10 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			}
 		}
 	}
+
+	// Official match events (goals/assists/cards) with exact minute + real
+	// time, scoped to today (EST) and time-ordered.
+	snap.Events = loadMatchEvents(dir, gw, info, snap.OwnerByElem)
 
 	// League standings for the rail (all zeros pre-lockdown — still orienting).
 	rows := details.Standings
@@ -1012,12 +1063,9 @@ func (m *model) reload() error {
 
 func (m *model) applySnap(snap snapshot, myIndex int) {
 	first := m.snap.Loaded.IsZero()
-	// The ticker covers one matchday: a new EST day wipes it and re-seeds
-	// from that day's games only.
-	if today := time.Now().In(eastern).Format("2006-01-02"); today != m.eventsDay {
-		m.events, m.seeded, m.eventsDay = nil, false, today
-	}
-	m.ingestEvents(snap)
+	// Events come straight from the official match feed, already scoped to
+	// today and time-ordered by load().
+	m.events = snap.Events
 	m.snap, m.loadErr = snap, ""
 	if first {
 		m.selected = myIndex
@@ -1025,59 +1073,6 @@ func (m *model) applySnap(snap snapshot, myIndex int) {
 	if m.selected >= len(snap.Matchups) {
 		m.selected = 0
 	}
-}
-
-// ingestEvents diffs the incoming per-player stats against the previous
-// snapshot and appends ticker rows. The first snapshot seeds a summary of
-// what already happened today (minute -1, shown without a clock).
-func (m *model) ingestEvents(snap snapshot) {
-	prev := m.snap.PlayerStats
-	tag := func(id int) eventRow { return snap.OwnerByElem[id] }
-	emit := func(id int, kind string, n, delta int) {
-		ps := snap.PlayerStats[id]
-		minute := snap.ClockByTeam[ps.TeamID]
-		if !m.seeded {
-			minute = -1
-		}
-		for range max(1, n) {
-			ev := tag(id)
-			ev.Minute, ev.Wall = minute, time.Now()
-			ev.Kind, ev.Name, ev.Club, ev.Pos, ev.TeamID = kind, ps.Name, ps.Club, ps.Pos, ps.TeamID
-			ev.Delta = delta
-			m.events = append(m.events, ev)
-		}
-	}
-	for id, cur := range snap.PlayerStats {
-		was, seen := prev[id]
-		if m.seeded && !seen {
-			was = tickerStat{}
-		}
-		if !m.seeded {
-			// Seed pass: summarise today only — yesterday's games belong to
-			// yesterday's ticker.
-			was = tickerStat{Points: cur.Points}
-			if !snap.PlayedToday[cur.TeamID] {
-				continue
-			}
-		}
-		perGoal := cur.Points - was.Points
-		if g := cur.Goals - was.Goals; g > 0 {
-			emit(id, "G", g, perGoal)
-		}
-		if a := cur.Assists - was.Assists; a > 0 {
-			emit(id, "A", a, perGoal)
-		}
-		if y := cur.Yellow - was.Yellow; y > 0 {
-			emit(id, "Y", y, -1)
-		}
-		if r := cur.Red - was.Red; r > 0 {
-			emit(id, "R", r, -3)
-		}
-	}
-	if len(m.events) > 120 {
-		m.events = m.events[len(m.events)-120:]
-	}
-	m.seeded = true
 }
 
 func (m *model) Init() tea.Cmd {

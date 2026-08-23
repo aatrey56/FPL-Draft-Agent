@@ -697,8 +697,8 @@ func (m *model) eventsBody(width, rows int, focused bool) string {
 	for i := top; i < n && i < top+rows; i++ {
 		ev := m.events[i]
 		clock := " ⋯ "
-		if ev.Minute >= 0 {
-			clock = fmt.Sprintf("%3s", clockLabel(ev.Minute))
+		if ev.Min != "" {
+			clock = fmt.Sprintf("%4s", ev.Min)
 		}
 		sty, ok := kindSty[ev.Kind]
 		if !ok {
@@ -760,13 +760,11 @@ func (m *model) eventDetailBody(width int) string {
 	para := func(k, v string) {
 		b.WriteString(styDim.Render(fmt.Sprintf("%-11s", k)) + styFg.Render(v) + "\n")
 	}
-	if ev.Minute >= 0 {
-		para("game time", clockLabel(ev.Minute))
-	} else {
-		para("game time", "before session (day so far)")
+	if ev.Min != "" {
+		para("game time", ev.Min)
 	}
 	if !ev.Wall.IsZero() {
-		para("logged", ev.Wall.In(eastern).Format("3:04:05 PM EST"))
+		para("occurred", ev.Wall.In(eastern).Format("3:04 PM EST"))
 	}
 	delta := "0"
 	if ev.Delta > 0 {
@@ -792,8 +790,6 @@ func (m *model) eventDetailBody(width int) string {
 		note = fmt.Sprintf("This added %s to your score.", delta)
 	case ev.Opp && ev.Delta > 0:
 		note = fmt.Sprintf("This added %s to your opponent — it cuts your margin.", delta)
-	case ev.Kind == "Y" || ev.Kind == "R":
-		note = "Cards cost points and raise the risk of an early exit — worth watching if it is your player."
 	case ev.Owner == "" && ev.Delta > 0:
 		note = "A free agent returning — a potential waiver target if the form holds."
 	}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, path string, v any) {
@@ -328,95 +329,65 @@ func TestSubbedOffGetsEarlyCheck(t *testing.T) {
 	}
 }
 
-func TestEventsTickerDiffsSnapshots(t *testing.T) {
+func TestEventsFromMatchFile(t *testing.T) {
 	dir := fixtureDir(t)
-	mk := func(goals, assists, pts int) map[string]any {
-		return map[string]any{
-			"elements": map[string]any{
-				"1": map[string]any{"stats": map[string]any{
-					"minutes": 30, "total_points": pts, "goals_scored": goals,
-					"assists": assists, "starts": 1}},
-				"3": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 1, "starts": 1}},
-			},
-			"fixtures": []map[string]any{{
-				"team_h": 1, "team_a": 2, "started": true, "finished": false,
-			}},
-		}
-	}
-	write(t, filepath.Join(dir, "gw/1/live.json"), mk(0, 0, 2))
+	write(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
+		"elements": map[string]any{
+			"1": map[string]any{"stats": map[string]any{"minutes": 60, "total_points": 6, "starts": 1}},
+			"3": map[string]any{"stats": map[string]any{"minutes": 60, "total_points": 2, "starts": 1}},
+		},
+		"fixtures": []map[string]any{{"team_h": 1, "team_a": 2, "started": true, "finished": false}},
+	})
+	now := time.Now().UTC()
+	// Two events today: Striker (mine, element 1, FWD) scores at 55'; OppKeeper
+	// booked later at 78'. Chronological order + real minutes must survive.
+	write(t, filepath.Join(dir, "gw/1/match_events.json"), map[string]any{
+		"gw": 1,
+		"events": []map[string]any{
+			{"element": 3, "kind": "Y", "minute": "78'", "club": "COV",
+				"utc": now.Add(1 * time.Minute).Format(time.RFC3339)},
+			{"element": 1, "kind": "G", "minute": "55'", "club": "ARS",
+				"utc": now.Format(time.RFC3339)},
+		},
+	})
 	m := newModel(dir, t.TempDir(), 5, 501, 0)
-	if err := m.reload(); err != nil {
-		t.Fatal(err)
-	}
-	if len(m.events) != 0 {
-		t.Fatalf("no events on the board yet, got %v", m.events)
-	}
-	// Striker scores: next snapshot must yield exactly one goal event, owned
-	// by me, with the points swing attached.
-	write(t, filepath.Join(dir, "gw/1/live.json"), mk(1, 0, 7))
-	if err := m.reload(); err != nil {
-		t.Fatal(err)
-	}
-	if len(m.events) != 1 {
-		t.Fatalf("want 1 event, got %d: %v", len(m.events), m.events)
-	}
-	ev := m.events[0]
-	if ev.Kind != "G" || ev.Name != "Striker" || !ev.Mine || ev.Delta != 5 {
-		t.Fatalf("bad event: %+v", ev)
-	}
-	// Repeat snapshot: no duplicate events.
-	if err := m.reload(); err != nil {
-		t.Fatal(err)
-	}
-	if len(m.events) != 1 {
-		t.Fatalf("duplicate events on unchanged stats: %d", len(m.events))
-	}
-	if body := m.eventsBody(40, 14, false); !strings.Contains(body, "Striker") {
-		t.Fatalf("events page missing the goal:\n%s", body)
-	}
-}
-
-func TestEventsChronologicalAndDetail(t *testing.T) {
-	dir := fixtureDir(t)
-	live := func(g1, p1, y3 int) map[string]any {
-		return map[string]any{
-			"elements": map[string]any{
-				"1": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": p1, "goals_scored": g1, "starts": 1}},
-				"3": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 1, "yellow_cards": y3, "starts": 1}},
-			},
-			"fixtures": []map[string]any{{"team_h": 1, "team_a": 2, "started": true, "finished": false}},
-		}
-	}
-	write(t, filepath.Join(dir, "gw/1/live.json"), live(0, 2, 0))
-	m := newModel(dir, t.TempDir(), 5, 501, 0)
-	if err := m.reload(); err != nil {
-		t.Fatal(err)
-	}
-	write(t, filepath.Join(dir, "gw/1/live.json"), live(1, 7, 0)) // Striker (mine) scores
-	if err := m.reload(); err != nil {
-		t.Fatal(err)
-	}
-	write(t, filepath.Join(dir, "gw/1/live.json"), live(1, 7, 1)) // OppKeeper booked, later
 	if err := m.reload(); err != nil {
 		t.Fatal(err)
 	}
 	if len(m.events) != 2 {
-		t.Fatalf("want 2 events, got %d", len(m.events))
+		t.Fatalf("want 2 events, got %d: %+v", len(m.events), m.events)
 	}
-	// Chronological: the goal is first, the later card second.
-	if m.events[0].Kind != "G" || m.events[1].Kind != "Y" {
-		t.Fatalf("events out of order: %+v", m.events)
+	// Ordered by occurrence: the 55' goal first, the 78' card second.
+	g := m.events[0]
+	if g.Kind != "G" || g.Name != "Striker" || g.Min != "55'" || !g.Mine || g.Delta != 4 {
+		t.Fatalf("goal row wrong: %+v", g)
 	}
-	if m.events[0].Wall.IsZero() {
-		t.Fatal("event should carry a wall-clock timestamp")
+	if m.events[1].Kind != "Y" || m.events[1].Min != "78'" {
+		t.Fatalf("card row wrong: %+v", m.events[1])
 	}
-	// Detail view of the goal names the player and the points swing.
+	if g.Wall.IsZero() {
+		t.Fatal("event should carry the real occurrence time")
+	}
 	m.evSel = 0
 	d := m.eventDetailBody(48)
-	for _, want := range []string{"Goal", "Striker", "+5", "YOUR player"} {
+	for _, want := range []string{"Goal", "Striker", "55'", "+4", "YOUR player"} {
 		if !strings.Contains(d, want) {
 			t.Fatalf("event detail missing %q:\n%s", want, d)
 		}
+	}
+	// A stale event from another day is filtered out.
+	write(t, filepath.Join(dir, "gw/1/match_events.json"), map[string]any{
+		"gw": 1,
+		"events": []map[string]any{
+			{"element": 1, "kind": "G", "minute": "10'", "club": "ARS",
+				"utc": now.AddDate(0, 0, -2).Format(time.RFC3339)},
+		},
+	})
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.events) != 0 {
+		t.Fatalf("yesterday's events must not show today: %+v", m.events)
 	}
 }
 
