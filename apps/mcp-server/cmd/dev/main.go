@@ -16,6 +16,7 @@ import (
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/ledger"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/model"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/points"
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/pulse"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/reconcile"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/store"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/summary"
@@ -113,6 +114,7 @@ func main() {
 			gw = game.NextEvent
 		}
 		must(client.EventLive(gw, true))
+		refreshSquads(st, gw)
 		log.Printf("live-only refresh: GW %d\n", gw)
 		return
 	}
@@ -201,6 +203,7 @@ func main() {
 	for gw := minGW; gw <= maxGW; gw++ {
 		log.Printf("Queueing GW %d live + entry events...\n", gw)
 	}
+	refreshSquads(st, maxGW)
 	if err := runFetchTasks(client, entryIDs, minGW, maxGW, refreshLive, refreshEntry, *workers); err != nil {
 		log.Fatalf("fetch failed: %v", err)
 	}
@@ -332,6 +335,17 @@ func buildEntrySnapshots(st *store.JSONStore, derivedRoot string, leagueID int, 
 		}
 	}
 	return nil
+}
+
+// refreshSquads pulls official team sheets (pulselive) for fixtures around
+// now into gw/<n>/squads.json. Best-effort: the FPL refresh never depends on
+// the pulse feed being up.
+func refreshSquads(st *store.JSONStore, gw int) {
+	if err := pulse.RefreshSquads(pulse.NewClient(), st, gw, time.Now()); err != nil {
+		log.Printf("team sheets (pulse) skipped: %v", err)
+	} else {
+		log.Printf("team sheets refreshed: GW %d", gw)
+	}
 }
 
 type fetchTask struct {

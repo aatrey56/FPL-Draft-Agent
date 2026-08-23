@@ -386,7 +386,7 @@ fpl-draft-mcp/
 ├── apps/
 │   ├── mcp-server/          # Go MCP server (port 8080)
 │   │   ├── cmd/
-│   │   │   ├── dev/                     # the ONLY component that hits the live FPL API
+│   │   │   ├── dev/                     # the ONLY component hitting live APIs (FPL draft + PL pulse team sheets)
 │   │   │   ├── tui/                     # live matchday dashboard (bubbletea; local snapshots only)
 │   │   │   └── schema-inventory/        # dev utility: dumps API schema registry
 │   │   └── fpl-server/
@@ -435,8 +435,9 @@ fpl-draft-mcp/
 FPL API
   │
   ▼
-Fetcher (Go, cmd/dev — the only component that hits the live API)
-  │  raw JSON → data/raw/<season>/   (+ element-status snapshots)
+Fetcher (Go, cmd/dev — the only component that hits live APIs:
+  │  FPL draft + official PL team sheets via pulselive ~1h pre-kickoff)
+  │  raw JSON → data/raw/<season>/   (+ element-status, gw/<n>/squads.json)
   ▼
 Derive (Python, backend/ml/*)
   │  projections, player_history, ownership_events,

@@ -112,6 +112,7 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 			Fixtures []struct {
 				TeamH        int  `json:"team_h"`
 				TeamA        int  `json:"team_a"`
+				Started      bool `json:"started"`
 				Finished     bool `json:"finished"`
 				FinishedProv bool `json:"finished_provisional"`
 			} `json:"fixtures"`
@@ -166,6 +167,42 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 			done, known := fixtureDone[teamID]
 			return !known || done
 		}
+		teamStarted := map[int]bool{}
+		for _, f := range live.Fixtures {
+			if f.Started {
+				teamStarted[f.TeamH] = true
+				teamStarted[f.TeamA] = true
+			}
+		}
+
+		// Official team sheets (best effort): xi/bench per element, and which
+		// clubs have released one. Absent file = no sheet knowledge.
+		var squads struct {
+			Fixtures []struct {
+				Sheets map[string]struct {
+					XI    []int `json:"xi"`
+					Bench []int `json:"bench"`
+				} `json:"sheets"`
+			} `json:"fixtures"`
+		}
+		sheetRole := map[int]string{}
+		clubSheet := map[string]bool{}
+		if err := readJSONFile(filepath.Join(rawDir, fmt.Sprintf("gw/%d/squads.json", gw)), &squads); err == nil {
+			for _, fx := range squads.Fixtures {
+				for club, sheet := range fx.Sheets {
+					if len(sheet.XI) == 0 {
+						continue
+					}
+					clubSheet[club] = true
+					for _, id := range sheet.XI {
+						sheetRole[id] = "xi"
+					}
+					for _, id := range sheet.Bench {
+						sheetRole[id] = "bench"
+					}
+				}
+			}
+		}
 
 		side := func(entryID int) (map[string]any, error) {
 			var snapshot struct {
@@ -198,9 +235,15 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 				} else {
 					benchTotal += stats.TotalPoints
 				}
+				role := sheetRole[p.Element]
+				sheetOut := clubSheet[info.Team] && role == ""
+				status := role
+				if sheetOut {
+					status = "out" // squad released without him — ruled out
+				}
 				squad = append(squad, autosub.Player{
 					Slot: p.Position, Pos: info.PosCode, Minutes: stats.Minutes,
-					FixtureDone: teamDone(info.TeamID),
+					FixtureDone: teamDone(info.TeamID) || (teamStarted[info.TeamID] && sheetOut),
 				})
 				nameBySlot[p.Position] = info.Name
 				pointsBySlot[p.Position] = stats.TotalPoints
@@ -210,6 +253,7 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 					"minutes": stats.Minutes, "points": stats.TotalPoints,
 					"goals": stats.GoalsScored, "assists": stats.Assists,
 					"bonus": stats.Bonus, "bps": stats.Bps,
+					"squad_status": status,
 				})
 			}
 			// Projected end-of-GW auto-subs (draft rules): confirmed 0-minute
@@ -240,7 +284,7 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 		}
 		result := map[string]any{
 			"gw": gw, "me": me,
-			"note": "Points come straight from the FPL live endpoint and already include any bonus awarded so far — bonus is now published during matches, not after. Bonus can still move while a match is in progress (bps shows the running tally); scores lock the morning after the GW's final match. effective_points = live_points plus projected_auto_subs: draft auto-substitutions (0-minute starters whose fixture finished, replaced in bench order, keeper-for-keeper, formation kept legal) that will apply when the GW completes. Refresh the snapshot with a full (non --fast) fetch.",
+			"note": "Points come straight from the FPL live endpoint and already include any bonus awarded so far — bonus is now published during matches, not after. Bonus can still move while a match is in progress (bps shows the running tally); scores lock the morning after the GW's final match. squad_status (from official team sheets, ~1h pre-kickoff): 'xi' named starter, 'bench' in squad, 'out' left out entirely, empty = no sheet yet. effective_points = live_points plus projected_auto_subs: draft auto-substitutions (0-minute starters whose fixture finished, replaced in bench order, keeper-for-keeper, formation kept legal) that will apply when the GW completes. Refresh the snapshot with a full (non --fast) fetch.",
 		}
 		if opponentEntry != 0 {
 			if opp, err := side(opponentEntry); err == nil {

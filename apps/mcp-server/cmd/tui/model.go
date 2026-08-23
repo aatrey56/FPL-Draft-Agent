@@ -21,6 +21,7 @@ import (
 
 type playerRow struct {
 	Slot    int
+	ID      int
 	Name    string
 	Pos     string
 	Team    string
@@ -315,7 +316,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	positions := map[int]string{1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
 	info := map[int]playerRow{}
 	for _, e := range bootstrap.Elements {
-		info[e.ID] = playerRow{Name: e.WebName, Pos: positions[e.ElementType],
+		info[e.ID] = playerRow{ID: e.ID, Name: e.WebName, Pos: positions[e.ElementType],
 			Team: teamShort[e.Team], TeamID: e.Team, Avail: e.Status}
 	}
 
@@ -433,12 +434,59 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	}
 	snap.Matches = append(snap.Matches, doneMatches...)
 
+	// Official team sheets (pulse), when released: element -> xi/bench, plus
+	// which clubs have a sheet at all. A club with a sheet and a player in
+	// neither list means "not in the squad".
+	var squads struct {
+		Fixtures []struct {
+			Sheets map[string]struct {
+				XI    []int `json:"xi"`
+				Bench []int `json:"bench"`
+			} `json:"sheets"`
+		} `json:"fixtures"`
+	}
+	sheetRole := map[int]string{}
+	clubSheet := map[int]bool{}
+	shortToTeam := map[string]int{}
+	for id, short := range teamShort {
+		shortToTeam[short] = id
+	}
+	if err := readJSON(filepath.Join(dir, fmt.Sprintf("gw/%d/squads.json", gw)), &squads); err == nil {
+		for _, fx := range squads.Fixtures {
+			for club, sheet := range fx.Sheets {
+				if len(sheet.XI) == 0 {
+					continue
+				}
+				clubSheet[shortToTeam[club]] = true
+				for _, id := range sheet.XI {
+					sheetRole[id] = "xi"
+				}
+				for _, id := range sheet.Bench {
+					sheetRole[id] = "bench"
+				}
+			}
+		}
+	}
+
 	glyph := func(p playerRow) string {
 		if !p.Starter {
 			return "·"
 		}
 		flagged := p.Avail == "d" || p.Avail == "i" || p.Avail == "s" || p.Avail == "u"
 		fx, known := fixtureByTeam[p.TeamID]
+		finished := known && fx.finished
+		if clubSheet[p.TeamID] && !finished {
+			switch {
+			case p.Minutes > 0:
+				return "●"
+			case sheetRole[p.ID] == "xi":
+				return "●" // named in the starting XI
+			case sheetRole[p.ID] == "bench":
+				return "◉" // in the squad, on the club bench
+			default:
+				return "✗" // sheet is out and he is not in it
+			}
+		}
 		switch {
 		case known && fx.finished && p.Minutes > 0:
 			return "✓"
@@ -483,7 +531,8 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 				// or a club whose GW is over (a confirmed DNP still counts —
 				// that slot is done producing).
 				fx, known := fixtureByTeam[row.TeamID]
-				if row.Minutes > 0 || !known || fx.finished {
+				sheetOut := clubSheet[row.TeamID] && sheetRole[row.ID] == ""
+				if row.Minutes > 0 || !known || fx.finished || (fx.started && sheetOut) {
 					s.Played++
 				}
 			} else {
@@ -498,9 +547,12 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			sq := make([]autosub.Player, 0, len(s.Players))
 			for _, p := range s.Players {
 				fx, known := fixtureByTeam[p.TeamID]
+				sheetOut := clubSheet[p.TeamID] && sheetRole[p.ID] == ""
 				sq = append(sq, autosub.Player{
 					Slot: p.Slot, Pos: posCode[p.Pos], Minutes: p.Minutes,
-					FixtureDone: !known || fx.finished,
+					// Not in the released squad + game underway = confirmed
+					// non-player; the auto-sub can be projected already.
+					FixtureDone: !known || fx.finished || (fx.started && sheetOut),
 				})
 			}
 			for _, sw := range autosub.Project(sq) {
