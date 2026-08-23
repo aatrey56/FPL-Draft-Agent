@@ -663,16 +663,10 @@ func (m *model) View() string {
 				w, m.focus == 0, 0) + "\n" + m.footer()
 	}
 
-	// Wide layout is a 2×2 grid: Live | Matchup on top, League | Transactions
-	// below. Each row spans the full width, so panels get more room.
-	liveW := 0
-	if md == wide && len(m.snap.Matches) > 0 {
-		liveW = clamp(w/6, 20, 24)
-	}
-	mainW := w - liveW - boolToInt(liveW > 0)
-	if md == wide && mainW > 96 {
-		mainW = 96
-	}
+	// Wide layout: the Matchup spans the full width on top; League, Live,
+	// and Transactions sit beneath it in three equal columns, padded to one
+	// height so every edge lines up.
+	mainW := w
 
 	mainTitle := fmt.Sprintf("Matchup %d/%d", m.selected+1, len(m.snap.Matchups))
 	mainBody := m.matchupBody(mainW - 4)
@@ -683,18 +677,19 @@ func (m *model) View() string {
 		mainTitle = "Transactions"
 		mainBody = m.txDetailBody(mainW - 4)
 	}
-	// Panels sharing a grid row pad to the same body height so the row's
-	// bottom edges align.
-	topH := lipgloss.Height(mainBody)
-	liveBody := ""
-	if liveW > 0 {
-		liveBody = m.liveBody(liveW-4, m.focus == 1)
-		topH = max(topH, lipgloss.Height(liveBody))
-	}
-	matchupPanel := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, topH)
+	screen := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, 0)
 
-	screen := matchupPanel
-	if liveW > 0 {
+	if md == wide {
+		third := (w - 2) / 3
+		leagueW, liveW := third, third
+		txW := w - 2 - leagueW - liveW
+
+		leagueTitle, leagueHint := "League", "tab ↑↓ ↵"
+		leagueBody := m.railBody(leagueW-4, m.focus == 2)
+		if m.sugView {
+			leagueTitle, leagueHint = "Suggestion", "esc"
+			leagueBody = m.sugDetailBody(leagueW - 4)
+		}
 		gamesTitle, gamesHint := "Live", "↑↓ ↵"
 		if games := m.gamesList(); len(games) > 0 && games[0].Finished {
 			gamesTitle = "Played"
@@ -702,27 +697,18 @@ func (m *model) View() string {
 		if m.gamesPages() > 1 {
 			gamesHint = "←→ ↑↓ ↵"
 		}
-		livePanel := Panel(gamesTitle, gamesHint, liveBody, liveW, m.focus == 1, topH)
-		screen = lipgloss.JoinHorizontal(lipgloss.Top, livePanel, " ", screen)
-	}
-	if md == wide {
-		leagueW := clamp(w/2, 30, 50)
-		txW := clamp(w-leagueW-1, 18, 50)
-		leagueTitle, leagueHint := "League", "tab ↑↓ ↵"
-		leagueBody := m.railBody(leagueW-4, m.focus == 2)
-		if m.sugView {
-			leagueTitle, leagueHint = "Suggestion", "esc"
-			leagueBody = m.sugDetailBody(leagueW - 4)
-		}
+		liveBody := m.liveBody(liveW-4, m.focus == 1)
 		txBody := m.txBody(txW-4, m.focus == 3)
-		botH := max(lipgloss.Height(leagueBody), lipgloss.Height(txBody))
+
+		botH := max(lipgloss.Height(leagueBody), max(lipgloss.Height(liveBody), lipgloss.Height(txBody)))
 		league := Panel(leagueTitle, leagueHint, leagueBody, leagueW, m.focus == 2, botH)
+		games := Panel(gamesTitle, gamesHint, liveBody, liveW, m.focus == 1, botH)
 		tx := Panel("Transactions", "↑↓ ↵", txBody, txW, m.focus == 3, botH)
-		screen += "\n" + lipgloss.JoinHorizontal(lipgloss.Top, league, " ", tx)
+		screen += "\n" + lipgloss.JoinHorizontal(lipgloss.Top, league, " ", games, " ", tx)
 	}
 
 	out := m.header(w)
-	if strip := m.scoresStrip(w, md != wide || liveW == 0); strip != "" {
+	if strip := m.scoresStrip(w, md != wide); strip != "" {
 		out += "\n" + strip
 	}
 	return out + "\n" + screen + "\n" + m.footer()
