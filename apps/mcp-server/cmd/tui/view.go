@@ -112,21 +112,17 @@ func scoreBar(me, opp, width int) string {
 	return styLive.Render(strings.Repeat("█", filled)) + styDim.Render(strings.Repeat("░", width-filled))
 }
 
-func glyphStyle(g string, pts int) lipgloss.Style {
+// glyphStyle is the status colour language: green = played/playing,
+// red = confirmed out (DNP, or flagged ⚠ via styWarn), baby blue = has not
+// played yet, dim = bench.
+func glyphStyle(g string) lipgloss.Style {
 	switch g {
-	case "●", "⇄":
+	case "●", "⇄", "✓":
 		return styLive
-	case "◉":
-		return styFg
-	case "✓":
-		if pts > 0 {
-			return styLive
-		}
-		return styFg
+	case "◉", "○":
+		return styTmrw
 	case "⚠", "✗":
 		return styWarn
-	case "·", "–":
-		return styDim
 	default:
 		return styDim
 	}
@@ -141,7 +137,7 @@ func playerLine(p playerRow, half, barW, maxPts int) string {
 	name := ansi.Truncate(p.Name, nameW, "…")
 	base := p.Glyph + " " + fmt.Sprintf("%-4s", p.Pos) +
 		name + strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))) + fixedTail
-	sty := glyphStyle(p.Glyph, p.Points)
+	sty := glyphStyle(p.Glyph)
 	if !p.Starter && !p.SubIn {
 		sty = styDim
 	}
