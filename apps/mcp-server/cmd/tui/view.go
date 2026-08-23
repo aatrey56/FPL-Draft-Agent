@@ -659,7 +659,10 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 func (m *model) panelBody(width int, focused bool) string {
 	switch m.currentPage() {
 	case "events":
-		return m.eventsBody(width, 14)
+		if m.evView {
+			return m.eventDetailBody(width)
+		}
+		return m.eventsBody(width, 14, focused)
 	case "bonus":
 		return m.bonusBody(width)
 	}
@@ -667,7 +670,7 @@ func (m *model) panelBody(width int, focused bool) string {
 }
 
 // eventsBody is the live feed, newest first: minute, kind, player, points.
-func (m *model) eventsBody(width, rows int) string {
+func (m *model) eventsBody(width, rows int, focused bool) string {
 	if len(m.events) == 0 {
 		return styDim.Render("watching for goals, assists, cards…")
 	}
@@ -675,11 +678,25 @@ func (m *model) eventsBody(width, rows int) string {
 		"G": styScore, "A": lipgloss.NewStyle().Bold(true).Foreground(accentC),
 		"Y": styFlag, "R": styWarn,
 	}
+	n := len(m.events)
+	sel := clampEvSel(m.evSel, n)
+	// Chronological order (oldest → newest). Show a window that keeps the
+	// selected row in view; unfocused, anchor to the newest events.
+	top := 0
+	if n > rows {
+		if focused {
+			top = clamp(sel-rows/2, 0, n-rows)
+		} else {
+			top = n - rows
+		}
+	}
 	var b strings.Builder
-	shown := 0
-	for i := len(m.events) - 1; i >= 0 && shown < rows; i-- {
+	if top > 0 {
+		b.WriteString(styDim.Render(fmt.Sprintf("  ↑ %d earlier", top)) + "\n")
+	}
+	for i := top; i < n && i < top+rows; i++ {
 		ev := m.events[i]
-		clock := "  ⋯"
+		clock := " ⋯ "
 		if ev.Minute >= 0 {
 			clock = fmt.Sprintf("%3s", clockLabel(ev.Minute))
 		}
@@ -687,7 +704,7 @@ func (m *model) eventsBody(width, rows int) string {
 		if !ok {
 			sty = styDim
 		}
-		delta := ""
+		delta := "   "
 		if ev.Delta > 0 {
 			delta = styLive.Render(fmt.Sprintf("+%d", ev.Delta))
 		} else if ev.Delta < 0 {
@@ -702,12 +719,88 @@ func (m *model) eventsBody(width, rows int) string {
 		case ev.Owner != "":
 			who = styDim.Render(ansi.Truncate(ev.Owner, 10, "…"))
 		}
-		name := ansi.Truncate(ev.Name, clamp(width-20, 6, 18), "…")
+		name := ansi.Truncate(ev.Name, clamp(width-22, 6, 18), "…")
 		line := fmt.Sprintf("%s %s %s %s %s %s",
 			styDim.Render(clock), sty.Render(ev.Kind), styFg.Render(name),
 			styDim.Render(ev.Club), delta, who)
+		if focused && i == sel {
+			plain := fmt.Sprintf("%3s %s %s %s %s %s", clock, ev.Kind, name, ev.Club,
+				strings.TrimSpace(ansi.Strip(delta)), ansi.Strip(who))
+			b.WriteString(stySel.Render(ansi.Truncate(plain, width, "…")+
+				strings.Repeat(" ", max(0, width-lipgloss.Width(ansi.Truncate(plain, width, "…"))))) + "\n")
+			continue
+		}
 		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
-		shown++
+	}
+	if end := n - (top + rows); end > 0 {
+		b.WriteString(styDim.Render(fmt.Sprintf("  ↓ %d more", end)))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// eventDetailBody expands the selected event: the action, when it happened in
+// the game and in EST wall-clock, whose player, and what it moved.
+func (m *model) eventDetailBody(width int) string {
+	if len(m.events) == 0 {
+		return styDim.Render("no events yet")
+	}
+	ev := m.events[clampEvSel(m.evSel, len(m.events))]
+	kindName := map[string]string{"G": "Goal", "A": "Assist", "Y": "Yellow card", "R": "Red card"}
+	sty := map[string]lipgloss.Style{"G": styScore, "A": styTitle, "Y": styFlag, "R": styWarn}[ev.Kind]
+	if sty.GetForeground() == nil {
+		sty = styFg
+	}
+	var b strings.Builder
+	head := kindName[ev.Kind]
+	if head == "" {
+		head = ev.Kind
+	}
+	b.WriteString(sty.Bold(true).Render(head) + " — " + styFg.Bold(true).Render(ev.Name) +
+		" " + styDim.Render(ev.Pos+" "+ev.Club) + "\n\n")
+	para := func(k, v string) {
+		b.WriteString(styDim.Render(fmt.Sprintf("%-11s", k)) + styFg.Render(v) + "\n")
+	}
+	if ev.Minute >= 0 {
+		para("game time", clockLabel(ev.Minute))
+	} else {
+		para("game time", "before session (day so far)")
+	}
+	if !ev.Wall.IsZero() {
+		para("logged", ev.Wall.In(eastern).Format("3:04:05 PM EST"))
+	}
+	delta := "0"
+	if ev.Delta > 0 {
+		delta = fmt.Sprintf("+%d", ev.Delta)
+	} else if ev.Delta < 0 {
+		delta = fmt.Sprintf("%d", ev.Delta)
+	}
+	para("fpl points", delta)
+	owner := "free agent (unowned)"
+	switch {
+	case ev.Mine:
+		owner = "YOUR player"
+	case ev.Opp:
+		owner = "your opponent this week"
+	case ev.Owner != "":
+		owner = ev.Owner
+	}
+	para("owned by", owner)
+	b.WriteString("\n")
+	note := ""
+	switch {
+	case ev.Mine && ev.Delta > 0:
+		note = fmt.Sprintf("This added %s to your score.", delta)
+	case ev.Opp && ev.Delta > 0:
+		note = fmt.Sprintf("This added %s to your opponent — it cuts your margin.", delta)
+	case ev.Kind == "Y" || ev.Kind == "R":
+		note = "Cards cost points and raise the risk of an early exit — worth watching if it is your player."
+	case ev.Owner == "" && ev.Delta > 0:
+		note = "A free agent returning — a potential waiver target if the form holds."
+	}
+	if note != "" {
+		for _, ln := range wrapText(note, width-1) {
+			b.WriteString(styDim.Render(ln) + "\n")
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -983,7 +1076,15 @@ func (m *model) View() string {
 			leagueTitle, leagueHint = "Suggestion", "esc"
 			leagueBody = m.sugDetailBody(leagueW - 4)
 		}
-		eventsBody := m.eventsBody(eventsW-4, 22)
+		eventsTitle, eventsHint := "Events", ""
+		eventsBody := m.eventsBody(eventsW-4, 22, m.focus == 4)
+		if m.focus == 4 {
+			eventsHint = "↑↓ ↵"
+		}
+		if m.evView {
+			eventsTitle, eventsHint = "Event", "esc"
+			eventsBody = m.eventDetailBody(eventsW - 4)
+		}
 		bonusTitle, bonusBody := "Bonus", m.bonusBody(bonusW-4)
 		if len(m.snap.BonusRace) == 0 {
 			bonusTitle, bonusBody = "Best today", m.bestBody(bonusW-4, 12)
@@ -993,7 +1094,7 @@ func (m *model) View() string {
 			max(lipgloss.Height(bonusBody), lipgloss.Height(txBody)))
 		row2 := lipgloss.JoinHorizontal(lipgloss.Top,
 			Panel(leagueTitle, leagueHint, leagueBody, leagueW, m.focus == 2, botH), " ",
-			Panel("Events", "", eventsBody, eventsW, false, botH), " ",
+			Panel(eventsTitle, eventsHint, eventsBody, eventsW, m.focus == 4, botH), " ",
 			Panel(bonusTitle, "", bonusBody, bonusW, false, botH), " ",
 			Panel("Transactions", "↑↓ ↵", txBody, txW, m.focus == 3, botH))
 		screen += "\n" + row2

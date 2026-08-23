@@ -371,8 +371,52 @@ func TestEventsTickerDiffsSnapshots(t *testing.T) {
 	if len(m.events) != 1 {
 		t.Fatalf("duplicate events on unchanged stats: %d", len(m.events))
 	}
-	if body := m.eventsBody(40, 14); !strings.Contains(body, "Striker") {
+	if body := m.eventsBody(40, 14, false); !strings.Contains(body, "Striker") {
 		t.Fatalf("events page missing the goal:\n%s", body)
+	}
+}
+
+func TestEventsChronologicalAndDetail(t *testing.T) {
+	dir := fixtureDir(t)
+	live := func(g1, p1, y3 int) map[string]any {
+		return map[string]any{
+			"elements": map[string]any{
+				"1": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": p1, "goals_scored": g1, "starts": 1}},
+				"3": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 1, "yellow_cards": y3, "starts": 1}},
+			},
+			"fixtures": []map[string]any{{"team_h": 1, "team_a": 2, "started": true, "finished": false}},
+		}
+	}
+	write(t, filepath.Join(dir, "gw/1/live.json"), live(0, 2, 0))
+	m := newModel(dir, t.TempDir(), 5, 501, 0)
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "gw/1/live.json"), live(1, 7, 0)) // Striker (mine) scores
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "gw/1/live.json"), live(1, 7, 1)) // OppKeeper booked, later
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.events) != 2 {
+		t.Fatalf("want 2 events, got %d", len(m.events))
+	}
+	// Chronological: the goal is first, the later card second.
+	if m.events[0].Kind != "G" || m.events[1].Kind != "Y" {
+		t.Fatalf("events out of order: %+v", m.events)
+	}
+	if m.events[0].Wall.IsZero() {
+		t.Fatal("event should carry a wall-clock timestamp")
+	}
+	// Detail view of the goal names the player and the points swing.
+	m.evSel = 0
+	d := m.eventDetailBody(48)
+	for _, want := range []string{"Goal", "Striker", "+5", "YOUR player"} {
+		if !strings.Contains(d, want) {
+			t.Fatalf("event detail missing %q:\n%s", want, d)
+		}
 	}
 }
 

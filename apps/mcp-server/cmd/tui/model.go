@@ -120,17 +120,20 @@ type matchDetail struct {
 
 // tickerStat is the per-player counting state the events ticker diffs.
 type tickerStat struct {
-	Name, Club                          string
+	Name, Club, Pos                     string
 	TeamID                              int
 	Goals, Assists, Yellow, Red, Points int
 }
 
 // eventRow is one line of the live events feed.
 type eventRow struct {
-	Minute int    // fixture clock when observed; -1 = before the TUI opened
-	Kind   string // G goal, A assist, Y yellow, R red, ± unexplained swing
+	Minute int       // fixture clock when observed; -1 = before the TUI opened
+	Wall   time.Time // EST wall-clock when first observed
+	Kind   string    // G goal, A assist, Y yellow, R red
 	Name   string
 	Club   string
+	Pos    string
+	TeamID int
 	Delta  int    // points moved with the event
 	Owner  string // rostering team short name, "" = unowned
 	Mine   bool
@@ -187,6 +190,8 @@ type model struct {
 	matchView bool
 	txView    bool
 	sugView   bool
+	evSel     int // selected event (-1 = auto/newest)
+	evView    bool
 	w, h      int
 	loadErr   string
 	status    string
@@ -196,7 +201,37 @@ type model struct {
 }
 
 func newModel(dir, derived string, league, entry, gw int) *model {
-	return &model{dir: dir, derived: derived, league: league, entry: entry, gwArg: gw, w: 130, h: 40}
+	return &model{dir: dir, derived: derived, league: league, entry: entry, gwArg: gw, w: 130, h: 40, evSel: -1}
+}
+
+// focusCount is how many panels tab cycles: fullscreen adds the Events panel.
+func (m *model) focusCount() int {
+	if m.mode() == full {
+		return 5
+	}
+	return 4
+}
+
+// eventsFocused reports whether ↑↓/enter should drive the Events feed: its
+// own panel (focus 4) in fullscreen, or the events page of the middle panel
+// (focus 1) in the compact layout.
+func (m *model) eventsFocused() bool {
+	if m.mode() == full {
+		return m.focus == 4
+	}
+	return m.focus == 1 && m.currentPage() == "events"
+}
+
+// clampEvSel resolves the -1 "auto = newest" sentinel and pins the index into
+// range so ↑↓ can step from a known point.
+func clampEvSel(sel, n int) int {
+	if n == 0 {
+		return 0
+	}
+	if sel < 0 || sel >= n {
+		return n - 1
+	}
+	return sel
 }
 
 func readJSON(path string, v any) error {
@@ -507,7 +542,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			continue
 		}
 		snap.PlayerStats[e.ID] = tickerStat{
-			Name: e.WebName, Club: teamShort[e.Team], TeamID: e.Team,
+			Name: e.WebName, Club: teamShort[e.Team], Pos: positions[e.ElementType], TeamID: e.Team,
 			Goals: st.Goals, Assists: st.Assists,
 			Yellow: st.YellowCards, Red: st.RedCards, Points: st.TotalPoints,
 		}
@@ -1006,7 +1041,9 @@ func (m *model) ingestEvents(snap snapshot) {
 		}
 		for range max(1, n) {
 			ev := tag(id)
-			ev.Minute, ev.Kind, ev.Name, ev.Club, ev.Delta = minute, kind, ps.Name, ps.Club, delta
+			ev.Minute, ev.Wall = minute, time.Now()
+			ev.Kind, ev.Name, ev.Club, ev.Pos, ev.TeamID = kind, ps.Name, ps.Club, ps.Pos, ps.TeamID
+			ev.Delta = delta
 			m.events = append(m.events, ev)
 		}
 	}
@@ -1098,7 +1135,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "enter":
-			if games := m.gamesList(); m.focus == 1 && len(games) > 0 {
+			if m.eventsFocused() && len(m.events) > 0 {
+				m.evView = !m.evView
+			} else if games := m.gamesList(); m.focus == 1 && len(games) > 0 {
 				m.matchView, m.txView = !m.matchView, false
 				g := games[clamp(m.liveSel, 0, len(games)-1)]
 				for i, md := range m.snap.Matches {
@@ -1114,11 +1153,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.txView, m.matchView = !m.txView, false
 			}
 		case "esc":
-			m.matchView, m.txView, m.sugView = false, false, false
+			m.matchView, m.txView, m.sugView, m.evView = false, false, false, false
 		case "tab":
-			m.focus = (m.focus + 1) % 4
+			m.focus = (m.focus + 1) % m.focusCount()
 		case "up", "k":
-			if m.focus == 1 {
+			if m.eventsFocused() {
+				m.evSel = clampEvSel(m.evSel, len(m.events)) - 1
+			} else if m.focus == 1 {
 				m.liveSel = (m.liveSel + max(1, len(m.gamesList())) - 1) % max(1, len(m.gamesList()))
 			}
 			if m.focus == 2 {
@@ -1128,7 +1169,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.txSel = (m.txSel + max(1, len(m.snap.TxByManager)) - 1) % max(1, len(m.snap.TxByManager))
 			}
 		case "down", "j":
-			if m.focus == 1 {
+			if m.eventsFocused() {
+				m.evSel = clampEvSel(m.evSel, len(m.events)) + 1
+			} else if m.focus == 1 {
 				m.liveSel = (m.liveSel + 1) % max(1, len(m.gamesList()))
 			}
 			if m.focus == 2 {
