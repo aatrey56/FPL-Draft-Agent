@@ -655,27 +655,18 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 	return " " + strings.Join(lines, "\n ")
 }
 
-// plTableBody renders the live Premier League table in two columns (1-10 |
-// 11-20) so all 20 clubs fit in half the vertical space.
+// plTableBody renders the live Premier League table compactly: position,
+// club, played, goal difference, points.
 func (m *model) plTableBody(width int) string {
-	n := len(m.snap.PLTable)
-	if n == 0 {
+	if len(m.snap.PLTable) == 0 {
 		return ""
 	}
-	cell := func(r plRow) string {
-		return fmt.Sprintf("%2d %-3s %+3d %2d", r.Pos, r.Short, r.GD, r.Points)
-	}
-	half := (n + 1) / 2
 	var b strings.Builder
-	head := styDim.Render(" #  CLB   GD PT")
-	b.WriteString(head + "   " + head + "\n")
-	for i := 0; i < half; i++ {
-		left := styFg.Render(cell(m.snap.PLTable[i]))
-		right := ""
-		if j := i + half; j < n {
-			right = "   " + styFg.Render(cell(m.snap.PLTable[j]))
-		}
-		b.WriteString(ansi.Truncate(left+right, width, "…") + "\n")
+	b.WriteString(styDim.Render(" #  CLUB   P   GD  PTS") + "\n")
+	for _, r := range m.snap.PLTable {
+		gd := fmt.Sprintf("%+d", r.GD)
+		line := fmt.Sprintf("%2d  %-3s  %2d  %3s  %3d", r.Pos, r.Short, r.Played, gd, r.Points)
+		b.WriteString(ansi.Truncate(styFg.Render(line), width, "…") + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
