@@ -114,7 +114,7 @@ func scoreBar(me, opp, width int) string {
 
 func glyphStyle(g string, pts int) lipgloss.Style {
 	switch g {
-	case "●":
+	case "●", "⇄":
 		return styLive
 	case "◉":
 		return styFg
@@ -142,7 +142,7 @@ func playerLine(p playerRow, half, barW, maxPts int) string {
 	base := p.Glyph + " " + fmt.Sprintf("%-4s", p.Pos) +
 		name + strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))) + fixedTail
 	sty := glyphStyle(p.Glyph, p.Points)
-	if !p.Starter {
+	if !p.Starter && !p.SubIn {
 		sty = styDim
 	}
 	line := sty.Render(base) + pts
@@ -230,9 +230,10 @@ func (m *model) matchupBody(width int) string {
 		lipgloss.NewStyle().Width(half).Render(left), " ",
 		lipgloss.NewStyle().Width(half).Render(right))
 
-	// Diverging score bar with margin label.
+	// Diverging score bar with margin label. Totals include projected
+	// auto-subs; a ⇄ marks a side where one is live.
 	barW := clamp(width-30, 10, 40)
-	margin := mu.A.Total - mu.B.Total
+	margin := mu.A.Effective - mu.B.Effective
 	if mu.B.EntryID == m.entry {
 		margin = -margin
 	}
@@ -243,12 +244,18 @@ func (m *model) matchupBody(width int) string {
 		marginLabel = styWarn.Render(fmt.Sprintf("you %d", margin))
 	}
 	if mu.A.EntryID != m.entry && mu.B.EntryID != m.entry {
-		marginLabel = styDim.Render(fmt.Sprintf("Δ %+d", mu.A.Total-mu.B.Total))
+		marginLabel = styDim.Render(fmt.Sprintf("Δ %+d", mu.A.Effective-mu.B.Effective))
 	}
-	score := fmt.Sprintf("%s  %s  %s   %s",
-		styScore.Render(fmt.Sprintf("%3d", mu.A.Total)),
-		scoreBar(mu.A.Total, mu.B.Total, barW),
-		styFg.Bold(true).Render(fmt.Sprintf("%d", mu.B.Total)),
+	mark := func(s side) string {
+		if s.Effective != s.Total {
+			return styDim.Render("⇄")
+		}
+		return ""
+	}
+	score := fmt.Sprintf("%s%s  %s  %s%s   %s",
+		styScore.Render(fmt.Sprintf("%3d", mu.A.Effective)), mark(mu.A),
+		scoreBar(mu.A.Effective, mu.B.Effective, barW),
+		styFg.Bold(true).Render(fmt.Sprintf("%d", mu.B.Effective)), mark(mu.B),
 		marginLabel)
 	if pad := (width - lipgloss.Width(score)) / 2; pad > 0 {
 		score = strings.Repeat(" ", pad) + score
@@ -271,9 +278,9 @@ func (m *model) liveScore(entryID int) string {
 		mine, opp := -1, -1
 		switch entryID {
 		case mu.A.EntryID:
-			mine, opp = mu.A.Total, mu.B.Total
+			mine, opp = mu.A.Effective, mu.B.Effective
 		case mu.B.EntryID:
-			mine, opp = mu.B.Total, mu.A.Total
+			mine, opp = mu.B.Effective, mu.A.Effective
 		}
 		if mine < 0 {
 			continue
