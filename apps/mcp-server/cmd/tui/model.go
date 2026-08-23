@@ -252,11 +252,19 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	_ = readJSON(filepath.Join(dir, fmt.Sprintf("gw/%d/live.json", gw)), &live) // pre-kickoff: zeros
 
 	type fxState struct{ started, finished bool }
+	// Merge per team across a double gameweek: started once any fixture has
+	// kicked off, finished only when every fixture is done.
 	fixtureByTeam := map[int]fxState{}
 	for _, f := range live.Fixtures {
 		done := f.Finished || f.FinishedProv
-		fixtureByTeam[f.TeamH] = fxState{f.Started, done}
-		fixtureByTeam[f.TeamA] = fxState{f.Started, done}
+		for _, team := range []int{f.TeamH, f.TeamA} {
+			cur, seen := fixtureByTeam[team]
+			if !seen {
+				fixtureByTeam[team] = fxState{f.Started, done}
+				continue
+			}
+			fixtureByTeam[team] = fxState{cur.started || f.Started, cur.finished && done}
+		}
 	}
 
 	var bootstrap struct {

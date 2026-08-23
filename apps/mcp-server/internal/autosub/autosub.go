@@ -5,7 +5,9 @@
 //     first eligible bench player, in bench-slot order.
 //   - Goalkeepers only swap with goalkeepers; outfielders with outfielders.
 //   - The resulting XI must stay a legal draft formation: 1 GKP, at least
-//     3 DEF, at least 3 MID, at least 1 FWD.
+//     3 DEF, at least 2 MID, at least 1 FWD (5-2-3 is legal). These minimums
+//     come from the draft API itself — bootstrap settings.squad reports
+//     min_play_DEF 3, min_play_MID 2, min_play_FWD 1, min/max_play_GKP 1.
 //   - Only bench players who actually played (minutes > 0) come on.
 //
 // Mid-gameweek this yields a *projection*: a starter counts as a confirmed
@@ -29,7 +31,7 @@ const (
 // one by the keeper-for-keeper swap rule).
 const (
 	minDEF = 3
-	minMID = 3
+	minMID = 2
 	minFWD = 1
 )
 

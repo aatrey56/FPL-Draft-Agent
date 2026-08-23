@@ -149,12 +149,18 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 			elByID[e.ID] = elInfo{e.WebName, positions[e.ElementType], teamShort[e.Team], e.ElementType, e.Team}
 		}
 		// A club with no unfinished fixture this GW counts as done — that is
-		// when a 0-minute starter becomes a confirmed non-player.
+		// when a 0-minute starter becomes a confirmed non-player. In a double
+		// gameweek every one of the club's fixtures must be finished.
 		fixtureDone := map[int]bool{}
 		for _, f := range live.Fixtures {
-			done := f.Finished || f.FinishedProv
-			fixtureDone[f.TeamH] = done
-			fixtureDone[f.TeamA] = done
+			fDone := f.Finished || f.FinishedProv
+			for _, team := range []int{f.TeamH, f.TeamA} {
+				merged := fDone
+				if cur, seen := fixtureDone[team]; seen {
+					merged = merged && cur
+				}
+				fixtureDone[team] = merged
+			}
 		}
 		teamDone := func(teamID int) bool {
 			done, known := fixtureDone[teamID]

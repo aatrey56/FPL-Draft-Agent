@@ -92,3 +92,18 @@ func TestMultipleSwapsShareTheBench(t *testing.T) {
 		t.Fatalf("got %v want %v", got, want)
 	}
 }
+
+func TestFiveTwoThreeIsLegal(t *testing.T) {
+	// Draft API settings.squad: min_play_MID is 2, so a MID can drop out of
+	// a 3-MID XI and be replaced by a FWD (5-2-3).
+	squad := []Player{{Slot: 1, Pos: GKP, Minutes: 90, FixtureDone: true}}
+	pos := []int{DEF, DEF, DEF, DEF, DEF, MID, MID, MID, FWD, FWD}
+	for i, p := range pos {
+		squad = append(squad, Player{Slot: i + 2, Pos: p, Minutes: 90, FixtureDone: true})
+	}
+	squad[8].Minutes = 0 // slot 9, a MID in the 5-3-2, blanked
+	squad = append(squad, Player{Slot: 13, Pos: FWD, Minutes: 90, FixtureDone: true})
+	if got, want := Project(squad), []Swap{{Out: 9, In: 13}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("5-2-3 must be a legal result, got %v want %v", got, want)
+	}
+}
