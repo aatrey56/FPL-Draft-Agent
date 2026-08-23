@@ -870,6 +870,9 @@ func (m *model) liveBody(width int, focused bool) string {
 		label, sty := clockLabel(g.Minute), styLive
 		if g.Finished {
 			label, sty = "FT", styDim
+			if !g.Kickoff.IsZero() {
+				label = "FT · " + g.Kickoff.In(eastern).Format("Mon 3:04PM")
+			}
 		}
 		line := fmt.Sprintf("%s %d-%d %s %s", g.Home, g.HS, g.AS, g.Away, label)
 		if focused && i == m.liveSel {

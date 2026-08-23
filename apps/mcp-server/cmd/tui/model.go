@@ -113,6 +113,7 @@ type matchDetail struct {
 	Home, Away         string
 	HS, AS, Minute     int
 	Finished           bool
+	Kickoff            time.Time
 	HomeXI, AwayXI     []clubPlayer
 	HomeSubs, AwaySubs []clubPlayer
 }
@@ -464,7 +465,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			continue
 		}
 		md := matchDetail{Home: f.Home, Away: f.Away, HS: f.HS, AS: f.AS,
-			Minute: f.Minutes, Finished: f.Finished}
+			Minute: f.Minutes, Finished: f.Finished, Kickoff: f.Kickoff}
 		split := func(teamID int) (xi, subs []clubPlayer) {
 			players := appearances[teamID]
 			sort.Slice(players, func(a, b int) bool {
