@@ -20,20 +20,21 @@ import (
 )
 
 type playerRow struct {
-	Slot    int
-	ID      int
-	Name    string
-	Pos     string
-	Team    string
-	TeamID  int
-	Avail   string // bootstrap status: a/d/i/s/u
-	Minutes int
-	Points  int
-	Bonus   int // confirmed bonus (already inside Points)
-	Prov    int // provisional bonus from live BPS (not yet in Points)
-	Starter bool
-	SubIn   bool   // projected auto-sub: this bench player comes on
-	Glyph   string // ● on pitch, ◉ could appear, ✓ played, ✗ DNP, ○ not yet, ⚠ doubt, ⇄ auto-sub in, · bench
+	Slot       int
+	ID         int
+	MatchStart bool // started the club's match (live starts flag)
+	Name       string
+	Pos        string
+	Team       string
+	TeamID     int
+	Avail      string // bootstrap status: a/d/i/s/u
+	Minutes    int
+	Points     int
+	Bonus      int // confirmed bonus (already inside Points)
+	Prov       int // provisional bonus from live BPS (not yet in Points)
+	Starter    bool
+	SubIn      bool   // projected auto-sub: this bench player comes on
+	Glyph      string // ● on pitch, ◉ could appear, ✓ played, ✗ DNP, ○ not yet, ⚠ doubt, ⇄ auto-sub in, · bench
 }
 
 type side struct {
@@ -384,6 +385,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 	}
 	posOrder := map[string]int{"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
+	clockByTeam := map[int]int{}  // fixture-wide match clock per club
 	var doneMatches []matchDetail // live matches list first, completed after
 	for i := range snap.Fixtures {
 		f := &snap.Fixtures[i]
@@ -399,6 +401,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		if m := max(maxMin[hID], maxMin[aID]); f.Started && !f.Finished && m > f.Minutes {
 			f.Minutes = m
 		}
+		clockByTeam[hID], clockByTeam[aID] = f.Minutes, f.Minutes
 		if !f.Started {
 			continue
 		}
@@ -468,6 +471,14 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 	}
 
+	// A starter whose minutes froze below the match clock has been subbed
+	// off — his day (and points) are done, so he gets the ✓ early. A sub who
+	// came on also trails the clock but is still playing, hence MatchStart.
+	subbedOff := func(p playerRow) bool {
+		fx, known := fixtureByTeam[p.TeamID]
+		return known && fx.started && !fx.finished &&
+			p.MatchStart && p.Minutes > 0 && p.Minutes < clockByTeam[p.TeamID]-2
+	}
 	glyph := func(p playerRow) string {
 		if !p.Starter {
 			return "·"
@@ -477,6 +488,8 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		finished := known && fx.finished
 		if clubSheet[p.TeamID] && !finished {
 			switch {
+			case subbedOff(p):
+				return "✓"
 			case p.Minutes > 0:
 				return "●"
 			case sheetRole[p.ID] == "xi":
@@ -492,6 +505,8 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			return "✓"
 		case known && fx.finished:
 			return "✗" // did not play — the only red state
+		case known && fx.started && subbedOff(p):
+			return "✓"
 		case known && fx.started && p.Minutes > 0:
 			return "●"
 		case known && fx.started && flagged:
@@ -524,6 +539,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			st := live.Elements[fmt.Sprintf("%d", p.Element)].Stats
 			row.Minutes, row.Points = st.Minutes, st.TotalPoints
 			row.Bonus, row.Prov = st.Bonus, provBonus[p.Element]
+			row.MatchStart = st.Starts > 0
 			row.Glyph = glyph(row)
 			if row.Starter {
 				s.Total += row.Points
