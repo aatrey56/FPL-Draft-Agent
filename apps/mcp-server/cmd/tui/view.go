@@ -247,7 +247,7 @@ func (m *model) matchupBody(width int) string {
 	}
 	mark := func(s side) string {
 		if s.Effective != s.Total {
-			return styDim.Render("⇄")
+			return styTmrw.Render("⇄")
 		}
 		return ""
 	}
