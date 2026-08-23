@@ -684,8 +684,11 @@ func (m *model) plTableBody(width int) string {
 		line := fmt.Sprintf("%2d  ", r.Pos) + clr.Render(fmt.Sprintf("%-3s", r.Short)) +
 			styFg.Render(fmt.Sprintf("  %2d  %+3d  %3d", r.Played, r.GD, r.Points))
 		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
-		if r.Pos == 5 || r.Pos == 10 || r.Pos == 17 {
+		switch r.Pos {
+		case 5, 10:
 			b.WriteString(rule + "\n")
+		case 17: // the relegation cut, in red
+			b.WriteString(styWarn.Render(strings.Repeat("─", clamp(width, 0, 21))) + "\n")
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
