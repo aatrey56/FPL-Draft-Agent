@@ -113,14 +113,15 @@ func scoreBar(me, opp, width int) string {
 	return styBarOn.Render(strings.Repeat("█", filled)) + styBarOff.Render(strings.Repeat("░", width-filled))
 }
 
-// glyphStyle is the status colour language: green = played/playing,
-// red = confirmed out (DNP, or flagged ⚠ via styWarn), baby blue = has not
-// played yet, dim = bench.
+// glyphStyle is the status colour language: green = played, playing, or in
+// a live game and able to come on (◉ — the club is playing, the slot is
+// alive); baby blue = kickoff still ahead (○); red ✗ = confirmed DNP;
+// orange ⚠ = availability flag; dim = FPL bench.
 func glyphStyle(g string) lipgloss.Style {
 	switch g {
-	case "●", "⇄", "✓":
+	case "●", "⇄", "✓", "◉":
 		return styLive
-	case "◉", "○":
+	case "○":
 		return styTmrw
 	case "⚠":
 		return styFlag
