@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, path string, v any) {
@@ -325,5 +326,94 @@ func TestSubbedOffGetsEarlyCheck(t *testing.T) {
 	}
 	if glyphs[2] != "●" {
 		t.Fatalf("a sub who came on is still playing, got %q", glyphs[2])
+	}
+}
+
+func TestEventsFromMatchFile(t *testing.T) {
+	dir := fixtureDir(t)
+	write(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
+		"elements": map[string]any{
+			"1": map[string]any{"stats": map[string]any{"minutes": 60, "total_points": 6, "starts": 1}},
+			"3": map[string]any{"stats": map[string]any{"minutes": 60, "total_points": 2, "starts": 1}},
+		},
+		"fixtures": []map[string]any{{"team_h": 1, "team_a": 2, "started": true, "finished": false}},
+	})
+	now := time.Now().UTC()
+	// Two events today: Striker (mine, element 1, FWD) scores at 55'; OppKeeper
+	// booked later at 78'. Chronological order + real minutes must survive.
+	write(t, filepath.Join(dir, "gw/1/match_events.json"), map[string]any{
+		"gw": 1,
+		"events": []map[string]any{
+			{"element": 3, "kind": "Y", "minute": "78'", "club": "COV",
+				"utc": now.Add(1 * time.Minute).Format(time.RFC3339)},
+			{"element": 1, "kind": "G", "minute": "55'", "club": "ARS",
+				"utc": now.Format(time.RFC3339)},
+		},
+	})
+	m := newModel(dir, t.TempDir(), 5, 501, 0)
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.events) != 2 {
+		t.Fatalf("want 2 events, got %d: %+v", len(m.events), m.events)
+	}
+	// Ordered by occurrence: the 55' goal first, the 78' card second.
+	g := m.events[0]
+	if g.Kind != "G" || g.Name != "Striker" || g.Min != "55'" || !g.Mine || g.Delta != 4 {
+		t.Fatalf("goal row wrong: %+v", g)
+	}
+	if m.events[1].Kind != "Y" || m.events[1].Min != "78'" {
+		t.Fatalf("card row wrong: %+v", m.events[1])
+	}
+	if g.Wall.IsZero() {
+		t.Fatal("event should carry the real occurrence time")
+	}
+	m.evSel = 0
+	d := m.eventDetailBody(48)
+	for _, want := range []string{"Goal", "Striker", "55'", "+4", "YOUR player"} {
+		if !strings.Contains(d, want) {
+			t.Fatalf("event detail missing %q:\n%s", want, d)
+		}
+	}
+	// A stale event from another day is filtered out.
+	write(t, filepath.Join(dir, "gw/1/match_events.json"), map[string]any{
+		"gw": 1,
+		"events": []map[string]any{
+			{"element": 1, "kind": "G", "minute": "10'", "club": "ARS",
+				"utc": now.AddDate(0, 0, -2).Format(time.RFC3339)},
+		},
+	})
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.events) != 0 {
+		t.Fatalf("yesterday's events must not show today: %+v", m.events)
+	}
+}
+
+func TestBonusRaceBuilds(t *testing.T) {
+	dir := fixtureDir(t)
+	write(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
+		"elements": map[string]any{
+			"1": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 8, "bps": 40, "starts": 1}},
+			"3": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 2, "bps": 12, "starts": 1}},
+		},
+		"fixtures": []map[string]any{{
+			"team_h": 1, "team_a": 2, "started": true, "finished": false,
+			"team_h_score": 1, "team_a_score": 0,
+		}},
+	})
+	m := newModel(dir, t.TempDir(), 5, 501, 0)
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.snap.BonusRace) != 1 || len(m.snap.BonusRace[0].Rows) != 2 {
+		t.Fatalf("bonus race wrong: %+v", m.snap.BonusRace)
+	}
+	if m.snap.BonusRace[0].Rows[0].Name != "Striker" || m.snap.BonusRace[0].Rows[0].Award != 3 {
+		t.Fatalf("leader should hold (3): %+v", m.snap.BonusRace[0].Rows[0])
+	}
+	if body := m.bonusBody(40); !strings.Contains(body, "ARS 1-0 COV") || !strings.Contains(body, "40") {
+		t.Fatalf("bonus page wrong:\n%s", body)
 	}
 }

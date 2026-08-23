@@ -47,10 +47,30 @@ func normName(s string) string {
 	return strings.Join(strings.Fields(out), " ")
 }
 
+// ResolveNames maps each name to an FPL element id in input order, 0 where no
+// confident match exists — for zipping against a parallel slice (e.g. pulse
+// person ids).
+func ResolveNames(names []Name, candidates []Element) []int {
+	ids, _ := matchInto(names, candidates)
+	return ids
+}
+
 // MatchNames resolves pulse names to FPL element ids within one club's
 // candidate pool. Unresolvable names are returned verbatim so the caller can
 // surface them instead of silently dropping players.
 func MatchNames(names []Name, candidates []Element) (ids []int, unmatched []string) {
+	all, miss := matchInto(names, candidates)
+	for _, id := range all {
+		if id != 0 {
+			ids = append(ids, id)
+		}
+	}
+	return ids, miss
+}
+
+// matchInto returns an id per input name (0 = unmatched) plus the display
+// names that did not resolve.
+func matchInto(names []Name, candidates []Element) (ids []int, unmatched []string) {
 	byFull := map[string][]int{}
 	byLast := map[string][]int{}
 	byWeb := map[string][]int{}
@@ -65,18 +85,15 @@ func MatchNames(names []Name, candidates []Element) (ids []int, unmatched []stri
 		}
 		return 0, false
 	}
-	for _, n := range names {
+	resolve := func(n Name) int {
 		if id, ok := unique(byFull, normName(n.Display)); ok {
-			ids = append(ids, id)
-			continue
+			return id
 		}
 		if id, ok := unique(byLast, normName(n.Last)); ok {
-			ids = append(ids, id)
-			continue
+			return id
 		}
 		if id, ok := unique(byWeb, normName(n.Last)); ok {
-			ids = append(ids, id)
-			continue
+			return id
 		}
 		// Last resort: a unique candidate whose web name appears inside the
 		// display name ("Mac Allister" in "Alexis Mac Allister").
@@ -88,10 +105,16 @@ func MatchNames(names []Name, candidates []Element) (ids []int, unmatched []stri
 			}
 		}
 		if len(hits) == 1 {
-			ids = append(ids, hits[0])
-			continue
+			return hits[0]
 		}
-		unmatched = append(unmatched, n.Display)
+		return 0
+	}
+	ids = make([]int, len(names))
+	for i, n := range names {
+		ids[i] = resolve(n)
+		if ids[i] == 0 {
+			unmatched = append(unmatched, n.Display)
+		}
 	}
 	return ids, unmatched
 }

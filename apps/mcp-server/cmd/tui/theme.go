@@ -13,6 +13,7 @@ var (
 	alertC  = lipgloss.AdaptiveColor{Light: "#C13B37", Dark: "#FF5C57"} // DNP, losing, deadline
 	flagC   = lipgloss.AdaptiveColor{Light: "#B26A00", Dark: "#FFB86C"} // availability warning
 	tmrwC   = lipgloss.AdaptiveColor{Light: "#2E7BB5", Dark: "#8FD6FF"} // has not played yet
+	freeC   = lipgloss.AdaptiveColor{Light: "#2E7BB5", Dark: "#8FD6FF"} // free agents on leaderboards
 	fgC     = lipgloss.AdaptiveColor{Light: "#131816", Dark: "#E6EDF3"}
 	mutedC  = lipgloss.AdaptiveColor{Light: "#5C6661", Dark: "#7B88A8"}
 	ruleC   = lipgloss.AdaptiveColor{Light: "#C9D2E3", Dark: "#2A3354"} // unfocused borders
@@ -21,16 +22,18 @@ var (
 )
 
 var (
-	styTitle = lipgloss.NewStyle().Bold(true).Foreground(accentC)
-	styDim   = lipgloss.NewStyle().Foreground(mutedC)
-	styScore = lipgloss.NewStyle().Bold(true).Foreground(liveC)
-	styLive  = lipgloss.NewStyle().Foreground(liveC)
-	styWarn  = lipgloss.NewStyle().Foreground(alertC)
-	styFlag  = lipgloss.NewStyle().Foreground(flagC)
-	styFg    = lipgloss.NewStyle().Foreground(fgC)
-	styYou   = lipgloss.NewStyle().Bold(true).Foreground(accentC)
-	styTmrw  = lipgloss.NewStyle().Foreground(tmrwC)
-	stySel   = lipgloss.NewStyle().Bold(true).Foreground(fgC).Background(selBgC)
+	styTitle  = lipgloss.NewStyle().Bold(true).Foreground(accentC)
+	styDim    = lipgloss.NewStyle().Foreground(mutedC)
+	styScore  = lipgloss.NewStyle().Bold(true).Foreground(liveC)
+	styLive   = lipgloss.NewStyle().Foreground(liveC)
+	styWarn   = lipgloss.NewStyle().Foreground(alertC)
+	styFlag   = lipgloss.NewStyle().Foreground(flagC)
+	styFg     = lipgloss.NewStyle().Foreground(fgC)
+	styYou    = lipgloss.NewStyle().Bold(true).Foreground(accentC)
+	styTmrw   = lipgloss.NewStyle().Foreground(tmrwC)
+	styFree   = lipgloss.NewStyle().Foreground(freeC)
+	styYellow = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#8A7A00", Dark: "#F1FA8C"})
+	stySel    = lipgloss.NewStyle().Bold(true).Foreground(fgC).Background(selBgC)
 
 	// Title-bar segments — everything on the bar carries its background.
 	styBarTitle = lipgloss.NewStyle().Bold(true).Foreground(accentC).Background(barBgC)

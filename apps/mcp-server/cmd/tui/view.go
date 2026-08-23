@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,12 +20,15 @@ const (
 	minimal mode = iota
 	narrow
 	wide
+	full
 )
 
 func (m *model) mode() mode {
 	switch {
+	case m.w >= 140:
+		return full // fullscreen: every tracker gets its own panel
 	case m.w >= 90:
-		return wide // 2×2 grid — fits a half-screen terminal split
+		return wide // compact stack — fits a half-screen terminal split
 	case m.w >= 72:
 		return narrow // matchup only, no bars, bench collapsed
 	default:
@@ -326,7 +330,8 @@ func wrapText(text string, width int) []string {
 }
 
 // sugDetailBody replaces the League body with the selected suggestion in
-// full — nothing truncated. Esc returns to the table.
+// full. Wire recommendations explain the whole trade: who to drop, what the
+// gain numbers mean, and the confidence behind them.
 func (m *model) sugDetailBody(width int) string {
 	if len(m.snap.NeedsYou) == 0 {
 		return styDim.Render("no suggestions")
@@ -345,17 +350,69 @@ func (m *model) sugDetailBody(width int) string {
 		b.WriteString(" " + styDim.Render(r.Team))
 	}
 	b.WriteString("\n\n")
-	for _, ln := range wrapText(r.Note, width-1) {
-		b.WriteString(styFg.Render(ln) + "\n")
+	para := func(text string) {
+		for _, ln := range wrapText(text, width-1) {
+			b.WriteString(styFg.Render(ln) + "\n")
+		}
+	}
+	if r.Drop != "" {
+		para(fmt.Sprintf("Add %s, drop %s.", r.Name, r.Drop))
+		b.WriteString("\n")
+		para(fmt.Sprintf("Projected rest-of-season: %s %.0f pts vs %s %.0f pts — the +%.0f is that gap, the season points you gain by making the swap.",
+			r.Name, r.AddROS, r.Drop, r.DropROS, r.SeasonGain))
+		b.WriteString("\n")
+		para(fmt.Sprintf("Next 3 GWs: %s projects %.1f xP, +%.1f over %s.",
+			r.Name, r.AddNext3, r.Next3Gain, r.Drop))
+		if r.Confidence != "" {
+			b.WriteString("\n" + styDim.Render("confidence: "+r.Confidence) + "\n")
+		}
+		if r.News != "" {
+			para("news: " + r.News)
+		}
+	} else {
+		for _, ln := range wrapText(r.Note, width-1) {
+			b.WriteString(styFg.Render(ln) + "\n")
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// projScore is the projected final matchup score for a manager, own score
+// first, coloured by the projected result.
+func (m *model) projScore(entryID int) string {
+	for _, mu := range m.snap.Matchups {
+		mine, opp := -1, -1
+		switch entryID {
+		case mu.A.EntryID:
+			mine, opp = mu.A.Proj, mu.B.Proj
+		case mu.B.EntryID:
+			mine, opp = mu.B.Proj, mu.A.Proj
+		}
+		if mine < 0 {
+			continue
+		}
+		sty := styDim
+		if mine > opp {
+			sty = styLive
+		} else if mine < opp {
+			sty = styWarn
+		}
+		return sty.Render(fmt.Sprintf("%3d-%-3d", mine, opp))
+	}
+	return strings.Repeat(" ", 7)
 }
 
 func (m *model) railBody(width int, focused bool) string {
 	var b strings.Builder
 	if len(m.snap.Standings) > 0 {
-		nameW := clamp(width-22, 8, 17)
-		b.WriteString(ansi.Truncate(styDim.Render(fmt.Sprintf(" #  %-*s %-5s %s", nameW, "TEAM", "W-D-L", "  LIVE")), width, "") + "\n")
+		showProj := width >= 38
+		overhead := 22
+		projHead := ""
+		if showProj {
+			overhead, projHead = 30, "    PROJ"
+		}
+		nameW := clamp(width-overhead, 8, 17)
+		b.WriteString(ansi.Truncate(styDim.Render(fmt.Sprintf(" #  %-*s %-5s %s%s", nameW, "TEAM", "W-D-L", "  LIVE", projHead)), width, "") + "\n")
 		for i, s := range m.snap.Standings {
 			name := ansi.Truncate(s.Name, nameW, "…")
 			pad := strings.Repeat(" ", max(0, nameW-lipgloss.Width(name)))
@@ -365,6 +422,9 @@ func (m *model) railBody(width int, focused bool) string {
 			}
 			line := sty.Render(fmt.Sprintf("%s%2d %s%s %-5s ", marker, i+1, name, pad, s.Record)) +
 				m.liveScore(s.EntryID)
+			if showProj {
+				line += " " + m.projScore(s.EntryID)
+			}
 			b.WriteString(line + "\n")
 		}
 	}
@@ -479,14 +539,14 @@ func (m *model) matchBody(width int) string {
 	return scoreLine + "\n\n" + m.matchLineups(md, width)
 }
 
-// matchLineups: both clubs side by side, list form, names uncut.
+// matchLineups: both clubs side by side, list form, names uncut. Narrow
+// widths stack the clubs vertically instead.
 func (m *model) matchLineups(md matchDetail, width int) string {
-	half := (width - 3) / 2
-	gaW := 0
-	if half >= 34 {
-		gaW = 6 // reserved "3G 2A" slot so goal rows stay aligned
-	}
-	col := func(club string, xi, subs []clubPlayer) string {
+	col := func(club string, xi, subs []clubPlayer, colW int) string {
+		gaW := 0
+		if colW >= 34 {
+			gaW = 6 // reserved "3G 2A" slot so goal rows stay aligned
+		}
 		var b strings.Builder
 		b.WriteString(styFg.Bold(true).Render(club) + "\n")
 		row := func(glyph string, sty lipgloss.Style, p clubPlayer) string {
@@ -496,7 +556,7 @@ func (m *model) matchLineups(md matchDetail, width int) string {
 			if gaW > 0 {
 				overhead += gaW + 1
 			}
-			nameW := clamp(half-overhead, 6, 20)
+			nameW := clamp(colW-overhead, 6, 20)
 			name := ansi.Truncate(p.Name, nameW, "…")
 			line := sty.Render(glyph + " " + fmt.Sprintf("%-4s", p.Pos) + name +
 				strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))) + " " + clock + " ")
@@ -523,10 +583,17 @@ func (m *model) matchLineups(md matchDetail, width int) string {
 		}
 		return strings.TrimRight(b.String(), "\n")
 	}
+	if width < 60 {
+		// Narrow panel: one club above the other, full-width rows.
+		return col(md.Home, md.HomeXI, md.HomeSubs, width) + "\n" +
+			styDim.Render(strings.Repeat("─", max(0, width-2))) + "\n" +
+			col(md.Away, md.AwayXI, md.AwaySubs, width)
+	}
+	half := (width - 3) / 2
 	return lipgloss.JoinHorizontal(lipgloss.Top,
-		lipgloss.NewStyle().Width(half).Render(col(md.Home, md.HomeXI, md.HomeSubs)),
+		lipgloss.NewStyle().Width(half).Render(col(md.Home, md.HomeXI, md.HomeSubs, half)),
 		styDim.Render("│ "),
-		col(md.Away, md.AwayXI, md.AwaySubs))
+		col(md.Away, md.AwayXI, md.AwaySubs, half))
 }
 
 // scoresStrip shows finished and upcoming fixtures (live ones get their own
@@ -588,8 +655,370 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 	return " " + strings.Join(lines, "\n ")
 }
 
-// liveBody renders one page of the games panel: in-play games on page 1,
-// completed games on page 2 (←/→ flips). Enter opens the lineups view.
+// clubColor maps each club to its kit colour so the table reads at a glance.
+var clubColor = map[string]lipgloss.Style{
+	"BHA": styTmrw, "EVE": styTmrw, "IPS": styTmrw, "MCI": styTmrw, "CHE": styTmrw, "COV": styTmrw,
+	"ARS": styWarn, "BRE": styWarn, "LIV": styWarn, "BOU": styWarn, "NFO": styWarn, "MUN": styWarn,
+	"HUL": styYellow, "LEE": styYellow, "NEW": styYellow, "FUL": styYellow, "SUN": styYellow,
+	"CRY": styYellow, "TOT": styYellow, "AVL": styYellow,
+}
+
+// plTableBody renders the live Premier League table: position, club (in kit
+// colour), played, goal difference, points, with divider lines after 5th
+// (European places) and 17th (the relegation cut).
+func (m *model) plTableBody(width int) string {
+	if len(m.snap.PLTable) == 0 {
+		return ""
+	}
+	rule := styDim.Render(strings.Repeat("─", clamp(width, 0, 21)))
+	var b strings.Builder
+	b.WriteString(styDim.Render(" #  CLUB   P   GD  PTS") + "\n")
+	for _, r := range m.snap.PLTable {
+		// Only the leader wears its kit colour; the rest stay neutral.
+		clr := styFg
+		if r.Pos == 1 {
+			if c, ok := clubColor[r.Short]; ok {
+				clr = c
+			}
+		}
+		line := fmt.Sprintf("%2d  ", r.Pos) + clr.Render(fmt.Sprintf("%-3s", r.Short)) +
+			styFg.Render(fmt.Sprintf("  %2d  %+3d  %3d", r.Played, r.GD, r.Points))
+		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
+		switch r.Pos {
+		case 5, 10:
+			b.WriteString(rule + "\n")
+		case 17: // the relegation cut, in red
+			b.WriteString(styWarn.Render(strings.Repeat("─", clamp(width, 0, 21))) + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// panelBody renders the middle panel's current page.
+func (m *model) panelBody(width int, focused bool) string {
+	switch m.currentPage() {
+	case "events":
+		if m.evView {
+			return m.eventDetailBody(width)
+		}
+		return m.eventsBody(width, 14, focused)
+	case "bonus":
+		return m.bonusBody(width)
+	}
+	// Games list, with the live Premier League table beneath it — this panel
+	// only exists in the compact (split-screen) layout.
+	body := m.liveBody(width, focused)
+	if tbl := m.plTableBody(width); tbl != "" {
+		body += "\n" + styDim.Render("─ Premier League "+strings.Repeat("─", clamp(width-17, 0, 40))) + "\n" + tbl
+	}
+	return body
+}
+
+// eventsBody is the live feed, newest first: minute, kind, player, points.
+func (m *model) eventsBody(width, rows int, focused bool) string {
+	if len(m.events) == 0 {
+		return styDim.Render("watching for goals, assists, cards…")
+	}
+	kindSty := map[string]lipgloss.Style{
+		"G": styScore, "A": lipgloss.NewStyle().Bold(true).Foreground(accentC),
+		"Y": styFlag, "R": styWarn,
+	}
+	n := len(m.events)
+	sel := clampEvSel(m.evSel, n)
+	// Chronological order (oldest → newest). Show a window that keeps the
+	// selected row in view; unfocused, anchor to the newest events.
+	top := 0
+	if n > rows {
+		if focused {
+			top = clamp(sel-rows/2, 0, n-rows)
+		} else {
+			top = n - rows
+		}
+	}
+	var b strings.Builder
+	if top > 0 {
+		b.WriteString(styDim.Render(fmt.Sprintf("  ↑ %d earlier", top)) + "\n")
+	}
+	for i := top; i < n && i < top+rows; i++ {
+		ev := m.events[i]
+		clock := " ⋯ "
+		if ev.Min != "" {
+			clock = fmt.Sprintf("%4s", ev.Min)
+		}
+		sty, ok := kindSty[ev.Kind]
+		if !ok {
+			sty = styDim
+		}
+		delta := "   "
+		if ev.Delta > 0 {
+			delta = styLive.Render(fmt.Sprintf("+%d", ev.Delta))
+		} else if ev.Delta < 0 {
+			delta = styWarn.Render(fmt.Sprintf("%d", ev.Delta))
+		}
+		who := ""
+		switch {
+		case ev.Mine:
+			who = styYou.Render("◆you")
+		case ev.Opp:
+			who = styWarn.Render("◇opp")
+		case ev.Owner != "":
+			who = styDim.Render(ansi.Truncate(ev.Owner, 10, "…"))
+		}
+		name := ansi.Truncate(ev.Name, clamp(width-22, 6, 18), "…")
+		line := fmt.Sprintf("%s %s %s %s %s %s",
+			styDim.Render(clock), sty.Render(ev.Kind), styFg.Render(name),
+			styDim.Render(ev.Club), delta, who)
+		if focused && i == sel {
+			plain := fmt.Sprintf("%3s %s %s %s %s %s", clock, ev.Kind, name, ev.Club,
+				strings.TrimSpace(ansi.Strip(delta)), ansi.Strip(who))
+			b.WriteString(stySel.Render(ansi.Truncate(plain, width, "…")+
+				strings.Repeat(" ", max(0, width-lipgloss.Width(ansi.Truncate(plain, width, "…"))))) + "\n")
+			continue
+		}
+		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
+	}
+	if end := n - (top + rows); end > 0 {
+		b.WriteString(styDim.Render(fmt.Sprintf("  ↓ %d more", end)))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// eventDetailBody expands the selected event: the action, when it happened in
+// the game and in EST wall-clock, whose player, and what it moved.
+func (m *model) eventDetailBody(width int) string {
+	if len(m.events) == 0 {
+		return styDim.Render("no events yet")
+	}
+	ev := m.events[clampEvSel(m.evSel, len(m.events))]
+	kindName := map[string]string{"G": "Goal", "A": "Assist", "Y": "Yellow card", "R": "Red card"}
+	sty := map[string]lipgloss.Style{"G": styScore, "A": styTitle, "Y": styFlag, "R": styWarn}[ev.Kind]
+	if sty.GetForeground() == nil {
+		sty = styFg
+	}
+	var b strings.Builder
+	head := kindName[ev.Kind]
+	if head == "" {
+		head = ev.Kind
+	}
+	b.WriteString(sty.Bold(true).Render(head) + " — " + styFg.Bold(true).Render(ev.Name) +
+		" " + styDim.Render(ev.Pos+" "+ev.Club) + "\n\n")
+	para := func(k, v string) {
+		b.WriteString(styDim.Render(fmt.Sprintf("%-11s", k)) + styFg.Render(v) + "\n")
+	}
+	if ev.Min != "" {
+		para("game time", ev.Min)
+	}
+	if !ev.Wall.IsZero() {
+		para("occurred", ev.Wall.In(eastern).Format("3:04 PM EST"))
+	}
+	delta := "0"
+	if ev.Delta > 0 {
+		delta = fmt.Sprintf("+%d", ev.Delta)
+	} else if ev.Delta < 0 {
+		delta = fmt.Sprintf("%d", ev.Delta)
+	}
+	para("fpl points", delta)
+	owner := "free agent (unowned)"
+	switch {
+	case ev.Mine:
+		owner = "YOUR player"
+	case ev.Opp:
+		owner = "your opponent this week"
+	case ev.Owner != "":
+		owner = ev.Owner
+	}
+	para("owned by", owner)
+	b.WriteString("\n")
+	note := ""
+	switch {
+	case ev.Mine && ev.Delta > 0:
+		note = fmt.Sprintf("This added %s to your score.", delta)
+	case ev.Opp && ev.Delta > 0:
+		note = fmt.Sprintf("This added %s to your opponent — it cuts your margin.", delta)
+	}
+	if note != "" {
+		for _, ln := range wrapText(note, width-1) {
+			b.WriteString(styDim.Render(ln) + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// bonusBody is the live BPS race per in-play fixture — who holds 3/2/1.
+// bestBody is the GW top-scorer leaderboard — the Bonus panel's idle face.
+func (m *model) bestBody(width, rows int) string {
+	type scored struct {
+		id int
+		st tickerStat
+	}
+	var all []scored
+	for id, st := range m.snap.PlayerStats {
+		if st.Points != 0 {
+			all = append(all, scored{id, st})
+		}
+	}
+	if len(all) == 0 {
+		return styDim.Render("no points on the board yet")
+	}
+	sort.Slice(all, func(a, b int) bool {
+		if all[a].st.Points != all[b].st.Points {
+			return all[a].st.Points > all[b].st.Points
+		}
+		return all[a].st.Name < all[b].st.Name
+	})
+	recs := map[string]bool{}
+	for _, r := range m.snap.NeedsYou {
+		if r.Glyph == "↑" {
+			recs[r.Name] = true
+		}
+	}
+	var b strings.Builder
+	for i, sc := range all {
+		if i >= rows {
+			break
+		}
+		owner := styFree.Render("free")
+		if recs[sc.st.Name] {
+			owner += " " + styFg.Bold(true).Render("rec")
+		}
+		if tag, ok := m.snap.OwnerByElem[sc.id]; ok {
+			switch {
+			case tag.Mine:
+				owner = styYou.Render("◆you")
+			case tag.Opp:
+				owner = styWarn.Render("◇opp")
+			default:
+				owner = styDim.Render(ansi.Truncate(tag.Owner, 10, "…"))
+			}
+		}
+		name := ansi.Truncate(sc.st.Name, clamp(width-16, 6, 16), "…")
+		line := fmt.Sprintf("%s %s %s %s", styScore.Render(fmt.Sprintf("%3d", sc.st.Points)),
+			styFg.Render(name), styDim.Render(sc.st.Club), owner)
+		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// weekBody is the full-screen Week panel: every coming deadline with a live
+// countdown, then who is still to play on each side of my matchup.
+// nextWeekBody lists next gameweek's fixtures grouped by day with kickoff
+// times — a glance at when football is back.
+func (m *model) nextWeekBody(width int) string {
+	if len(m.snap.NextFixtures) == 0 {
+		return styDim.Render("schedule not out yet")
+	}
+	var b strings.Builder
+	day := ""
+	for _, f := range m.snap.NextFixtures {
+		d, t := "TBD", "TBD"
+		if !f.Kickoff.IsZero() {
+			d = f.Kickoff.In(eastern).Format("Mon Jan 2")
+			t = f.Kickoff.In(eastern).Format("3:04PM")
+		}
+		if d != day {
+			if day != "" {
+				b.WriteString("\n")
+			}
+			b.WriteString(styTmrw.Render(d) + "\n")
+			day = d
+		}
+		line := fmt.Sprintf(" %s v %-3s %s", f.Home, f.Away, styDim.Render(t))
+		b.WriteString(ansi.Truncate(styFg.Render(line), width, "…") + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m *model) weekBody(width int) string {
+	var b strings.Builder
+	now := time.Now()
+	for i, ev := range m.snap.Deadlines {
+		if i >= 3 {
+			break
+		}
+		b.WriteString(styYou.Render(ansi.Truncate(fmtDeadline(&ev, now), width, "…")) + "\n")
+	}
+	fixtureOf := map[string]fixtureRow{}
+	for _, f := range m.snap.Fixtures {
+		fixtureOf[f.Home], fixtureOf[f.Away] = f, f
+	}
+	label := func(short string) string {
+		f, ok := fixtureOf[short]
+		if !ok {
+			return "no fixture"
+		}
+		if f.Started && !f.Finished {
+			return fmt.Sprintf("%s v %s %s", f.Home, f.Away, clockLabel(f.Minutes))
+		}
+		return fmt.Sprintf("%s v %s %s", f.Home, f.Away, f.Kickoff.In(eastern).Format("Mon 3:04PM"))
+	}
+	for _, mu := range m.snap.Matchups {
+		mine := mu.A.EntryID == m.entry || mu.B.EntryID == m.entry
+		if !mine {
+			continue
+		}
+		for _, sd := range []side{mu.A, mu.B} {
+			head := styFg.Bold(true).Render(ansi.Truncate(sd.Name, width-14, "…"))
+			if sd.EntryID == m.entry {
+				head = styYou.Render("◆ still to play")
+			} else {
+				head = styWarn.Render("◇ " + ansi.Truncate(sd.Name, width-4, "…"))
+			}
+			b.WriteString("\n" + head + "\n")
+			left := 0
+			for _, p := range sd.Players {
+				if !p.Starter || p.Minutes > 0 || p.Glyph == "✗" {
+					continue
+				}
+				name := ansi.Truncate(p.Name, clamp(width-20, 6, 14), "…")
+				b.WriteString(fmt.Sprintf("%s %s %s\n", glyphStyle(p.Glyph).Render(p.Glyph),
+					styFg.Render(name), styDim.Render(ansi.Truncate(label(p.Team), width-4-lipgloss.Width(name), "…"))))
+				left++
+			}
+			if left == 0 {
+				b.WriteString(styDim.Render("  all done") + "\n")
+			}
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m *model) bonusBody(width int) string {
+	if len(m.snap.BonusRace) == 0 {
+		return styDim.Render("no bonus race — nothing in play")
+	}
+	var b strings.Builder
+	for fi, f := range m.snap.BonusRace {
+		if fi > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(styDim.Render(f.Label) + "\n")
+		for _, r := range f.Rows {
+			award := "   "
+			if r.Award > 0 {
+				award = styYou.Render(fmt.Sprintf("(%d)", r.Award))
+			}
+			owner := ""
+			if tag, ok := m.snap.OwnerByElem[r.Elem]; ok {
+				switch {
+				case tag.Mine:
+					owner = styYou.Render(" ◆you")
+				case tag.Opp:
+					owner = styWarn.Render(" ◇opp")
+				default:
+					owner = styDim.Render(" " + ansi.Truncate(tag.Owner, 8, "…"))
+				}
+			}
+			name := ansi.Truncate(r.Name, clamp(width-16, 6, 16), "…")
+			line := fmt.Sprintf("%s %3d %s %s%s", award, r.Bps, styFg.Render(name),
+				styDim.Render(r.Club), owner)
+			b.WriteString(ansi.Truncate(line, width, "…") + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// liveBody renders one game-list page (live or completed). Enter opens the
+// lineups view.
 func (m *model) liveBody(width int, focused bool) string {
 	games := m.gamesList()
 	if len(games) == 0 {
@@ -600,6 +1029,9 @@ func (m *model) liveBody(width int, focused bool) string {
 		label, sty := clockLabel(g.Minute), styLive
 		if g.Finished {
 			label, sty = "FT", styDim
+			if !g.Kickoff.IsZero() {
+				label = "FT · " + g.Kickoff.In(eastern).Format("Mon 3:04PM")
+			}
 		}
 		line := fmt.Sprintf("%s %d-%d %s %s", g.Home, g.HS, g.AS, g.Away, label)
 		if focused && i == m.liveSel {
@@ -609,13 +1041,6 @@ func (m *model) liveBody(width int, focused bool) string {
 			b.WriteString(sty.Render("  "+line) + "\n")
 		}
 	}
-	if m.gamesPages() > 1 {
-		page := 1
-		if games[0].Finished {
-			page = 2
-		}
-		b.WriteString(styDim.Render(fmt.Sprintf("‹ %d/2 ›", page)) + "\n")
-	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -624,8 +1049,8 @@ func (m *model) header(width int) string {
 	on := func(sty lipgloss.Style) lipgloss.Style { return sty.Background(barBgC) }
 	title := on(styTitle).Render(fmt.Sprintf(" FPL · GW%d ", m.snap.GW)) + on(styLive).Render("◍ LIVE")
 	due := ""
-	if m.snap.NextDue != "" {
-		due = on(styYou).Render(m.snap.NextDue)
+	if d := fmtDeadline(m.snap.Deadline, time.Now()); d != "" {
+		due = on(styYou).Render(d)
 	}
 	clock := on(styFg.Bold(true)).Render(time.Now().In(eastern).Format("3:04:05 PM") + " EST")
 	stamp := on(styDim).Render("data "+m.snap.Loaded.Format("15:04:05")) + on(styLive).Render(" ●")
@@ -663,66 +1088,118 @@ func (m *model) View() string {
 				w, m.focus == 0, 0) + "\n" + m.footer()
 	}
 
-	// Wide layout is a 2×2 grid: Live | Matchup on top, League | Transactions
-	// below. Each row spans the full width, so panels get more room.
-	liveW := 0
-	if md == wide && len(m.snap.Matches) > 0 {
-		liveW = clamp(w/6, 20, 24)
-	}
-	mainW := w - liveW - boolToInt(liveW > 0)
-	if md == wide && mainW > 96 {
-		mainW = 96
+	// Wide layout: the Matchup spans the full width on top; League, Live,
+	// and Transactions sit beneath it in three equal columns, padded to one
+	// height so every edge lines up. Fullscreen instead gives every tracker
+	// its own panel: Matchup | Games | Week over four columns.
+	mainW := w
+	weekW, nextW := 0, 0
+	if md == full {
+		weekW = clamp(w/7, 22, 30)
+		nextW = clamp(w/7, 24, 32)
+		mainW = clamp(w-weekW-nextW-24-3, 60, 92)
 	}
 
 	mainTitle := fmt.Sprintf("Matchup %d/%d", m.selected+1, len(m.snap.Matchups))
 	mainBody := m.matchupBody(mainW - 4)
-	if m.matchView && len(m.snap.Matches) > 0 {
+	if m.matchView && len(m.snap.Matches) > 0 && md != full {
 		mainTitle = "Match"
 		mainBody = m.matchBody(mainW - 4)
 	} else if m.txView && len(m.snap.TxByManager) > 0 {
 		mainTitle = "Transactions"
 		mainBody = m.txDetailBody(mainW - 4)
 	}
-	// Panels sharing a grid row pad to the same body height so the row's
-	// bottom edges align.
-	topH := lipgloss.Height(mainBody)
-	liveBody := ""
-	if liveW > 0 {
-		liveBody = m.liveBody(liveW-4, m.focus == 1)
-		topH = max(topH, lipgloss.Height(liveBody))
-	}
-	matchupPanel := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, topH)
+	screen := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, 0)
 
-	screen := matchupPanel
-	if liveW > 0 {
+	if md == full {
+		gamesW := w - mainW - nextW - weekW - 3
+
 		gamesTitle, gamesHint := "Live", "↑↓ ↵"
 		if games := m.gamesList(); len(games) > 0 && games[0].Finished {
 			gamesTitle = "Played"
 		}
-		if m.gamesPages() > 1 {
-			gamesHint = "←→ ↑↓ ↵"
+		gamesBody := m.liveBody(gamesW-4, m.focus == 1)
+		if m.matchView && len(m.snap.Matches) > 0 {
+			// Fullscreen opens the lineups inside this panel itself.
+			gamesTitle, gamesHint = "Match", "←→ esc"
+			gamesBody = m.matchBody(gamesW - 4)
 		}
-		livePanel := Panel(gamesTitle, gamesHint, liveBody, liveW, m.focus == 1, topH)
-		screen = lipgloss.JoinHorizontal(lipgloss.Top, livePanel, " ", screen)
-	}
-	if md == wide {
-		leagueW := clamp(w/2, 30, 50)
-		txW := clamp(w-leagueW-1, 18, 50)
+		nextBody := m.nextWeekBody(nextW - 4)
+		weekBody := m.weekBody(weekW - 4)
+		topH := max(lipgloss.Height(m.matchupBody(mainW-4)),
+			max(max(lipgloss.Height(gamesBody), lipgloss.Height(nextBody)), lipgloss.Height(weekBody)))
+		mainPanel := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, topH)
+		gamesPanel := Panel(gamesTitle, gamesHint, gamesBody, gamesW, m.focus == 1, topH)
+		nextPanel := Panel(fmt.Sprintf("Next week (GW%d)", m.snap.NextGW), "", nextBody, nextW, false, topH)
+		weekPanel := Panel("Week", "", weekBody, weekW, false, topH)
+		screen = lipgloss.JoinHorizontal(lipgloss.Top, mainPanel, " ", gamesPanel, " ", nextPanel, " ", weekPanel)
+
+		// League gets extra width so the PROJ column fits; the other three
+		// split the remainder evenly.
+		leagueW := clamp((w-3)/4+8, 40, 52)
+		rest := (w - 3 - leagueW) / 3
+		eventsW, bonusW := rest, rest
+		txW := w - 3 - leagueW - eventsW - bonusW
 		leagueTitle, leagueHint := "League", "tab ↑↓ ↵"
 		leagueBody := m.railBody(leagueW-4, m.focus == 2)
 		if m.sugView {
 			leagueTitle, leagueHint = "Suggestion", "esc"
 			leagueBody = m.sugDetailBody(leagueW - 4)
 		}
+		eventsTitle, eventsHint := "Events", ""
+		eventsBody := m.eventsBody(eventsW-4, 22, m.focus == 4)
+		if m.focus == 4 {
+			eventsHint = "↑↓ ↵"
+		}
+		if m.evView {
+			eventsTitle, eventsHint = "Event", "esc"
+			eventsBody = m.eventDetailBody(eventsW - 4)
+		}
+		bonusTitle, bonusBody := "Bonus", m.bonusBody(bonusW-4)
+		if len(m.snap.BonusRace) == 0 {
+			bonusTitle, bonusBody = "Best today", m.bestBody(bonusW-4, 12)
+		}
 		txBody := m.txBody(txW-4, m.focus == 3)
-		botH := max(lipgloss.Height(leagueBody), lipgloss.Height(txBody))
+		botH := max(max(lipgloss.Height(leagueBody), lipgloss.Height(eventsBody)),
+			max(lipgloss.Height(bonusBody), lipgloss.Height(txBody)))
+		row2 := lipgloss.JoinHorizontal(lipgloss.Top,
+			Panel(leagueTitle, leagueHint, leagueBody, leagueW, m.focus == 2, botH), " ",
+			Panel(eventsTitle, eventsHint, eventsBody, eventsW, m.focus == 4, botH), " ",
+			Panel(bonusTitle, "", bonusBody, bonusW, false, botH), " ",
+			Panel("Transactions", "↑↓ ↵", txBody, txW, m.focus == 3, botH))
+		screen += "\n" + row2
+	}
+
+	if md == wide {
+		third := (w - 2) / 3
+		leagueW, liveW := third, third
+		txW := w - 2 - leagueW - liveW
+
+		leagueTitle, leagueHint := "League", "tab ↑↓ ↵"
+		leagueBody := m.railBody(leagueW-4, m.focus == 2)
+		if m.sugView {
+			leagueTitle, leagueHint = "Suggestion", "esc"
+			leagueBody = m.sugDetailBody(leagueW - 4)
+		}
+		titles := map[string]string{"live": "Live", "played": "Played", "events": "Events", "bonus": "Bonus"}
+		gamesTitle, gamesHint := titles[m.currentPage()], "↑↓ ↵"
+		if n := m.gamesPages(); n > 1 {
+			pageAt := clamp(m.gamesPage, 0, n-1) + 1
+			gamesTitle = fmt.Sprintf("%s %d/%d", gamesTitle, pageAt, n)
+			gamesHint = "←→ ↑↓ ↵"
+		}
+		liveBody := m.panelBody(liveW-4, m.focus == 1)
+		txBody := m.txBody(txW-4, m.focus == 3)
+
+		botH := max(lipgloss.Height(leagueBody), max(lipgloss.Height(liveBody), lipgloss.Height(txBody)))
 		league := Panel(leagueTitle, leagueHint, leagueBody, leagueW, m.focus == 2, botH)
+		games := Panel(gamesTitle, gamesHint, liveBody, liveW, m.focus == 1, botH)
 		tx := Panel("Transactions", "↑↓ ↵", txBody, txW, m.focus == 3, botH)
-		screen += "\n" + lipgloss.JoinHorizontal(lipgloss.Top, league, " ", tx)
+		screen += "\n" + lipgloss.JoinHorizontal(lipgloss.Top, league, " ", games, " ", tx)
 	}
 
 	out := m.header(w)
-	if strip := m.scoresStrip(w, md != wide || liveW == 0); strip != "" {
+	if strip := m.scoresStrip(w, md == narrow); strip != "" {
 		out += "\n" + strip
 	}
 	return out + "\n" + screen + "\n" + m.footer()
