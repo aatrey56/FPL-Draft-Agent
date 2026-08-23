@@ -83,7 +83,7 @@ type refreshDone struct{ err error }
 type tick time.Time
 
 func doTick() tea.Cmd {
-	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return tick(t) })
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tick(t) })
 }
 
 // fetchTick drives the self-feeding live refresh: while the TUI is open it

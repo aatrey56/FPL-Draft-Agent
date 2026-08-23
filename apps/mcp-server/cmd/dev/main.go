@@ -115,6 +115,10 @@ func main() {
 		}
 		must(client.EventLive(gw, true))
 		refreshSquads(st, gw)
+		// Standings and transactions are tiny GETs — refreshing them here
+		// keeps the League and Transactions panels live too.
+		must(client.LeagueDetails(*leagueID, true))
+		must(client.LeagueTransactions(*leagueID, true))
 		log.Printf("live-only refresh: GW %d\n", gw)
 		return
 	}

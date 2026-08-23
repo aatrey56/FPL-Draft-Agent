@@ -327,3 +327,78 @@ func TestSubbedOffGetsEarlyCheck(t *testing.T) {
 		t.Fatalf("a sub who came on is still playing, got %q", glyphs[2])
 	}
 }
+
+func TestEventsTickerDiffsSnapshots(t *testing.T) {
+	dir := fixtureDir(t)
+	mk := func(goals, assists, pts int) map[string]any {
+		return map[string]any{
+			"elements": map[string]any{
+				"1": map[string]any{"stats": map[string]any{
+					"minutes": 30, "total_points": pts, "goals_scored": goals,
+					"assists": assists, "starts": 1}},
+				"3": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 1, "starts": 1}},
+			},
+			"fixtures": []map[string]any{{
+				"team_h": 1, "team_a": 2, "started": true, "finished": false,
+			}},
+		}
+	}
+	write(t, filepath.Join(dir, "gw/1/live.json"), mk(0, 0, 2))
+	m := newModel(dir, t.TempDir(), 5, 501, 0)
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.events) != 0 {
+		t.Fatalf("no events on the board yet, got %v", m.events)
+	}
+	// Striker scores: next snapshot must yield exactly one goal event, owned
+	// by me, with the points swing attached.
+	write(t, filepath.Join(dir, "gw/1/live.json"), mk(1, 0, 7))
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.events) != 1 {
+		t.Fatalf("want 1 event, got %d: %v", len(m.events), m.events)
+	}
+	ev := m.events[0]
+	if ev.Kind != "G" || ev.Name != "Striker" || !ev.Mine || ev.Delta != 5 {
+		t.Fatalf("bad event: %+v", ev)
+	}
+	// Repeat snapshot: no duplicate events.
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.events) != 1 {
+		t.Fatalf("duplicate events on unchanged stats: %d", len(m.events))
+	}
+	if body := m.eventsBody(40); !strings.Contains(body, "Striker") {
+		t.Fatalf("events page missing the goal:\n%s", body)
+	}
+}
+
+func TestBonusRaceBuilds(t *testing.T) {
+	dir := fixtureDir(t)
+	write(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
+		"elements": map[string]any{
+			"1": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 8, "bps": 40, "starts": 1}},
+			"3": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 2, "bps": 12, "starts": 1}},
+		},
+		"fixtures": []map[string]any{{
+			"team_h": 1, "team_a": 2, "started": true, "finished": false,
+			"team_h_score": 1, "team_a_score": 0,
+		}},
+	})
+	m := newModel(dir, t.TempDir(), 5, 501, 0)
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.snap.BonusRace) != 1 || len(m.snap.BonusRace[0].Rows) != 2 {
+		t.Fatalf("bonus race wrong: %+v", m.snap.BonusRace)
+	}
+	if m.snap.BonusRace[0].Rows[0].Name != "Striker" || m.snap.BonusRace[0].Rows[0].Award != 3 {
+		t.Fatalf("leader should hold (3): %+v", m.snap.BonusRace[0].Rows[0])
+	}
+	if body := m.bonusBody(40); !strings.Contains(body, "ARS 1-0 COV") || !strings.Contains(body, "40") {
+		t.Fatalf("bonus page wrong:\n%s", body)
+	}
+}

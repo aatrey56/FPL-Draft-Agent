@@ -588,8 +588,101 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 	return " " + strings.Join(lines, "\n ")
 }
 
-// liveBody renders one page of the games panel: in-play games on page 1,
-// completed games on page 2 (←/→ flips). Enter opens the lineups view.
+// panelBody renders the middle panel's current page.
+func (m *model) panelBody(width int, focused bool) string {
+	switch m.currentPage() {
+	case "events":
+		return m.eventsBody(width)
+	case "bonus":
+		return m.bonusBody(width)
+	}
+	return m.liveBody(width, focused)
+}
+
+// eventsBody is the live feed, newest first: minute, kind, player, points.
+func (m *model) eventsBody(width int) string {
+	if len(m.events) == 0 {
+		return styDim.Render("watching for goals, assists, cards…")
+	}
+	kindSty := map[string]lipgloss.Style{
+		"G": styScore, "A": lipgloss.NewStyle().Bold(true).Foreground(accentC),
+		"Y": styFlag, "R": styWarn,
+	}
+	var b strings.Builder
+	shown := 0
+	for i := len(m.events) - 1; i >= 0 && shown < 14; i-- {
+		ev := m.events[i]
+		clock := "  ⋯"
+		if ev.Minute >= 0 {
+			clock = fmt.Sprintf("%3s", clockLabel(ev.Minute))
+		}
+		sty, ok := kindSty[ev.Kind]
+		if !ok {
+			sty = styDim
+		}
+		delta := ""
+		if ev.Delta > 0 {
+			delta = styLive.Render(fmt.Sprintf("+%d", ev.Delta))
+		} else if ev.Delta < 0 {
+			delta = styWarn.Render(fmt.Sprintf("%d", ev.Delta))
+		}
+		who := ""
+		switch {
+		case ev.Mine:
+			who = styYou.Render("◆you")
+		case ev.Opp:
+			who = styWarn.Render("◇opp")
+		case ev.Owner != "":
+			who = styDim.Render(ansi.Truncate(ev.Owner, 10, "…"))
+		}
+		name := ansi.Truncate(ev.Name, clamp(width-20, 6, 18), "…")
+		line := fmt.Sprintf("%s %s %s %s %s %s",
+			styDim.Render(clock), sty.Render(ev.Kind), styFg.Render(name),
+			styDim.Render(ev.Club), delta, who)
+		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
+		shown++
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// bonusBody is the live BPS race per in-play fixture — who holds 3/2/1.
+func (m *model) bonusBody(width int) string {
+	if len(m.snap.BonusRace) == 0 {
+		return styDim.Render("no bonus race — nothing in play")
+	}
+	var b strings.Builder
+	for fi, f := range m.snap.BonusRace {
+		if fi > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(styDim.Render(f.Label) + "\n")
+		for _, r := range f.Rows {
+			award := "   "
+			if r.Award > 0 {
+				award = styYou.Render(fmt.Sprintf("(%d)", r.Award))
+			}
+			owner := ""
+			if tag, ok := m.snap.OwnerByElem[r.Elem]; ok {
+				switch {
+				case tag.Mine:
+					owner = styYou.Render(" ◆you")
+				case tag.Opp:
+					owner = styWarn.Render(" ◇opp")
+				default:
+					owner = styDim.Render(" " + ansi.Truncate(tag.Owner, 8, "…"))
+				}
+			}
+			name := ansi.Truncate(r.Name, clamp(width-16, 6, 16), "…")
+			line := fmt.Sprintf("%s %3d %s %s%s", award, r.Bps, styFg.Render(name),
+				styDim.Render(r.Club), owner)
+			b.WriteString(ansi.Truncate(line, width, "…") + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// liveBody renders one game-list page (live or completed). Enter opens the
+// lineups view.
 func (m *model) liveBody(width int, focused bool) string {
 	games := m.gamesList()
 	if len(games) == 0 {
@@ -609,13 +702,6 @@ func (m *model) liveBody(width int, focused bool) string {
 			b.WriteString(sty.Render("  "+line) + "\n")
 		}
 	}
-	if m.gamesPages() > 1 {
-		page := 1
-		if games[0].Finished {
-			page = 2
-		}
-		b.WriteString(styDim.Render(fmt.Sprintf("‹ %d/2 ›", page)) + "\n")
-	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -624,8 +710,8 @@ func (m *model) header(width int) string {
 	on := func(sty lipgloss.Style) lipgloss.Style { return sty.Background(barBgC) }
 	title := on(styTitle).Render(fmt.Sprintf(" FPL · GW%d ", m.snap.GW)) + on(styLive).Render("◍ LIVE")
 	due := ""
-	if m.snap.NextDue != "" {
-		due = on(styYou).Render(m.snap.NextDue)
+	if d := fmtDeadline(m.snap.Deadline, time.Now()); d != "" {
+		due = on(styYou).Render(d)
 	}
 	clock := on(styFg.Bold(true)).Render(time.Now().In(eastern).Format("3:04:05 PM") + " EST")
 	stamp := on(styDim).Render("data "+m.snap.Loaded.Format("15:04:05")) + on(styLive).Render(" ●")
@@ -690,14 +776,14 @@ func (m *model) View() string {
 			leagueTitle, leagueHint = "Suggestion", "esc"
 			leagueBody = m.sugDetailBody(leagueW - 4)
 		}
-		gamesTitle, gamesHint := "Live", "↑↓ ↵"
-		if games := m.gamesList(); len(games) > 0 && games[0].Finished {
-			gamesTitle = "Played"
-		}
-		if m.gamesPages() > 1 {
+		titles := map[string]string{"live": "Live", "played": "Played", "events": "Events", "bonus": "Bonus"}
+		gamesTitle, gamesHint := titles[m.currentPage()], "↑↓ ↵"
+		if n := m.gamesPages(); n > 1 {
+			pageAt := clamp(m.gamesPage, 0, n-1) + 1
+			gamesTitle = fmt.Sprintf("%s %d/%d", gamesTitle, pageAt, n)
 			gamesHint = "←→ ↑↓ ↵"
 		}
-		liveBody := m.liveBody(liveW-4, m.focus == 1)
+		liveBody := m.panelBody(liveW-4, m.focus == 1)
 		txBody := m.txBody(txW-4, m.focus == 3)
 
 		botH := max(lipgloss.Height(leagueBody), max(lipgloss.Height(liveBody), lipgloss.Height(txBody)))

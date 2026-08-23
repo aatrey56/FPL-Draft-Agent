@@ -107,17 +107,51 @@ type matchDetail struct {
 	HomeSubs, AwaySubs []clubPlayer
 }
 
+// tickerStat is the per-player counting state the events ticker diffs.
+type tickerStat struct {
+	Name, Club                          string
+	TeamID                              int
+	Goals, Assists, Yellow, Red, Points int
+}
+
+// eventRow is one line of the live events feed.
+type eventRow struct {
+	Minute int    // fixture clock when observed; -1 = before the TUI opened
+	Kind   string // G goal, A assist, Y yellow, R red, ± unexplained swing
+	Name   string
+	Club   string
+	Delta  int    // points moved with the event
+	Owner  string // rostering team short name, "" = unowned
+	Mine   bool
+	Opp    bool // owned by this week's opponent
+}
+
+// bonusRow / bonusFixture are the live BPS race per in-play fixture.
+type bonusRow struct {
+	Elem       int
+	Name, Club string
+	Bps, Award int
+}
+type bonusFixture struct {
+	Label string // "NEW 2-1 LIV 72'"
+	Rows  []bonusRow
+}
+
 type snapshot struct {
 	GW           int
 	Matchups     []matchup
 	Loaded       time.Time
-	NextDue      string
+	Deadline     *countdownEvent // next deadline; header renders the live countdown
 	Standings    []standingRow
 	Fixtures     []fixtureRow
 	Transactions []txRow
 	TxByManager  []managerTx
 	NeedsYou     []railItem
 	Matches      []matchDetail // one per in-play fixture, liveSel-aligned
+	PlayerStats  map[int]tickerStat
+	ClockByTeam  map[int]int
+	OwnerByElem  map[int]eventRow // Owner/Mine/Opp template per rostered element
+	BonusRace    []bonusFixture
 }
 
 type model struct {
@@ -132,7 +166,9 @@ type model struct {
 	liveSel   int
 	txSel     int
 	sugSel    int
-	gamesPage int // 0 = in-play games, 1 = completed games
+	gamesPage int // index into panelPages()
+	events    []eventRow
+	seeded    bool
 	matchSel  int // index into snap.Matches while the match view is open
 	matchView bool
 	txView    bool
@@ -237,6 +273,8 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 				Bps         int `json:"bps"`
 				Goals       int `json:"goals_scored"`
 				Assists     int `json:"assists"`
+				YellowCards int `json:"yellow_cards"`
+				RedCards    int `json:"red_cards"`
 			} `json:"stats"`
 		} `json:"elements"`
 		Fixtures []struct {
@@ -337,6 +375,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 	}
 	provBonus := map[int]int{}
+	raceByFixture := map[int][]bpsEntry{}
 	for fi, entries := range byFixture {
 		if fi < 0 || fi >= len(live.Fixtures) {
 			continue
@@ -346,6 +385,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			continue
 		}
 		sort.Slice(entries, func(a, b int) bool { return entries[a].bps > entries[b].bps })
+		raceByFixture[fi] = entries
 		award, prevBps, prevAward := 3, -1, 3
 		for rank, en := range entries {
 			if rank >= 3 && en.bps != prevBps {
@@ -436,6 +476,47 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 	}
 	snap.Matches = append(snap.Matches, doneMatches...)
+	snap.ClockByTeam = clockByTeam
+
+	// Per-player counting stats for the events ticker (anyone with anything
+	// on the board — a few hundred rows at most).
+	snap.PlayerStats = map[int]tickerStat{}
+	for _, e := range bootstrap.Elements {
+		st := live.Elements[fmt.Sprintf("%d", e.ID)].Stats
+		if st.Minutes == 0 && st.Goals == 0 && st.Assists == 0 && st.YellowCards == 0 && st.RedCards == 0 {
+			continue
+		}
+		snap.PlayerStats[e.ID] = tickerStat{
+			Name: e.WebName, Club: teamShort[e.Team], TeamID: e.Team,
+			Goals: st.Goals, Assists: st.Assists,
+			Yellow: st.YellowCards, Red: st.RedCards, Points: st.TotalPoints,
+		}
+	}
+
+	// The BPS race per in-play fixture, for the Bonus page.
+	for fi, entries := range raceByFixture {
+		f := live.Fixtures[fi]
+		hs, as := 0, 0
+		if f.TeamHScore != nil {
+			hs = *f.TeamHScore
+		}
+		if f.TeamAScore != nil {
+			as = *f.TeamAScore
+		}
+		label := fmt.Sprintf("%s %d-%d %s %s", teamShort[f.TeamH], hs, as,
+			teamShort[f.TeamA], clockLabel(max(clockByTeam[f.TeamH], clockByTeam[f.TeamA])))
+		bf := bonusFixture{Label: label}
+		for i, en := range entries {
+			if i >= 6 {
+				break
+			}
+			ps := snap.PlayerStats[en.id]
+			bf.Rows = append(bf.Rows, bonusRow{Elem: en.id, Name: ps.Name, Club: ps.Club,
+				Bps: en.bps, Award: provBonus[en.id]})
+		}
+		snap.BonusRace = append(snap.BonusRace, bf)
+	}
+	sort.Slice(snap.BonusRace, func(a, b int) bool { return snap.BonusRace[a].Label < snap.BonusRace[b].Label })
 
 	// Official team sheets (pulse), when released: element -> xi/bench, plus
 	// which clubs have a sheet at all. A club with a sheet and a player in
@@ -601,6 +682,21 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		return snap, 0, fmt.Errorf("no matchups found for GW %d", gw)
 	}
 
+	// Who rosters each element, and whether that is me or this week's
+	// opponent — the ticker tags events with it.
+	snap.OwnerByElem = map[int]eventRow{}
+	for mi, mu := range snap.Matchups {
+		for _, sd := range []side{mu.A, mu.B} {
+			for _, p := range sd.Players {
+				snap.OwnerByElem[p.ID] = eventRow{
+					Owner: sd.Name,
+					Mine:  sd.EntryID == entry,
+					Opp:   mi == myIndex && sd.EntryID != entry,
+				}
+			}
+		}
+	}
+
 	// League standings for the rail (all zeros pre-lockdown — still orienting).
 	rows := details.Standings
 	sort.Slice(rows, func(i, j int) bool {
@@ -707,7 +803,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 	}
 
-	snap.NextDue = nextDeadline(bootstrapEventsForCountdown(bootstrap.Events.Data), time.Now())
+	snap.Deadline = nextDeadlineEvent(bootstrapEventsForCountdown(bootstrap.Events.Data), time.Now())
 	return snap, myIndex, nil
 }
 
@@ -746,17 +842,22 @@ var eastern = func() *time.Location {
 }()
 
 // nextDeadline picks the soonest future deadline and formats a countdown.
-func nextDeadline(events []countdownEvent, now time.Time) string {
+func nextDeadlineEvent(events []countdownEvent, now time.Time) *countdownEvent {
 	var best *countdownEvent
 	for i := range events {
 		if events[i].At.After(now) && (best == nil || events[i].At.Before(best.At)) {
 			best = &events[i]
 		}
 	}
-	if best == nil {
+	return best
+}
+
+// fmtDeadline renders the countdown against the live clock, so it ticks.
+func fmtDeadline(ev *countdownEvent, now time.Time) string {
+	if ev == nil || !ev.At.After(now) {
 		return ""
 	}
-	d := best.At.Sub(now).Round(time.Minute)
+	d := ev.At.Sub(now).Round(time.Minute)
 	var in string
 	if h := int(d.Hours()); h >= 24 {
 		in = fmt.Sprintf("in %dd%dh", h/24, h%24)
@@ -765,7 +866,7 @@ func nextDeadline(events []countdownEvent, now time.Time) string {
 	} else {
 		in = fmt.Sprintf("in %dm", int(d.Minutes()))
 	}
-	return fmt.Sprintf("%s %s EST (%s)", best.Label, best.At.In(eastern).Format("Mon 3:04 PM"), in)
+	return fmt.Sprintf("%s %s EST (%s)", ev.Label, ev.At.In(eastern).Format("Mon 3:04 PM"), in)
 }
 
 // ---------------------------------------------------------------------------
@@ -820,6 +921,7 @@ func (m *model) reload() error {
 
 func (m *model) applySnap(snap snapshot, myIndex int) {
 	first := m.snap.Loaded.IsZero()
+	m.ingestEvents(snap)
 	m.snap, m.loadErr = snap, ""
 	if first {
 		m.selected = myIndex
@@ -827,6 +929,56 @@ func (m *model) applySnap(snap snapshot, myIndex int) {
 	if m.selected >= len(snap.Matchups) {
 		m.selected = 0
 	}
+}
+
+// ingestEvents diffs the incoming per-player stats against the previous
+// snapshot and appends ticker rows. The first snapshot seeds a summary of
+// what already happened today (minute -1, shown without a clock).
+func (m *model) ingestEvents(snap snapshot) {
+	prev := m.snap.PlayerStats
+	tag := func(id int) eventRow { return snap.OwnerByElem[id] }
+	emit := func(id int, kind string, n, delta int) {
+		ps := snap.PlayerStats[id]
+		minute := snap.ClockByTeam[ps.TeamID]
+		if !m.seeded {
+			minute = -1
+		}
+		for range max(1, n) {
+			ev := tag(id)
+			ev.Minute, ev.Kind, ev.Name, ev.Club, ev.Delta = minute, kind, ps.Name, ps.Club, delta
+			m.events = append(m.events, ev)
+		}
+	}
+	for id, cur := range snap.PlayerStats {
+		was, seen := prev[id]
+		if m.seeded && !seen {
+			was = tickerStat{}
+		}
+		if !m.seeded {
+			// Seed pass: summarise the day so far.
+			was = tickerStat{Points: cur.Points}
+			if cur.TeamID != 0 && snap.ClockByTeam[cur.TeamID] == 0 {
+				continue // club has not played yet
+			}
+		}
+		perGoal := cur.Points - was.Points
+		if g := cur.Goals - was.Goals; g > 0 {
+			emit(id, "G", g, perGoal)
+		}
+		if a := cur.Assists - was.Assists; a > 0 {
+			emit(id, "A", a, perGoal)
+		}
+		if y := cur.Yellow - was.Yellow; y > 0 {
+			emit(id, "Y", y, -1)
+		}
+		if r := cur.Red - was.Red; r > 0 {
+			emit(id, "R", r, -3)
+		}
+	}
+	if len(m.events) > 120 {
+		m.events = m.events[len(m.events)-120:]
+	}
+	m.seeded = true
 }
 
 func (m *model) Init() tea.Cmd {
@@ -929,7 +1081,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.matchSel = (m.matchSel + n - 1) % n
 				}
 			} else if m.focus == 1 && m.gamesPages() > 1 {
-				m.gamesPage, m.liveSel = 1-m.gamesPage, 0
+				m.gamesPage = (m.gamesPage + m.gamesPages() - 1) % m.gamesPages()
+				m.liveSel = 0
 			} else {
 				m.selected = (m.selected + len(m.snap.Matchups) - 1) % max(1, len(m.snap.Matchups))
 			}
@@ -939,7 +1092,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.matchSel = (m.matchSel + 1) % n
 				}
 			} else if m.focus == 1 && m.gamesPages() > 1 {
-				m.gamesPage, m.liveSel = 1-m.gamesPage, 0
+				m.gamesPage = (m.gamesPage + 1) % m.gamesPages()
+				m.liveSel = 0
 			} else {
 				m.selected = (m.selected + 1) % max(1, len(m.snap.Matchups))
 			}
@@ -954,8 +1108,32 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// gamesList is what the games panel shows: page 0 = in-play games, page 1 =
-// completed. With nothing in play the completed games are the only page.
+// panelPages is the middle panel's page ring: live games, completed games,
+// the events ticker, and the bonus race — pages exist only when they have
+// something to show (Events always does, if only to say it is watching).
+func (m *model) panelPages() []string {
+	var pages []string
+	if liveCount(m.snap) > 0 {
+		pages = append(pages, "live")
+	}
+	if liveCount(m.snap) < len(m.snap.Matches) {
+		pages = append(pages, "played")
+	}
+	pages = append(pages, "events")
+	if len(m.snap.BonusRace) > 0 {
+		pages = append(pages, "bonus")
+	}
+	return pages
+}
+
+// currentPage clamps gamesPage into the ring.
+func (m *model) currentPage() string {
+	pages := m.panelPages()
+	return pages[clamp(m.gamesPage, 0, len(pages)-1)]
+}
+
+// gamesList is the selectable game list for the current page (nil on the
+// events/bonus pages — enter has nothing to open there).
 func (m *model) gamesList() []matchDetail {
 	var inPlay, done []matchDetail
 	for _, g := range m.snap.Matches {
@@ -965,22 +1143,17 @@ func (m *model) gamesList() []matchDetail {
 			inPlay = append(inPlay, g)
 		}
 	}
-	if len(inPlay) == 0 {
+	switch m.currentPage() {
+	case "live":
+		return inPlay
+	case "played":
 		return done
 	}
-	if m.gamesPage == 1 {
-		return done
-	}
-	return inPlay
+	return nil
 }
 
-// gamesPages is how many pages the games panel has (live + completed).
-func (m *model) gamesPages() int {
-	if liveCount(m.snap) > 0 && liveCount(m.snap) < len(m.snap.Matches) {
-		return 2
-	}
-	return 1
-}
+// gamesPages is the page count for the ←/→ ring.
+func (m *model) gamesPages() int { return len(m.panelPages()) }
 
 // liveCount is the number of in-play fixtures.
 func liveCount(s snapshot) int {
