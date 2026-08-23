@@ -122,3 +122,55 @@ a **volatile weekly number** (management). They share the feature foundation
 (per-90 rates, opponent strength, minutes) but differ in horizon, target, and
 which signals dominate (season = durability + repeatable quality; match = form +
 opponent + who-starts). Keep them as separate modules under `ml/`.
+
+## Fixture-aware market targeting (the waiver product contract)
+
+The model's xP is not the end product — the end product is *"who should I pick
+up because of who they play."* The user's framing (2026-08-23): target
+transactions at players facing bad teams / easy grounds, position-aware —
+a defender against a toothless attack (clean-sheet buy), an attacking mid or
+forward against a leaky defence (goal-involvement buy). Judge every component
+of FPL points, not just goals.
+
+### Two-sided team environment, per venue
+
+For each fixture derive Poisson-style team expectations from `team_env`
+(re-estimated on 26/27 data as it accrues, with the club-change discount):
+
+- `lambda_for` / `lambda_against` per team **split by venue** — "relegation
+  fodder away" and "solid at home" are different opponents.
+- `P(CS)`, expected goals conceded, and expected shots faced (save volume).
+
+### Position × opponent interaction matrix (what to buy, against whom)
+
+| Buy…            | When the opponent…                | Point source captured |
+|-----------------|-----------------------------------|-----------------------|
+| GKP             | attacks poorly (CS odds)          | CS + low GC risk      |
+| GKP (budget)    | concedes many *shots* (weak team) | save points volume    |
+| DEF             | attacks poorly                    | CS, GC, bonus         |
+| DEF (attacking) | + defends set pieces badly        | goal/assist upside    |
+| MID (attacking) | defends poorly (high xGA)         | goals 5 / assists 3   |
+| MID (defensive) | possession-heavy vs their block   | DC threshold points   |
+| FWD             | defends poorly, high line         | goals 4               |
+
+xP decomposes per component (appearance, goals, assists, CS, GC, saves, DC,
+bonus proxy) so tools can explain *which* component the fixture inflates.
+
+### Horizons and outputs
+
+- Score the FA pool + current roster over **1 GW / next 3 GWs / ROS** (CLAUDE.md
+  §5.2 horizons). A pickup for this week's fixture is a different product than
+  a run-of-fixtures hold — surface both.
+- `waiver_plan` consumes fixture-adjusted xP and stays roster-aware (marginal
+  value over my worst startable at that position, league_size=12 scarcity).
+- New derived view `fixture_targets`: per position, top FA-pool players ranked
+  by fixture-adjusted xP over the chosen horizon, with the component driver
+  ("home vs SUN, CS 48%") — this is the "make the most of the market" scan.
+- my_week/trade_check reuse the same per-fixture components so all advice
+  agrees on why.
+
+### Guards
+
+- Early season: shrink team rates toward priors, weight underlying xG/xGA over
+  results; promoted sides get a promoted-team prior, not zeros.
+- Never hardcode user holds (Madjo, Kroupi Jr) — advice layer only.
