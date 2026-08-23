@@ -103,13 +103,14 @@ func barStr(pts, maxPts, width int) string {
 }
 
 // scoreBar renders the diverging matchup bar: my share lit cyan, rest navy.
+// Solid blocks — fancier glyphs render unevenly in some terminal fonts.
 func scoreBar(me, opp, width int) string {
 	total := me + opp
 	if total == 0 {
-		return styBarOff.Render(strings.Repeat("▱", width))
+		return styBarOff.Render(strings.Repeat("░", width))
 	}
 	filled := clamp(int(float64(me)/float64(total)*float64(width)+0.5), 0, width)
-	return styBarOn.Render(strings.Repeat("▰", filled)) + styBarOff.Render(strings.Repeat("▱", width-filled))
+	return styBarOn.Render(strings.Repeat("█", filled)) + styBarOff.Render(strings.Repeat("░", width-filled))
 }
 
 // glyphStyle is the status colour language: green = played/playing,
