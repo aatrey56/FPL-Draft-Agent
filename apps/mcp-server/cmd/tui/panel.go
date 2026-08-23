@@ -1,8 +1,9 @@
 package main
 
-// panel.go — the whole feedtui look in one function: a titled box whose
-// border colour signals focus. The title is spliced into the top edge so it
-// costs zero interior rows.
+// panel.go — the whole look in one function: a double-line box whose border
+// signals focus (navy → magenta) with a background-tinted title bar as the
+// first interior row. minHeight pads the body so panels sharing a grid row
+// end on the same line.
 
 import (
 	"strings"
@@ -10,34 +11,32 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Panel renders body inside a rounded box of exactly `width` columns with the
-// title in the top border. focused switches the border to the accent colour.
-func Panel(title, hint, body string, width int, focused bool) string {
-	bc := mutedC
+// Panel renders body inside a box of exactly `width` columns. The title sits
+// on a tinted bar; focused switches the border to the focus colour. minHeight
+// is the minimum body height in rows (0 = natural).
+func Panel(title, hint, body string, width int, focused bool, minHeight int) string {
+	bc := ruleC
 	if focused {
-		bc = accentC
+		bc = focusC
 	}
-	edge := lipgloss.NewStyle().Foreground(bc)
+	inner := width - 4 // border + padding on each side
 
-	left := "╭─ "
-	rightHint := ""
-	rightCap := "─╮"
+	bar := styBarTitle.Render("▍" + title)
+	hintSeg := ""
 	if hint != "" {
-		rightHint = " " + hint + " "
+		hintSeg = styBarHint.Render(hint + " ")
 	}
-	fill := width - lipgloss.Width(left) - lipgloss.Width(title) - 1 -
-		lipgloss.Width(rightHint) - lipgloss.Width(rightCap)
-	if fill < 0 {
-		fill = 0
+	fill := inner - lipgloss.Width(bar) - lipgloss.Width(hintSeg)
+	titleRow := bar + styBarFill.Render(strings.Repeat(" ", max(0, fill))) + hintSeg
+
+	for lipgloss.Height(body) < minHeight {
+		body += "\n"
 	}
-	top := edge.Render(left) + styTitle.Render(title) + edge.Render(" "+strings.Repeat("─", fill)) +
-		styDim.Render(rightHint) + edge.Render(rightCap)
 
 	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder(), false, true, true, true).
+		Border(lipgloss.DoubleBorder()).
 		BorderForeground(bc).
 		Width(width-2).
 		Padding(0, 1)
-
-	return top + "\n" + box.Render(body)
+	return box.Render(titleRow + "\n" + body)
 }
