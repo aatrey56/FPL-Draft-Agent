@@ -113,14 +113,15 @@ func scoreBar(me, opp, width int) string {
 	return styBarOn.Render(strings.Repeat("█", filled)) + styBarOff.Render(strings.Repeat("░", width-filled))
 }
 
-// glyphStyle is the status colour language: green = played/playing,
-// red = confirmed out (DNP, or flagged ⚠ via styWarn), baby blue = has not
-// played yet, dim = bench.
+// glyphStyle is the status colour language: green = played, playing, or in
+// a live game and able to come on (◉ — the club is playing, the slot is
+// alive); baby blue = kickoff still ahead (○); red ✗ = confirmed DNP;
+// orange ⚠ = availability flag; dim = FPL bench.
 func glyphStyle(g string) lipgloss.Style {
 	switch g {
-	case "●", "⇄", "✓":
+	case "●", "⇄", "✓", "◉":
 		return styLive
-	case "◉", "○":
+	case "○":
 		return styTmrw
 	case "⚠":
 		return styFlag
@@ -133,12 +134,18 @@ func glyphStyle(g string) lipgloss.Style {
 
 func playerLine(p playerRow, half, barW, maxPts int) string {
 	pts := ptsLabel(p.Points, p.Bonus, p.Prov)
+	// ◉ (live game, on the club bench) draws as an open circle — colour
+	// alone separates it from ○ (kickoff ahead): green vs baby blue.
+	glyph := p.Glyph
+	if glyph == "◉" {
+		glyph = "○"
+	}
 	// Everything except the name is constant-width; the name gets the rest.
 	fixedTail := fmt.Sprintf(" %-3s %2d' ", p.Team, p.Minutes)
 	overhead := 2 + 5 + lipgloss.Width(fixedTail) + ptsSlotW + barW + boolToInt(barW > 0)
 	nameW := clamp(half-overhead, 6, 20)
 	name := ansi.Truncate(p.Name, nameW, "…")
-	base := p.Glyph + " " + fmt.Sprintf("%-4s", p.Pos) +
+	base := glyph + " " + fmt.Sprintf("%-4s", p.Pos) +
 		name + strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))) + fixedTail
 	sty := glyphStyle(p.Glyph)
 	if !p.Starter && !p.SubIn {

@@ -289,3 +289,41 @@ func TestDoubleGameweekDefersAutoSub(t *testing.T) {
 		t.Fatalf("DGW with an unfinished fixture must not project a sub: total %d effective %d", mine.Total, mine.Effective)
 	}
 }
+
+func TestSubbedOffGetsEarlyCheck(t *testing.T) {
+	dir := fixtureDir(t)
+	// Live match, clock at 60' (max player minutes). Striker started and froze
+	// at 30' -> subbed off, day done, early ✓. Benchman came ON at 45' (no
+	// starts flag, 15 minutes) -> still playing, green ●.
+	write(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
+		"elements": map[string]any{
+			"1": map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 6, "starts": 1}},
+			"2": map[string]any{"stats": map[string]any{"minutes": 15, "total_points": 1, "starts": 0}},
+			"3": map[string]any{"stats": map[string]any{"minutes": 60, "total_points": 2, "starts": 1}},
+		},
+		"fixtures": []map[string]any{{
+			"team_h": 1, "team_a": 2, "started": true, "finished": false,
+		}},
+	})
+	write(t, filepath.Join(dir, "entry/501/gw/1.json"), map[string]any{
+		"picks": []map[string]any{{"element": 1, "position": 1}, {"element": 2, "position": 2}},
+	})
+	snap, myIndex, err := load(dir, t.TempDir(), 5, 501, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := snap.Matchups[myIndex].A
+	if mine.EntryID != 501 {
+		mine = snap.Matchups[myIndex].B
+	}
+	glyphs := map[int]string{}
+	for _, p := range mine.Players {
+		glyphs[p.ID] = p.Glyph
+	}
+	if glyphs[1] != "✓" {
+		t.Fatalf("subbed-off starter should bank the ✓ mid-match, got %q", glyphs[1])
+	}
+	if glyphs[2] != "●" {
+		t.Fatalf("a sub who came on is still playing, got %q", glyphs[2])
+	}
+}
