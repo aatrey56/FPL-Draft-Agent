@@ -858,6 +858,33 @@ func (m *model) bestBody(width, rows int) string {
 
 // weekBody is the full-screen Week panel: every coming deadline with a live
 // countdown, then who is still to play on each side of my matchup.
+// nextWeekBody lists next gameweek's fixtures grouped by day with kickoff
+// times — a glance at when football is back.
+func (m *model) nextWeekBody(width int) string {
+	if len(m.snap.NextFixtures) == 0 {
+		return styDim.Render("schedule not out yet")
+	}
+	var b strings.Builder
+	day := ""
+	for _, f := range m.snap.NextFixtures {
+		d, t := "TBD", "TBD"
+		if !f.Kickoff.IsZero() {
+			d = f.Kickoff.In(eastern).Format("Mon Jan 2")
+			t = f.Kickoff.In(eastern).Format("3:04PM")
+		}
+		if d != day {
+			if day != "" {
+				b.WriteString("\n")
+			}
+			b.WriteString(styTmrw.Render(d) + "\n")
+			day = d
+		}
+		line := fmt.Sprintf(" %s v %-3s %s", f.Home, f.Away, styDim.Render(t))
+		b.WriteString(ansi.Truncate(styFg.Render(line), width, "…") + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func (m *model) weekBody(width int) string {
 	var b strings.Builder
 	now := time.Now()
@@ -1023,10 +1050,11 @@ func (m *model) View() string {
 	// height so every edge lines up. Fullscreen instead gives every tracker
 	// its own panel: Matchup | Games | Week over four columns.
 	mainW := w
-	weekW := 0
+	weekW, nextW := 0, 0
 	if md == full {
-		weekW = clamp(w/5, 26, 34)
-		mainW = clamp(w-weekW-24-2, 66, 96)
+		weekW = clamp(w/7, 22, 30)
+		nextW = clamp(w/7, 24, 32)
+		mainW = clamp(w-weekW-nextW-24-3, 60, 92)
 	}
 
 	mainTitle := fmt.Sprintf("Matchup %d/%d", m.selected+1, len(m.snap.Matchups))
@@ -1041,7 +1069,7 @@ func (m *model) View() string {
 	screen := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, 0)
 
 	if md == full {
-		gamesW := w - mainW - weekW - 2
+		gamesW := w - mainW - nextW - weekW - 3
 
 		gamesTitle, gamesHint := "Live", "↑↓ ↵"
 		if games := m.gamesList(); len(games) > 0 && games[0].Finished {
@@ -1053,12 +1081,15 @@ func (m *model) View() string {
 			gamesTitle, gamesHint = "Match", "←→ esc"
 			gamesBody = m.matchBody(gamesW - 4)
 		}
+		nextBody := m.nextWeekBody(nextW - 4)
 		weekBody := m.weekBody(weekW - 4)
-		topH := max(lipgloss.Height(m.matchupBody(mainW-4)), max(lipgloss.Height(gamesBody), lipgloss.Height(weekBody)))
+		topH := max(lipgloss.Height(m.matchupBody(mainW-4)),
+			max(max(lipgloss.Height(gamesBody), lipgloss.Height(nextBody)), lipgloss.Height(weekBody)))
 		mainPanel := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, topH)
 		gamesPanel := Panel(gamesTitle, gamesHint, gamesBody, gamesW, m.focus == 1, topH)
+		nextPanel := Panel(fmt.Sprintf("Next week (GW%d)", m.snap.NextGW), "", nextBody, nextW, false, topH)
 		weekPanel := Panel("Week", "", weekBody, weekW, false, topH)
-		screen = lipgloss.JoinHorizontal(lipgloss.Top, mainPanel, " ", gamesPanel, " ", weekPanel)
+		screen = lipgloss.JoinHorizontal(lipgloss.Top, mainPanel, " ", gamesPanel, " ", nextPanel, " ", weekPanel)
 
 		// League gets extra width so the PROJ column fits; the other three
 		// split the remainder evenly.

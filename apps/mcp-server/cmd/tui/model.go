@@ -84,6 +84,11 @@ type fixtureRow struct {
 	Kickoff    time.Time
 }
 
+type nextFixture struct {
+	Home, Away string
+	Kickoff    time.Time
+}
+
 type txRow struct {
 	TeamName string
 	In, Out  string
@@ -157,6 +162,8 @@ type snapshot struct {
 	Loaded       time.Time
 	Deadline     *countdownEvent  // next deadline; header renders the live countdown
 	Deadlines    []countdownEvent // all future deadlines, soonest first (Week panel)
+	NextGW       int
+	NextFixtures []nextFixture // next gameweek's schedule (Next week panel)
 	Standings    []standingRow
 	Fixtures     []fixtureRow
 	Transactions []txRow
@@ -429,6 +436,12 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 				TradesTime   string `json:"trades_time"`
 			} `json:"data"`
 		} `json:"events"`
+		Fixtures map[string][]struct {
+			Event       int    `json:"event"`
+			TeamH       int    `json:"team_h"`
+			TeamA       int    `json:"team_a"`
+			KickoffTime string `json:"kickoff_time"`
+		} `json:"fixtures"`
 	}
 	if err := readJSON(filepath.Join(dir, "bootstrap/bootstrap-static.json"), &bootstrap); err != nil {
 		return snap, 0, err
@@ -937,6 +950,22 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 				Confidence: r.Confidence, News: r.News})
 		}
 	}
+
+	// Next gameweek's fixtures (bootstrap.fixtures is keyed by GW string).
+	snap.NextGW = game.NextEvent
+	if snap.NextGW == 0 {
+		snap.NextGW = gw + 1
+	}
+	for _, f := range bootstrap.Fixtures[fmt.Sprintf("%d", snap.NextGW)] {
+		nf := nextFixture{Home: teamShort[f.TeamH], Away: teamShort[f.TeamA]}
+		if t, err := time.Parse(time.RFC3339, f.KickoffTime); err == nil {
+			nf.Kickoff = t
+		}
+		snap.NextFixtures = append(snap.NextFixtures, nf)
+	}
+	sort.SliceStable(snap.NextFixtures, func(a, b int) bool {
+		return snap.NextFixtures[a].Kickoff.Before(snap.NextFixtures[b].Kickoff)
+	})
 
 	all := bootstrapEventsForCountdown(bootstrap.Events.Data)
 	snap.Deadline = nextDeadlineEvent(all, time.Now())
