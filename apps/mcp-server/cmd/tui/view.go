@@ -674,14 +674,17 @@ func (m *model) plTableBody(width int) string {
 	var b strings.Builder
 	b.WriteString(styDim.Render(" #  CLUB   P   GD  PTS") + "\n")
 	for _, r := range m.snap.PLTable {
-		clr := clubColor[r.Short]
-		if clr.GetForeground() == nil {
-			clr = styFg
+		// Only the leader wears its kit colour; the rest stay neutral.
+		clr := styFg
+		if r.Pos == 1 {
+			if c, ok := clubColor[r.Short]; ok {
+				clr = c
+			}
 		}
 		line := fmt.Sprintf("%2d  ", r.Pos) + clr.Render(fmt.Sprintf("%-3s", r.Short)) +
 			styFg.Render(fmt.Sprintf("  %2d  %+3d  %3d", r.Played, r.GD, r.Points))
 		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
-		if r.Pos == 5 || r.Pos == 17 {
+		if r.Pos == 5 || r.Pos == 10 || r.Pos == 17 {
 			b.WriteString(rule + "\n")
 		}
 	}
