@@ -244,16 +244,10 @@ func (m *model) matchupBody(width int) string {
 	if mu.A.EntryID != m.entry && mu.B.EntryID != m.entry {
 		marginLabel = styDim.Render(fmt.Sprintf("Δ %+d", mu.A.Effective-mu.B.Effective))
 	}
-	mark := func(s side) string {
-		if s.Effective != s.Total {
-			return styDim.Render("⇄")
-		}
-		return ""
-	}
-	score := fmt.Sprintf("%s%s  %s  %s%s   %s",
-		styScore.Render(fmt.Sprintf("%3d", mu.A.Effective)), mark(mu.A),
+	score := fmt.Sprintf("%s  %s  %s   %s",
+		styScore.Render(fmt.Sprintf("%3d", mu.A.Effective)),
 		scoreBar(mu.A.Effective, mu.B.Effective, barW),
-		styFg.Bold(true).Render(fmt.Sprintf("%d", mu.B.Effective)), mark(mu.B),
+		styFg.Bold(true).Render(fmt.Sprintf("%d", mu.B.Effective)),
 		marginLabel)
 	if pad := (width - lipgloss.Width(score)) / 2; pad > 0 {
 		score = strings.Repeat(" ", pad) + score
