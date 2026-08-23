@@ -303,13 +303,15 @@ func loadPLTable(dir string, currentGW int, teamShort map[int]string) []plRow {
 			}
 		}
 	}
-	rows := make([]plRow, 0, len(accum))
-	for id, a := range accum {
-		played := a.W + a.D + a.L
-		if played == 0 {
-			continue
+	// Every club gets a row; the yet-to-play ones sit at the bottom on 0 and
+	// climb as their games finish.
+	rows := make([]plRow, 0, len(teamShort))
+	for id, short := range teamShort {
+		a := accum[id]
+		if a == nil {
+			a = &acc{}
 		}
-		rows = append(rows, plRow{Short: teamShort[id], Played: played,
+		rows = append(rows, plRow{Short: short, Played: a.W + a.D + a.L,
 			GD: a.GF - a.GA, Points: a.W*3 + a.D})
 	}
 	sort.Slice(rows, func(i, j int) bool {
