@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,5 +187,102 @@ func TestPlayedGamesListAfterLiveAndOpenLineups(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("played-game lineups missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestMatchupProjectsAutoSubs(t *testing.T) {
+	dir := fixtureDir(t)
+	// Full legal XI (1 GKP, 3 DEF, 4 MID, 3 FWD) so the auto-sub engine can
+	// validate formations. The MID in slot 5 blanked in a finished fixture;
+	// the bench DEF played and must be projected in.
+	elements := []map[string]any{{"id": 1, "web_name": "Keeper", "element_type": 1, "team": 1}}
+	picks := []map[string]any{{"element": 1, "position": 1}}
+	stats := map[string]any{}
+	types := []int{2, 2, 2, 3, 3, 3, 3, 4, 4, 4}
+	for i, et := range types {
+		id := i + 2
+		elements = append(elements, map[string]any{
+			"id": id, "web_name": fmt.Sprintf("Player%d", id), "element_type": et, "team": 1,
+		})
+		picks = append(picks, map[string]any{"element": id, "position": id})
+		stats[fmt.Sprintf("%d", id)] = map[string]any{"stats": map[string]any{"minutes": 90, "total_points": 2}}
+	}
+	stats["1"] = map[string]any{"stats": map[string]any{"minutes": 90, "total_points": 2}}
+	stats["5"] = map[string]any{"stats": map[string]any{"minutes": 0, "total_points": 0}}
+	elements = append(elements, map[string]any{"id": 20, "web_name": "BenchDef", "element_type": 2, "team": 1})
+	picks = append(picks, map[string]any{"element": 20, "position": 12})
+	stats["20"] = map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 5}}
+	write(t, filepath.Join(dir, "bootstrap/bootstrap-static.json"), map[string]any{
+		"elements": elements,
+		"teams":    []map[string]any{{"id": 1, "short_name": "ARS"}, {"id": 2, "short_name": "COV"}},
+	})
+	write(t, filepath.Join(dir, "entry/501/gw/1.json"), map[string]any{"picks": picks})
+	write(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
+		"elements": stats,
+		"fixtures": []map[string]any{{"team_h": 1, "team_a": 2, "finished": true, "started": true}},
+	})
+
+	snap, myIndex, err := load(dir, t.TempDir(), 5, 501, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := snap.Matchups[myIndex].A
+	if mine.EntryID != 501 {
+		mine = snap.Matchups[myIndex].B
+	}
+	if mine.Total != 20 || mine.Effective != 25 {
+		t.Fatalf("total %d effective %d, want 20/25", mine.Total, mine.Effective)
+	}
+	for _, p := range mine.Players {
+		if p.Name == "BenchDef" && p.Glyph != "⇄" {
+			t.Fatalf("projected sub should carry ⇄, got %q", p.Glyph)
+		}
+	}
+}
+
+func TestDoubleGameweekDefersAutoSub(t *testing.T) {
+	dir := fixtureDir(t)
+	// Same squad as the auto-sub test, but the blanked MID's club has a
+	// second, unfinished fixture — no substitution may be projected yet.
+	elements := []map[string]any{{"id": 1, "web_name": "Keeper", "element_type": 1, "team": 1}}
+	picks := []map[string]any{{"element": 1, "position": 1}}
+	stats := map[string]any{}
+	types := []int{2, 2, 2, 3, 3, 3, 3, 4, 4, 4}
+	for i, et := range types {
+		id := i + 2
+		elements = append(elements, map[string]any{
+			"id": id, "web_name": fmt.Sprintf("Player%d", id), "element_type": et, "team": 1,
+		})
+		picks = append(picks, map[string]any{"element": id, "position": id})
+		stats[fmt.Sprintf("%d", id)] = map[string]any{"stats": map[string]any{"minutes": 90, "total_points": 2}}
+	}
+	stats["1"] = map[string]any{"stats": map[string]any{"minutes": 90, "total_points": 2}}
+	stats["5"] = map[string]any{"stats": map[string]any{"minutes": 0, "total_points": 0}}
+	elements = append(elements, map[string]any{"id": 20, "web_name": "BenchDef", "element_type": 2, "team": 1})
+	picks = append(picks, map[string]any{"element": 20, "position": 12})
+	stats["20"] = map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 5}}
+	write(t, filepath.Join(dir, "bootstrap/bootstrap-static.json"), map[string]any{
+		"elements": elements,
+		"teams":    []map[string]any{{"id": 1, "short_name": "ARS"}, {"id": 2, "short_name": "COV"}},
+	})
+	write(t, filepath.Join(dir, "entry/501/gw/1.json"), map[string]any{"picks": picks})
+	write(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
+		"elements": stats,
+		"fixtures": []map[string]any{
+			{"team_h": 1, "team_a": 2, "finished": true, "started": true},
+			{"team_h": 2, "team_a": 1, "finished": false, "started": false},
+		},
+	})
+
+	snap, myIndex, err := load(dir, t.TempDir(), 5, 501, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := snap.Matchups[myIndex].A
+	if mine.EntryID != 501 {
+		mine = snap.Matchups[myIndex].B
+	}
+	if mine.Effective != mine.Total {
+		t.Fatalf("DGW with an unfinished fixture must not project a sub: total %d effective %d", mine.Total, mine.Effective)
 	}
 }

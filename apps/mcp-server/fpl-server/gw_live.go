@@ -19,6 +19,8 @@ import (
 	"sort"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/autosub"
 )
 
 type GwLiveArgs struct {
@@ -107,6 +109,12 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 			Elements map[string]struct {
 				Stats gwLiveStats `json:"stats"`
 			} `json:"elements"`
+			Fixtures []struct {
+				TeamH        int  `json:"team_h"`
+				TeamA        int  `json:"team_a"`
+				Finished     bool `json:"finished"`
+				FinishedProv bool `json:"finished_provisional"`
+			} `json:"fixtures"`
 		}
 		if err := readJSONFile(filepath.Join(rawDir, fmt.Sprintf("gw/%d/live.json", gw)), &live); err != nil {
 			return toolError(fmt.Errorf("no live snapshot for GW %d yet — run a full (non --fast) fetch refresh during or after matches: %w", gw, err)), nil, nil
@@ -132,11 +140,31 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 			teamShort[t.ID] = t.ShortName
 		}
 		positions := map[int]string{1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
-		elByID := map[int]struct {
+		type elInfo struct {
 			Name, Pos, Team string
-		}{}
+			PosCode, TeamID int
+		}
+		elByID := map[int]elInfo{}
 		for _, e := range bootstrap.Elements {
-			elByID[e.ID] = struct{ Name, Pos, Team string }{e.WebName, positions[e.ElementType], teamShort[e.Team]}
+			elByID[e.ID] = elInfo{e.WebName, positions[e.ElementType], teamShort[e.Team], e.ElementType, e.Team}
+		}
+		// A club with no unfinished fixture this GW counts as done — that is
+		// when a 0-minute starter becomes a confirmed non-player. In a double
+		// gameweek every one of the club's fixtures must be finished.
+		fixtureDone := map[int]bool{}
+		for _, f := range live.Fixtures {
+			fDone := f.Finished || f.FinishedProv
+			for _, team := range []int{f.TeamH, f.TeamA} {
+				merged := fDone
+				if cur, seen := fixtureDone[team]; seen {
+					merged = merged && cur
+				}
+				fixtureDone[team] = merged
+			}
+		}
+		teamDone := func(teamID int) bool {
+			done, known := fixtureDone[teamID]
+			return !known || done
 		}
 
 		side := func(entryID int) (map[string]any, error) {
@@ -155,6 +183,9 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 			sort.Slice(snapshot.Picks, func(i, j int) bool {
 				return snapshot.Picks[i].Position < snapshot.Picks[j].Position
 			})
+			squad := make([]autosub.Player, 0, len(snapshot.Picks))
+			nameBySlot := map[int]string{}
+			pointsBySlot := map[int]int{}
 			for _, p := range snapshot.Picks {
 				stats := live.Elements[fmt.Sprintf("%d", p.Element)].Stats
 				info := elByID[p.Element]
@@ -167,6 +198,12 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 				} else {
 					benchTotal += stats.TotalPoints
 				}
+				squad = append(squad, autosub.Player{
+					Slot: p.Position, Pos: info.PosCode, Minutes: stats.Minutes,
+					FixtureDone: teamDone(info.TeamID),
+				})
+				nameBySlot[p.Position] = info.Name
+				pointsBySlot[p.Position] = stats.TotalPoints
 				players = append(players, map[string]any{
 					"slot": p.Position, "starter": starter,
 					"web_name": info.Name, "position": info.Pos, "team": info.Team,
@@ -175,9 +212,24 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 					"bonus": stats.Bonus, "bps": stats.Bps,
 				})
 			}
+			// Projected end-of-GW auto-subs (draft rules): confirmed 0-minute
+			// starters replaced from the bench, keeper-for-keeper, formation
+			// kept legal. Effective points = live_points with those applied.
+			effective := liveTotal
+			subs := []map[string]any{}
+			if len(live.Fixtures) > 0 {
+				for _, sw := range autosub.Project(squad) {
+					effective += pointsBySlot[sw.In]
+					subs = append(subs, map[string]any{
+						"out": nameBySlot[sw.Out], "in": nameBySlot[sw.In],
+						"in_points": pointsBySlot[sw.In],
+					})
+				}
+			}
 			return map[string]any{
 				"team_name": nameByEntry[entryID], "entry_id": entryID,
-				"live_points": liveTotal, "bench_points": benchTotal,
+				"live_points": liveTotal, "effective_points": effective,
+				"projected_auto_subs": subs, "bench_points": benchTotal,
 				"starters_played": played, "players": players,
 			}, nil
 		}
@@ -188,7 +240,7 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 		}
 		result := map[string]any{
 			"gw": gw, "me": me,
-			"note": "Points come straight from the FPL live endpoint and already include any bonus awarded so far — bonus is now published during matches, not after. Bonus can still move while a match is in progress (bps shows the running tally); scores lock the morning after the GW's final match. Refresh the snapshot with a full (non --fast) fetch.",
+			"note": "Points come straight from the FPL live endpoint and already include any bonus awarded so far — bonus is now published during matches, not after. Bonus can still move while a match is in progress (bps shows the running tally); scores lock the morning after the GW's final match. effective_points = live_points plus projected_auto_subs: draft auto-substitutions (0-minute starters whose fixture finished, replaced in bench order, keeper-for-keeper, formation kept legal) that will apply when the GW completes. Refresh the snapshot with a full (non --fast) fetch.",
 		}
 		if opponentEntry != 0 {
 			if opp, err := side(opponentEntry); err == nil {

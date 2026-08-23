@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,4 +109,61 @@ func resultText2(t *testing.T, res *mcp.CallToolResult) string {
 		t.Fatalf("unexpected content type %T", res.Content[0])
 	}
 	return text.Text
+}
+
+func TestGwLiveProjectsAutoSubs(t *testing.T) {
+	cfg := fixtureConfig(t)
+	season := filepath.Join(cfg.RawRoot, "2026-27")
+
+	writeFixture(t, filepath.Join(season, "game/game.json"), map[string]any{"current_event": 1})
+	writeFixture(t, filepath.Join(season, "league/5/details.json"), map[string]any{
+		"league_entries": []map[string]any{{"id": 71, "entry_id": 501, "entry_name": "Harbor FC"}},
+		"matches":        []map[string]any{},
+	})
+	// XI: GKP + 3 DEF + 4 MID + 3 FWD. The MID in slot 5 blanked (fixture
+	// finished, 0 minutes) — the DEF on the bench played and must come on.
+	elements := []map[string]any{{"id": 1, "web_name": "Keeper", "element_type": 1, "team": 1}}
+	picks := []map[string]any{{"element": 1, "position": 1}}
+	types := []int{2, 2, 2, 3, 3, 3, 3, 4, 4, 4}
+	for i, et := range types {
+		elements = append(elements, map[string]any{
+			"id": i + 2, "web_name": "P" + string(rune('A'+i)), "element_type": et, "team": 1,
+		})
+		picks = append(picks, map[string]any{"element": i + 2, "position": i + 2})
+	}
+	elements = append(elements,
+		map[string]any{"id": 20, "web_name": "BenchDef", "element_type": 2, "team": 1},
+	)
+	picks = append(picks, map[string]any{"element": 20, "position": 12})
+	writeFixture(t, filepath.Join(season, "bootstrap/bootstrap-static.json"), map[string]any{
+		"elements": elements,
+		"teams":    []map[string]any{{"id": 1, "short_name": "ARS"}},
+	})
+	writeFixture(t, filepath.Join(season, "entry/501/gw/1.json"), map[string]any{"picks": picks})
+	stats := map[string]any{}
+	for i := 1; i <= 11; i++ {
+		stats[fmt.Sprintf("%d", i)] = map[string]any{"stats": map[string]any{"minutes": 90, "total_points": 2}}
+	}
+	stats["5"] = map[string]any{"stats": map[string]any{"minutes": 0, "total_points": 0}} // MID blanked
+	stats["20"] = map[string]any{"stats": map[string]any{"minutes": 30, "total_points": 5}}
+	writeFixture(t, filepath.Join(season, "gw/1/live.json"), map[string]any{
+		"elements": stats,
+		"fixtures": []map[string]any{{"team_h": 1, "team_a": 2, "finished": true}},
+	})
+
+	res, _, err := gwLiveHandler(cfg)(context.Background(), nil, GwLiveArgs{LeagueID: 5, EntryID: 501})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := resultText(t, res)
+	for _, want := range []string{
+		`"live_points": 20`,      // named XI: 10 players on 2, one on 0
+		`"effective_points": 25`, // +5 from the projected sub
+		`"in": "BenchDef"`,
+		`"in_points": 5`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("gw_live auto-sub missing %q: %s", want, text)
+		}
+	}
 }

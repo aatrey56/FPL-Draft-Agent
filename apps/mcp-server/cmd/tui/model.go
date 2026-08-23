@@ -15,6 +15,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/autosub"
 )
 
 type playerRow struct {
@@ -29,17 +31,19 @@ type playerRow struct {
 	Bonus   int // confirmed bonus (already inside Points)
 	Prov    int // provisional bonus from live BPS (not yet in Points)
 	Starter bool
-	Glyph   string // ● on pitch, ◉ in squad could appear, ✓ played, – DNP, ○ not yet, ⚠ doubt, · bench
+	SubIn   bool   // projected auto-sub: this bench player comes on
+	Glyph   string // ● on pitch, ◉ could appear, ✓ played, ✗ DNP, ○ not yet, ⚠ doubt, ⇄ auto-sub in, · bench
 }
 
 type side struct {
-	Name    string
-	Manager string
-	EntryID int
-	Total   int
-	Bench   int
-	Played  int
-	Players []playerRow
+	Name      string
+	Manager   string
+	EntryID   int
+	Total     int
+	Effective int // Total plus projected auto-subs (equal when none fire)
+	Bench     int
+	Played    int
+	Players   []playerRow
 }
 
 type matchup struct{ A, B side }
@@ -248,11 +252,19 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	_ = readJSON(filepath.Join(dir, fmt.Sprintf("gw/%d/live.json", gw)), &live) // pre-kickoff: zeros
 
 	type fxState struct{ started, finished bool }
+	// Merge per team across a double gameweek: started once any fixture has
+	// kicked off, finished only when every fixture is done.
 	fixtureByTeam := map[int]fxState{}
 	for _, f := range live.Fixtures {
 		done := f.Finished || f.FinishedProv
-		fixtureByTeam[f.TeamH] = fxState{f.Started, done}
-		fixtureByTeam[f.TeamA] = fxState{f.Started, done}
+		for _, team := range []int{f.TeamH, f.TeamA} {
+			cur, seen := fixtureByTeam[team]
+			if !seen {
+				fixtureByTeam[team] = fxState{f.Started, done}
+				continue
+			}
+			fixtureByTeam[team] = fxState{cur.started || f.Started, cur.finished && done}
+		}
 	}
 
 	var bootstrap struct {
@@ -474,6 +486,28 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 				s.Bench += row.Points
 			}
 			s.Players = append(s.Players, row)
+		}
+		s.Effective = s.Total
+		// Project end-of-GW auto-subs (only meaningful once fixtures exist).
+		if len(fixtureByTeam) > 0 {
+			posCode := map[string]int{"GKP": autosub.GKP, "DEF": autosub.DEF, "MID": autosub.MID, "FWD": autosub.FWD}
+			sq := make([]autosub.Player, 0, len(s.Players))
+			for _, p := range s.Players {
+				fx, known := fixtureByTeam[p.TeamID]
+				sq = append(sq, autosub.Player{
+					Slot: p.Slot, Pos: posCode[p.Pos], Minutes: p.Minutes,
+					FixtureDone: !known || fx.finished,
+				})
+			}
+			for _, sw := range autosub.Project(sq) {
+				for i := range s.Players {
+					if s.Players[i].Slot == sw.In {
+						s.Players[i].SubIn = true
+						s.Players[i].Glyph = "⇄"
+						s.Effective += s.Players[i].Points
+					}
+				}
+			}
 		}
 		return s
 	}
