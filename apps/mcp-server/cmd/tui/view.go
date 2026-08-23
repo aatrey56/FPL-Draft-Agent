@@ -330,7 +330,8 @@ func wrapText(text string, width int) []string {
 }
 
 // sugDetailBody replaces the League body with the selected suggestion in
-// full — nothing truncated. Esc returns to the table.
+// full. Wire recommendations explain the whole trade: who to drop, what the
+// gain numbers mean, and the confidence behind them.
 func (m *model) sugDetailBody(width int) string {
 	if len(m.snap.NeedsYou) == 0 {
 		return styDim.Render("no suggestions")
@@ -349,17 +350,69 @@ func (m *model) sugDetailBody(width int) string {
 		b.WriteString(" " + styDim.Render(r.Team))
 	}
 	b.WriteString("\n\n")
-	for _, ln := range wrapText(r.Note, width-1) {
-		b.WriteString(styFg.Render(ln) + "\n")
+	para := func(text string) {
+		for _, ln := range wrapText(text, width-1) {
+			b.WriteString(styFg.Render(ln) + "\n")
+		}
+	}
+	if r.Drop != "" {
+		para(fmt.Sprintf("Add %s, drop %s.", r.Name, r.Drop))
+		b.WriteString("\n")
+		para(fmt.Sprintf("Projected rest-of-season: %s %.0f pts vs %s %.0f pts — the +%.0f is that gap, the season points you gain by making the swap.",
+			r.Name, r.AddROS, r.Drop, r.DropROS, r.SeasonGain))
+		b.WriteString("\n")
+		para(fmt.Sprintf("Next 3 GWs: %s projects %.1f xP, +%.1f over %s.",
+			r.Name, r.AddNext3, r.Next3Gain, r.Drop))
+		if r.Confidence != "" {
+			b.WriteString("\n" + styDim.Render("confidence: "+r.Confidence) + "\n")
+		}
+		if r.News != "" {
+			para("news: " + r.News)
+		}
+	} else {
+		for _, ln := range wrapText(r.Note, width-1) {
+			b.WriteString(styFg.Render(ln) + "\n")
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// projScore is the projected final matchup score for a manager, own score
+// first, coloured by the projected result.
+func (m *model) projScore(entryID int) string {
+	for _, mu := range m.snap.Matchups {
+		mine, opp := -1, -1
+		switch entryID {
+		case mu.A.EntryID:
+			mine, opp = mu.A.Proj, mu.B.Proj
+		case mu.B.EntryID:
+			mine, opp = mu.B.Proj, mu.A.Proj
+		}
+		if mine < 0 {
+			continue
+		}
+		sty := styDim
+		if mine > opp {
+			sty = styLive
+		} else if mine < opp {
+			sty = styWarn
+		}
+		return sty.Render(fmt.Sprintf("%3d-%-3d", mine, opp))
+	}
+	return strings.Repeat(" ", 7)
 }
 
 func (m *model) railBody(width int, focused bool) string {
 	var b strings.Builder
 	if len(m.snap.Standings) > 0 {
-		nameW := clamp(width-22, 8, 17)
-		b.WriteString(ansi.Truncate(styDim.Render(fmt.Sprintf(" #  %-*s %-5s %s", nameW, "TEAM", "W-D-L", "  LIVE")), width, "") + "\n")
+		showProj := width >= 38
+		overhead := 22
+		projHead := ""
+		if showProj {
+			overhead, projHead = 30, "    PROJ"
+		}
+		nameW := clamp(width-overhead, 8, 17)
+		b.WriteString(ansi.Truncate(styDim.Render(fmt.Sprintf(" #  %-*s %-5s %s%s", nameW, "TEAM", "W-D-L", "  LIVE", projHead)), width, "") + "\n")
 		for i, s := range m.snap.Standings {
 			name := ansi.Truncate(s.Name, nameW, "…")
 			pad := strings.Repeat(" ", max(0, nameW-lipgloss.Width(name)))
@@ -369,6 +422,9 @@ func (m *model) railBody(width int, focused bool) string {
 			}
 			line := sty.Render(fmt.Sprintf("%s%2d %s%s %-5s ", marker, i+1, name, pad, s.Record)) +
 				m.liveScore(s.EntryID)
+			if showProj {
+				line += " " + m.projScore(s.EntryID)
+			}
 			b.WriteString(line + "\n")
 		}
 	}
@@ -671,12 +727,21 @@ func (m *model) bestBody(width, rows int) string {
 		}
 		return all[a].st.Name < all[b].st.Name
 	})
+	recs := map[string]bool{}
+	for _, r := range m.snap.NeedsYou {
+		if r.Glyph == "↑" {
+			recs[r.Name] = true
+		}
+	}
 	var b strings.Builder
 	for i, sc := range all {
 		if i >= rows {
 			break
 		}
-		owner := styDim.Render("free")
+		owner := styFree.Render("free")
+		if recs[sc.st.Name] {
+			owner += " " + styFg.Bold(true).Render("rec")
+		}
 		if tag, ok := m.snap.OwnerByElem[sc.id]; ok {
 			switch {
 			case tag.Mine:
@@ -859,8 +924,10 @@ func (m *model) View() string {
 	// height so every edge lines up. Fullscreen instead gives every tracker
 	// its own panel: Matchup | Games | Week over four columns.
 	mainW := w
+	weekW := 0
 	if md == full {
-		mainW = clamp(w-clamp(w/6, 22, 26)-clamp(w/4, 28, 44)-2, 66, 96)
+		weekW = clamp(w/5, 26, 34)
+		mainW = clamp(w-weekW-24-2, 66, 96)
 	}
 
 	mainTitle := fmt.Sprintf("Matchup %d/%d", m.selected+1, len(m.snap.Matchups))
@@ -875,8 +942,7 @@ func (m *model) View() string {
 	screen := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, 0)
 
 	if md == full {
-		gamesW := clamp(w/6, 22, 26)
-		weekW := w - mainW - gamesW - 2
+		gamesW := w - mainW - weekW - 2
 
 		gamesTitle := "Live"
 		if games := m.gamesList(); len(games) > 0 && games[0].Finished {
@@ -890,8 +956,11 @@ func (m *model) View() string {
 		weekPanel := Panel("Week", "", weekBody, weekW, false, topH)
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, mainPanel, " ", gamesPanel, " ", weekPanel)
 
-		quarter := (w - 3) / 4
-		leagueW, eventsW, bonusW := quarter, quarter, quarter
+		// League gets extra width so the PROJ column fits; the other three
+		// split the remainder evenly.
+		leagueW := clamp((w-3)/4+8, 40, 52)
+		rest := (w - 3 - leagueW) / 3
+		eventsW, bonusW := rest, rest
 		txW := w - 3 - leagueW - eventsW - bonusW
 		leagueTitle, leagueHint := "League", "tab ↑↓ ↵"
 		leagueBody := m.railBody(leagueW-4, m.focus == 2)
