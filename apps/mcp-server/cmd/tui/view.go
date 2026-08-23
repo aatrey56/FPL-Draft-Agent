@@ -655,18 +655,35 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 	return " " + strings.Join(lines, "\n ")
 }
 
-// plTableBody renders the live Premier League table compactly: position,
-// club, played, goal difference, points.
+// clubColor maps each club to its kit colour so the table reads at a glance.
+var clubColor = map[string]lipgloss.Style{
+	"BHA": styTmrw, "EVE": styTmrw, "IPS": styTmrw, "MCI": styTmrw, "CHE": styTmrw, "COV": styTmrw,
+	"ARS": styWarn, "BRE": styWarn, "LIV": styWarn, "BOU": styWarn, "NFO": styWarn, "MUN": styWarn,
+	"HUL": styYellow, "LEE": styYellow, "NEW": styYellow, "FUL": styYellow, "SUN": styYellow,
+	"CRY": styYellow, "TOT": styYellow, "AVL": styYellow,
+}
+
+// plTableBody renders the live Premier League table: position, club (in kit
+// colour), played, goal difference, points, with divider lines after 5th
+// (European places) and 17th (the relegation cut).
 func (m *model) plTableBody(width int) string {
 	if len(m.snap.PLTable) == 0 {
 		return ""
 	}
+	rule := styDim.Render(strings.Repeat("─", clamp(width, 0, 21)))
 	var b strings.Builder
 	b.WriteString(styDim.Render(" #  CLUB   P   GD  PTS") + "\n")
 	for _, r := range m.snap.PLTable {
-		gd := fmt.Sprintf("%+d", r.GD)
-		line := fmt.Sprintf("%2d  %-3s  %2d  %3s  %3d", r.Pos, r.Short, r.Played, gd, r.Points)
-		b.WriteString(ansi.Truncate(styFg.Render(line), width, "…") + "\n")
+		clr := clubColor[r.Short]
+		if clr.GetForeground() == nil {
+			clr = styFg
+		}
+		line := fmt.Sprintf("%2d  ", r.Pos) + clr.Render(fmt.Sprintf("%-3s", r.Short)) +
+			styFg.Render(fmt.Sprintf("  %2d  %+3d  %3d", r.Played, r.GD, r.Points))
+		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
+		if r.Pos == 5 || r.Pos == 17 {
+			b.WriteString(rule + "\n")
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
