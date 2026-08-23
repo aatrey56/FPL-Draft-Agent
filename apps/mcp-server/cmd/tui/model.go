@@ -141,7 +141,8 @@ type snapshot struct {
 	GW           int
 	Matchups     []matchup
 	Loaded       time.Time
-	Deadline     *countdownEvent // next deadline; header renders the live countdown
+	Deadline     *countdownEvent  // next deadline; header renders the live countdown
+	Deadlines    []countdownEvent // all future deadlines, soonest first (Week panel)
 	Standings    []standingRow
 	Fixtures     []fixtureRow
 	Transactions []txRow
@@ -803,7 +804,14 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 	}
 
-	snap.Deadline = nextDeadlineEvent(bootstrapEventsForCountdown(bootstrap.Events.Data), time.Now())
+	all := bootstrapEventsForCountdown(bootstrap.Events.Data)
+	snap.Deadline = nextDeadlineEvent(all, time.Now())
+	for _, ev := range all {
+		if ev.At.After(time.Now()) {
+			snap.Deadlines = append(snap.Deadlines, ev)
+		}
+	}
+	sort.Slice(snap.Deadlines, func(a, b int) bool { return snap.Deadlines[a].At.Before(snap.Deadlines[b].At) })
 	return snap, myIndex, nil
 }
 
@@ -1135,6 +1143,9 @@ func (m *model) currentPage() string {
 // gamesList is the selectable game list for the current page (nil on the
 // events/bonus pages — enter has nothing to open there).
 func (m *model) gamesList() []matchDetail {
+	if m.mode() == full {
+		return m.snap.Matches
+	}
 	var inPlay, done []matchDetail
 	for _, g := range m.snap.Matches {
 		if g.Finished {
@@ -1152,8 +1163,14 @@ func (m *model) gamesList() []matchDetail {
 	return nil
 }
 
-// gamesPages is the page count for the ←/→ ring.
-func (m *model) gamesPages() int { return len(m.panelPages()) }
+// gamesPages is the page count for the ←/→ ring (full screen shows every
+// page as its own panel, so the ring collapses).
+func (m *model) gamesPages() int {
+	if m.mode() == full {
+		return 1
+	}
+	return len(m.panelPages())
+}
 
 // liveCount is the number of in-play fixtures.
 func liveCount(s snapshot) int {

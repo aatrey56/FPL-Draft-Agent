@@ -371,7 +371,7 @@ func TestEventsTickerDiffsSnapshots(t *testing.T) {
 	if len(m.events) != 1 {
 		t.Fatalf("duplicate events on unchanged stats: %d", len(m.events))
 	}
-	if body := m.eventsBody(40); !strings.Contains(body, "Striker") {
+	if body := m.eventsBody(40, 14); !strings.Contains(body, "Striker") {
 		t.Fatalf("events page missing the goal:\n%s", body)
 	}
 }

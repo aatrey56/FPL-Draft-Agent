@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,12 +20,15 @@ const (
 	minimal mode = iota
 	narrow
 	wide
+	full
 )
 
 func (m *model) mode() mode {
 	switch {
+	case m.w >= 140:
+		return full // fullscreen: every tracker gets its own panel
 	case m.w >= 90:
-		return wide // 2×2 grid — fits a half-screen terminal split
+		return wide // compact stack — fits a half-screen terminal split
 	case m.w >= 72:
 		return narrow // matchup only, no bars, bench collapsed
 	default:
@@ -592,7 +596,7 @@ func (m *model) scoresStrip(width int, includeLive bool) string {
 func (m *model) panelBody(width int, focused bool) string {
 	switch m.currentPage() {
 	case "events":
-		return m.eventsBody(width)
+		return m.eventsBody(width, 14)
 	case "bonus":
 		return m.bonusBody(width)
 	}
@@ -600,7 +604,7 @@ func (m *model) panelBody(width int, focused bool) string {
 }
 
 // eventsBody is the live feed, newest first: minute, kind, player, points.
-func (m *model) eventsBody(width int) string {
+func (m *model) eventsBody(width, rows int) string {
 	if len(m.events) == 0 {
 		return styDim.Render("watching for goals, assists, cards…")
 	}
@@ -610,7 +614,7 @@ func (m *model) eventsBody(width int) string {
 	}
 	var b strings.Builder
 	shown := 0
-	for i := len(m.events) - 1; i >= 0 && shown < 14; i-- {
+	for i := len(m.events) - 1; i >= 0 && shown < rows; i-- {
 		ev := m.events[i]
 		clock := "  ⋯"
 		if ev.Minute >= 0 {
@@ -646,6 +650,107 @@ func (m *model) eventsBody(width int) string {
 }
 
 // bonusBody is the live BPS race per in-play fixture — who holds 3/2/1.
+// bestBody is the GW top-scorer leaderboard — the Bonus panel's idle face.
+func (m *model) bestBody(width, rows int) string {
+	type scored struct {
+		id int
+		st tickerStat
+	}
+	var all []scored
+	for id, st := range m.snap.PlayerStats {
+		if st.Points != 0 {
+			all = append(all, scored{id, st})
+		}
+	}
+	if len(all) == 0 {
+		return styDim.Render("no points on the board yet")
+	}
+	sort.Slice(all, func(a, b int) bool {
+		if all[a].st.Points != all[b].st.Points {
+			return all[a].st.Points > all[b].st.Points
+		}
+		return all[a].st.Name < all[b].st.Name
+	})
+	var b strings.Builder
+	for i, sc := range all {
+		if i >= rows {
+			break
+		}
+		owner := styDim.Render("free")
+		if tag, ok := m.snap.OwnerByElem[sc.id]; ok {
+			switch {
+			case tag.Mine:
+				owner = styYou.Render("◆you")
+			case tag.Opp:
+				owner = styWarn.Render("◇opp")
+			default:
+				owner = styDim.Render(ansi.Truncate(tag.Owner, 10, "…"))
+			}
+		}
+		name := ansi.Truncate(sc.st.Name, clamp(width-16, 6, 16), "…")
+		line := fmt.Sprintf("%s %s %s %s", styScore.Render(fmt.Sprintf("%3d", sc.st.Points)),
+			styFg.Render(name), styDim.Render(sc.st.Club), owner)
+		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// weekBody is the full-screen Week panel: every coming deadline with a live
+// countdown, then who is still to play on each side of my matchup.
+func (m *model) weekBody(width int) string {
+	var b strings.Builder
+	now := time.Now()
+	for i, ev := range m.snap.Deadlines {
+		if i >= 3 {
+			break
+		}
+		b.WriteString(styYou.Render(ansi.Truncate(fmtDeadline(&ev, now), width, "…")) + "\n")
+	}
+	fixtureOf := map[string]fixtureRow{}
+	for _, f := range m.snap.Fixtures {
+		fixtureOf[f.Home], fixtureOf[f.Away] = f, f
+	}
+	label := func(short string) string {
+		f, ok := fixtureOf[short]
+		if !ok {
+			return "no fixture"
+		}
+		if f.Started && !f.Finished {
+			return fmt.Sprintf("%s v %s %s", f.Home, f.Away, clockLabel(f.Minutes))
+		}
+		return fmt.Sprintf("%s v %s %s", f.Home, f.Away, f.Kickoff.In(eastern).Format("Mon 3:04PM"))
+	}
+	for _, mu := range m.snap.Matchups {
+		mine := mu.A.EntryID == m.entry || mu.B.EntryID == m.entry
+		if !mine {
+			continue
+		}
+		for _, sd := range []side{mu.A, mu.B} {
+			head := styFg.Bold(true).Render(ansi.Truncate(sd.Name, width-14, "…"))
+			if sd.EntryID == m.entry {
+				head = styYou.Render("◆ still to play")
+			} else {
+				head = styWarn.Render("◇ " + ansi.Truncate(sd.Name, width-4, "…"))
+			}
+			b.WriteString("\n" + head + "\n")
+			left := 0
+			for _, p := range sd.Players {
+				if !p.Starter || p.Minutes > 0 || p.Glyph == "✗" {
+					continue
+				}
+				name := ansi.Truncate(p.Name, clamp(width-20, 6, 14), "…")
+				b.WriteString(fmt.Sprintf("%s %s %s\n", glyphStyle(p.Glyph).Render(p.Glyph),
+					styFg.Render(name), styDim.Render(ansi.Truncate(label(p.Team), width-4-lipgloss.Width(name), "…"))))
+				left++
+			}
+			if left == 0 {
+				b.WriteString(styDim.Render("  all done") + "\n")
+			}
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func (m *model) bonusBody(width int) string {
 	if len(m.snap.BonusRace) == 0 {
 		return styDim.Render("no bonus race — nothing in play")
@@ -751,8 +856,12 @@ func (m *model) View() string {
 
 	// Wide layout: the Matchup spans the full width on top; League, Live,
 	// and Transactions sit beneath it in three equal columns, padded to one
-	// height so every edge lines up.
+	// height so every edge lines up. Fullscreen instead gives every tracker
+	// its own panel: Matchup | Games | Week over four columns.
 	mainW := w
+	if md == full {
+		mainW = clamp(w-clamp(w/6, 22, 26)-clamp(w/4, 28, 44)-2, 66, 96)
+	}
 
 	mainTitle := fmt.Sprintf("Matchup %d/%d", m.selected+1, len(m.snap.Matchups))
 	mainBody := m.matchupBody(mainW - 4)
@@ -764,6 +873,47 @@ func (m *model) View() string {
 		mainBody = m.txDetailBody(mainW - 4)
 	}
 	screen := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, 0)
+
+	if md == full {
+		gamesW := clamp(w/6, 22, 26)
+		weekW := w - mainW - gamesW - 2
+
+		gamesTitle := "Live"
+		if games := m.gamesList(); len(games) > 0 && games[0].Finished {
+			gamesTitle = "Played"
+		}
+		gamesBody := m.liveBody(gamesW-4, m.focus == 1)
+		weekBody := m.weekBody(weekW - 4)
+		topH := max(lipgloss.Height(m.matchupBody(mainW-4)), max(lipgloss.Height(gamesBody), lipgloss.Height(weekBody)))
+		mainPanel := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, topH)
+		gamesPanel := Panel(gamesTitle, "↑↓ ↵", gamesBody, gamesW, m.focus == 1, topH)
+		weekPanel := Panel("Week", "", weekBody, weekW, false, topH)
+		screen = lipgloss.JoinHorizontal(lipgloss.Top, mainPanel, " ", gamesPanel, " ", weekPanel)
+
+		quarter := (w - 3) / 4
+		leagueW, eventsW, bonusW := quarter, quarter, quarter
+		txW := w - 3 - leagueW - eventsW - bonusW
+		leagueTitle, leagueHint := "League", "tab ↑↓ ↵"
+		leagueBody := m.railBody(leagueW-4, m.focus == 2)
+		if m.sugView {
+			leagueTitle, leagueHint = "Suggestion", "esc"
+			leagueBody = m.sugDetailBody(leagueW - 4)
+		}
+		eventsBody := m.eventsBody(eventsW-4, 22)
+		bonusTitle, bonusBody := "Bonus", m.bonusBody(bonusW-4)
+		if len(m.snap.BonusRace) == 0 {
+			bonusTitle, bonusBody = "Best today", m.bestBody(bonusW-4, 12)
+		}
+		txBody := m.txBody(txW-4, m.focus == 3)
+		botH := max(max(lipgloss.Height(leagueBody), lipgloss.Height(eventsBody)),
+			max(lipgloss.Height(bonusBody), lipgloss.Height(txBody)))
+		row2 := lipgloss.JoinHorizontal(lipgloss.Top,
+			Panel(leagueTitle, leagueHint, leagueBody, leagueW, m.focus == 2, botH), " ",
+			Panel("Events", "", eventsBody, eventsW, false, botH), " ",
+			Panel(bonusTitle, "", bonusBody, bonusW, false, botH), " ",
+			Panel("Transactions", "↑↓ ↵", txBody, txW, m.focus == 3, botH))
+		screen += "\n" + row2
+	}
 
 	if md == wide {
 		third := (w - 2) / 3
@@ -794,7 +944,7 @@ func (m *model) View() string {
 	}
 
 	out := m.header(w)
-	if strip := m.scoresStrip(w, md != wide); strip != "" {
+	if strip := m.scoresStrip(w, md == narrow); strip != "" {
 		out += "\n" + strip
 	}
 	return out + "\n" + screen + "\n" + m.footer()
