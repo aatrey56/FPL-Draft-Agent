@@ -539,14 +539,14 @@ func (m *model) matchBody(width int) string {
 	return scoreLine + "\n\n" + m.matchLineups(md, width)
 }
 
-// matchLineups: both clubs side by side, list form, names uncut.
+// matchLineups: both clubs side by side, list form, names uncut. Narrow
+// widths stack the clubs vertically instead.
 func (m *model) matchLineups(md matchDetail, width int) string {
-	half := (width - 3) / 2
-	gaW := 0
-	if half >= 34 {
-		gaW = 6 // reserved "3G 2A" slot so goal rows stay aligned
-	}
-	col := func(club string, xi, subs []clubPlayer) string {
+	col := func(club string, xi, subs []clubPlayer, colW int) string {
+		gaW := 0
+		if colW >= 34 {
+			gaW = 6 // reserved "3G 2A" slot so goal rows stay aligned
+		}
 		var b strings.Builder
 		b.WriteString(styFg.Bold(true).Render(club) + "\n")
 		row := func(glyph string, sty lipgloss.Style, p clubPlayer) string {
@@ -556,7 +556,7 @@ func (m *model) matchLineups(md matchDetail, width int) string {
 			if gaW > 0 {
 				overhead += gaW + 1
 			}
-			nameW := clamp(half-overhead, 6, 20)
+			nameW := clamp(colW-overhead, 6, 20)
 			name := ansi.Truncate(p.Name, nameW, "…")
 			line := sty.Render(glyph + " " + fmt.Sprintf("%-4s", p.Pos) + name +
 				strings.Repeat(" ", max(0, nameW-lipgloss.Width(name))) + " " + clock + " ")
@@ -583,10 +583,17 @@ func (m *model) matchLineups(md matchDetail, width int) string {
 		}
 		return strings.TrimRight(b.String(), "\n")
 	}
+	if width < 60 {
+		// Narrow panel: one club above the other, full-width rows.
+		return col(md.Home, md.HomeXI, md.HomeSubs, width) + "\n" +
+			styDim.Render(strings.Repeat("─", max(0, width-2))) + "\n" +
+			col(md.Away, md.AwayXI, md.AwaySubs, width)
+	}
+	half := (width - 3) / 2
 	return lipgloss.JoinHorizontal(lipgloss.Top,
-		lipgloss.NewStyle().Width(half).Render(col(md.Home, md.HomeXI, md.HomeSubs)),
+		lipgloss.NewStyle().Width(half).Render(col(md.Home, md.HomeXI, md.HomeSubs, half)),
 		styDim.Render("│ "),
-		col(md.Away, md.AwayXI, md.AwaySubs))
+		col(md.Away, md.AwayXI, md.AwaySubs, half))
 }
 
 // scoresStrip shows finished and upcoming fixtures (live ones get their own
@@ -932,7 +939,7 @@ func (m *model) View() string {
 
 	mainTitle := fmt.Sprintf("Matchup %d/%d", m.selected+1, len(m.snap.Matchups))
 	mainBody := m.matchupBody(mainW - 4)
-	if m.matchView && len(m.snap.Matches) > 0 {
+	if m.matchView && len(m.snap.Matches) > 0 && md != full {
 		mainTitle = "Match"
 		mainBody = m.matchBody(mainW - 4)
 	} else if m.txView && len(m.snap.TxByManager) > 0 {
@@ -944,15 +951,20 @@ func (m *model) View() string {
 	if md == full {
 		gamesW := w - mainW - weekW - 2
 
-		gamesTitle := "Live"
+		gamesTitle, gamesHint := "Live", "↑↓ ↵"
 		if games := m.gamesList(); len(games) > 0 && games[0].Finished {
 			gamesTitle = "Played"
 		}
 		gamesBody := m.liveBody(gamesW-4, m.focus == 1)
+		if m.matchView && len(m.snap.Matches) > 0 {
+			// Fullscreen opens the lineups inside this panel itself.
+			gamesTitle, gamesHint = "Match", "←→ esc"
+			gamesBody = m.matchBody(gamesW - 4)
+		}
 		weekBody := m.weekBody(weekW - 4)
 		topH := max(lipgloss.Height(m.matchupBody(mainW-4)), max(lipgloss.Height(gamesBody), lipgloss.Height(weekBody)))
 		mainPanel := Panel(mainTitle, "← →", mainBody, mainW, m.focus == 0 || m.matchView || m.txView, topH)
-		gamesPanel := Panel(gamesTitle, "↑↓ ↵", gamesBody, gamesW, m.focus == 1, topH)
+		gamesPanel := Panel(gamesTitle, gamesHint, gamesBody, gamesW, m.focus == 1, topH)
 		weekPanel := Panel("Week", "", weekBody, weekW, false, topH)
 		screen = lipgloss.JoinHorizontal(lipgloss.Top, mainPanel, " ", gamesPanel, " ", weekPanel)
 

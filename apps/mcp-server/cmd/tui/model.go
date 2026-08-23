@@ -161,6 +161,7 @@ type snapshot struct {
 	Matches      []matchDetail // one per in-play fixture, liveSel-aligned
 	PlayerStats  map[int]tickerStat
 	ClockByTeam  map[int]int
+	PlayedToday  map[int]bool     // clubs whose fixture kicked off today (EST)
 	OwnerByElem  map[int]eventRow // Owner/Mine/Opp template per rostered element
 	BonusRace    []bonusFixture
 }
@@ -180,7 +181,8 @@ type model struct {
 	gamesPage int // index into panelPages()
 	events    []eventRow
 	seeded    bool
-	matchSel  int // index into snap.Matches while the match view is open
+	eventsDay string // EST date the ticker belongs to; rolls over each matchday
+	matchSel  int    // index into snap.Matches while the match view is open
 	matchView bool
 	txView    bool
 	sugView   bool
@@ -436,7 +438,8 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 	}
 	posOrder := map[string]int{"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
-	clockByTeam := map[int]int{}  // fixture-wide match clock per club
+	clockByTeam := map[int]int{} // fixture-wide match clock per club
+	playedToday := map[int]bool{}
 	var doneMatches []matchDetail // live matches list first, completed after
 	for i := range snap.Fixtures {
 		f := &snap.Fixtures[i]
@@ -453,6 +456,10 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			f.Minutes = m
 		}
 		clockByTeam[hID], clockByTeam[aID] = f.Minutes, f.Minutes
+		if f.Started && !f.Kickoff.IsZero() &&
+			f.Kickoff.In(eastern).Format("2006-01-02") == time.Now().In(eastern).Format("2006-01-02") {
+			playedToday[hID], playedToday[aID] = true, true
+		}
 		if !f.Started {
 			continue
 		}
@@ -488,6 +495,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	}
 	snap.Matches = append(snap.Matches, doneMatches...)
 	snap.ClockByTeam = clockByTeam
+	snap.PlayedToday = playedToday
 
 	// Per-player counting stats for the events ticker (anyone with anything
 	// on the board — a few hundred rows at most).
@@ -968,6 +976,11 @@ func (m *model) reload() error {
 
 func (m *model) applySnap(snap snapshot, myIndex int) {
 	first := m.snap.Loaded.IsZero()
+	// The ticker covers one matchday: a new EST day wipes it and re-seeds
+	// from that day's games only.
+	if today := time.Now().In(eastern).Format("2006-01-02"); today != m.eventsDay {
+		m.events, m.seeded, m.eventsDay = nil, false, today
+	}
 	m.ingestEvents(snap)
 	m.snap, m.loadErr = snap, ""
 	if first {
@@ -1002,10 +1015,11 @@ func (m *model) ingestEvents(snap snapshot) {
 			was = tickerStat{}
 		}
 		if !m.seeded {
-			// Seed pass: summarise the day so far.
+			// Seed pass: summarise today only — yesterday's games belong to
+			// yesterday's ticker.
 			was = tickerStat{Points: cur.Points}
-			if cur.TeamID != 0 && snap.ClockByTeam[cur.TeamID] == 0 {
-				continue // club has not played yet
+			if !snap.PlayedToday[cur.TeamID] {
+				continue
 			}
 		}
 		perGoal := cur.Points - was.Points
