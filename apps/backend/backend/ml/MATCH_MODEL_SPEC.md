@@ -77,7 +77,10 @@ capture the majority of the signal.
 - v1: explainable per-position regression (`LightGBM`/linear). Must expose the
   drivers so `my_week` can say *why* ("nailed starter, soft home fixture vs a
   leaky defence, in form").
-- **Baseline to beat: FPL's own `ep_next`** (already in bootstrap). Report the
+- **Baseline to beat: the best naive predictor in `backend.ml.matcheval`**
+  (trailing minutes, per position, on the startable pool). FPL's own `ep_next`
+  was the intended bar but is unreachable: the draft API returns it null and no
+  archive carries it per gameweek — see `docs/MODEL_ROADMAP.md`. Report the
   improvement over it — if the model can't beat `ep_next`, diagnose before adding
   complexity.
 
