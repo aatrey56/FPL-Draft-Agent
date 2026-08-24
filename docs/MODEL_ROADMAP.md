@@ -6,9 +6,13 @@
 official team sheets and match events, projected auto-subs, a live league
 table, and a predictions log. Data flows `fetch → derive → serve` near-live.
 
-**Modelling layer: early.** A season-projection model (ridge + persistence,
-honestly validated) and a per-gameweek *heuristic* placeholder
-(`projection / 38 × fixture multiplier × availability`). The correlation study
+**Modelling layer: two models built.** A season-projection model (ridge +
+persistence, honestly validated) and, as of 2026-08-24, the **match xP model**
+(`backend.ml.matchmodel`) — two-stage, availability-gated, per position, and
+measured against the baselines below on held-out gameweeks. The weekly tools
+still serve the *heuristic* placeholder
+(`projection / 38 × fixture multiplier × availability`); wiring them onto
+`matchmodel` is the next task. The correlation study
 (`data/derived/reports/stat_correlations_2526.md`) and the walk-forward
 baseline benchmark (`backend.ml.matcheval`) are the analytical foundation.
 
@@ -56,6 +60,50 @@ Two findings that shape everything downstream:
   feature and predicting zero for them is free accuracy. Any reported number
   must name its pool.
 
+## The match model against those baselines (measured, held out)
+
+`backend.ml.matchmodel --backtest` selects the ridge strength per position on
+GW6-24 and reports on GW25-38. The split is the point: tuning and reporting on
+the same gameweeks would make "beats the baseline" a claim about one season's
+noise. Mean Spearman, **startable** pool, 14 held-out gameweeks:
+
+| position | model | best baseline | edge | model top-20% | baseline top-20% | model MAE |
+|---|---|---|---|---|---|---|
+| GKP | 0.340 | 0.300 (last GW) | +0.041 | 0.275 | 0.229 | 1.99 |
+| DEF | 0.378 | 0.243 (minutes) | +0.135 | 0.371 | 0.268 | 2.18 |
+| MID | 0.430 | 0.266 (minutes) | +0.164 | 0.347 | 0.292 | 1.97 |
+| FWD | 0.409 | 0.247 (mean l5) | +0.163 | 0.298 | 0.258 | 2.30 |
+
+Stage 1 is calibrated, not merely ranked: Brier 0.16-0.20 with predicted start
+rate within ~3pp of observed, per position.
+
+Selected ridge strengths: GKP 1000, DEF 300, MID 100, FWD 100. The keeper
+number is the interesting one — with ~18 startable keepers a gameweek, stage 2
+is shrunk almost flat and the honest keeper model is very nearly *"is he the
+number one, and is the opponent poor going forward"*.
+
+### What to distrust in these numbers
+
+- **One season, 14 gameweeks.** GKP's +0.041 is the thinnest edge on the
+  smallest pool; treat it as "no worse than the baseline" rather than an edge.
+- **The feature set was designed knowing the full-season baseline table.**
+  Alpha selection is held out; feature *choice* is not. The next season is the
+  real test.
+- **Availability is inert in the backtest.** The panel carries no historical
+  injury flags, so the gate contributes nothing to these numbers and only bites
+  when serving live. That makes the backtest a floor, not a ceiling.
+
+### Cold start: what this means for August
+
+Trailing features are keyed on `(code, season)`, so in GW2 of a new season the
+model has exactly one gameweek of within-season form. Measured on the real
+2026-27 GW2 artifact: xP rank correlates 0.84 with GW1 points across the whole
+pool, and 0.32 among likely starters — i.e. outside the "did they play at all"
+signal the model is still adding fixture and role information, but the form
+half of it rests on a single match. Early-season output should be read as
+*fixture + role, lightly tinted by one gameweek*, and the cross-season priors
+in RESHAPE_PLAN §6 remain the fix.
+
 ### On `ep_next`
 
 `MATCH_MODEL_SPEC.md` originally set FPL's own `ep_next` as the bar. It is not
@@ -68,17 +116,31 @@ prospectively. Until then, the baselines above are the bar.
 
 ## Phases
 
-### Phase A — Match xP model
-- **Minutes / start-probability model first**, availability-gated.
-- **Component expected points**: appearance, goals, assists, clean sheet,
-  goals conceded, saves, defensive contributions, bonus — each modelled on its
-  own driver and summed, rather than one regression onto total points.
-- **Fixture-aware**: venue-split team environment and the position × opponent
-  matrix already built in `matchfeatures.team_form`.
-- **Walk-forward evaluation** against the baselines above, per position, on
-  the startable pool. No merge without the number.
-- Club-move flag and `expected_minutes` surfaced (fixes the case where
-  persistence carries a departed starter's role into a new season).
+### Phase A — Match xP model  *(core built 2026-08-24)*
+- ~~**Minutes / start-probability model first**, availability-gated.~~ Built:
+  `matchmodel.StartModel`, two ridge heads (`started`, `played`) plus the live
+  bootstrap availability factor. Deliberately swappable for a predicted-lineups
+  feed without touching stage 2.
+- ~~**Fixture-aware**~~ Built: opponent goals for/against and points-allowed-to-
+  this-position are stage-2 features; fitting per position is what makes the
+  weighting position-specific.
+- ~~**Walk-forward evaluation** against the baselines above~~ Built, with the
+  alpha-selection window held out. Numbers above.
+- **Still to do:**
+  - **Component expected points**: appearance, goals, assists, clean sheet,
+    goals conceded, saves, defensive contributions, bonus — each modelled on
+    its own driver and summed. Today stage 2 is a single regression onto
+    points, so `drivers` names features rather than *point sources*, and the
+    spec's position × opponent buy matrix is implicit in the coefficients
+    rather than explicit in the output.
+  - **Venue-split team environment** (`lambda_for`/`lambda_against` per venue)
+    and the `fixture_targets` derived view.
+  - **Wire the weekly tools onto it** — `waiver_plan`, `my_week` and
+    `trade_check` still consume the per-GW heuristic.
+  - **Horizons**: xP is produced for one gameweek; the 3-GW and ROS horizons
+    in CLAUDE.md §5.2 are not built.
+  - Club-move flag and `expected_minutes` surfaced (fixes the case where
+    persistence carries a departed starter's role into a new season).
 
 ### Phase B — Underlying-metrics and breakout detection
 - Trend detection on xG / xA / xGI / minutes: flag players whose underlying

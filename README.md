@@ -47,11 +47,13 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   last-season-points, the model honestly *is* last-season-points. Measured
   outcome: ties the baseline for GKP/DEF/FWD, real MID edge via
   points-calibrated ICT. Deterministic, no deep learning, drivers explainable.
-- **Match xP model** (`backend/ml/MATCH_MODEL_SPEC.md`): in progress — trained
-  on the 29,747-row per-GW panel, and it does not ship until it beats the
-  measured baselines below. Replaces the current per-GW heuristic
-  (projection/38 × fixture multiplier × availability) inside `waiver_plan` /
-  `my_week`.
+- **Match xP model** (`backend/ml/matchmodel.py`): built and measured. A
+  two-stage, availability-gated model on the 29,747-row per-GW panel —
+  stage one predicts *who plays*, stage two *how many points if they do*, per
+  position, with the opponent in the features. It beats every naive baseline
+  in all four positions on a held-out slice of gameweeks (table below).
+  Not yet wired into `waiver_plan` / `my_week`, which still run the per-GW
+  heuristic (projection/38 × fixture multiplier × availability).
 - Players the model cannot value (long injury last season, promoted, new
   signings) are **surfaced for human judgment, never scored as zero** — the
   tools refuse to guess rather than quietly recommend dropping a returning star.
@@ -71,6 +73,22 @@ walk-forward, per gameweek, per position, over 2025-26. Mean Spearman on the
 | trailing 3-GW mean | 0.219 | 0.170 | 0.218 | 0.216 |
 | season-to-date mean | 0.220 | 0.208 | 0.219 | 0.198 |
 | **trailing minutes** | **0.297** | **0.253** | **0.277** | **0.239** |
+
+**The match model against that bar.** Ridge strength was selected on GW6-24 and
+the result claimed on GW25-38, so the comparison is not the model marking its
+own homework. Mean Spearman, startable pool, 14 held-out gameweeks:
+
+| position | match model | best naive baseline | edge |
+|---|---|---|---|
+| GKP | **0.340** | 0.300 (last gameweek) | +0.041 |
+| DEF | **0.378** | 0.243 (trailing minutes) | +0.135 |
+| MID | **0.430** | 0.266 (trailing minutes) | +0.164 |
+| FWD | **0.409** | 0.247 (trailing 5-GW mean) | +0.163 |
+
+Top-of-slice precision improves in every position too (e.g. MID 0.347 vs
+0.292), and stage one's `P(start)` is calibrated rather than merely ranked
+(Brier 0.16-0.20, predicted start rate within ~3pp of observed). Reproduce with
+`uv run python -m backend.ml.matchmodel --backtest`.
 
 Two results that shape the modelling:
 
@@ -164,7 +182,8 @@ apps/
   backend/               Python package
     backend/ml/          ingestion → parquet, projection model, waiver_plan,
                          my_week, drop-radar, matchfeatures (leakage-safe per-GW
-                         training table), matcheval (walk-forward benchmark),
+                         training table), matchmodel (two-stage match xP model),
+                         matcheval (walk-forward benchmark),
                          specs (treat *_SPEC.md as contracts)
     tests/               pytest suite (311 tests, no network)
 data/                    Raw + derived FPL data (gitignored; flat = 25/26 archive)
