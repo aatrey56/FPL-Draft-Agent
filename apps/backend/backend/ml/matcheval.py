@@ -73,12 +73,18 @@ def _top_n_precision(group: pd.DataFrame, predictor: str, fraction: float) -> fl
 
 
 def score_predictor(frame: pd.DataFrame, predictor: str, name: str,
-                    fraction: float = TOP_FRACTION) -> dict:
+                    fraction: float = TOP_FRACTION,
+                    point_scale: bool | None = None) -> dict:
     """Score one predictor per gameweek, then average across gameweeks.
 
     Averaging per gameweek (rather than pooling every row) keeps the metric
     aligned with the decision: each week you rank that week's options.
+
+    ``point_scale`` overrides the ``POINT_SCALE`` membership test for callers
+    whose predictor is not one of the named baselines — a model that predicts
+    points should report MAE; a ranking-only predictor must not.
     """
+    on_point_scale = name in POINT_SCALE if point_scale is None else point_scale
     spearmans, precisions, errors = [], [], []
     for _, group in frame.groupby("gw", sort=True):
         usable = group.dropna(subset=[predictor, "label_points"])
@@ -86,7 +92,7 @@ def score_predictor(frame: pd.DataFrame, predictor: str, name: str,
             continue
         spearmans.append(_spearman(usable[predictor], usable["label_points"]))
         precisions.append(_top_n_precision(usable, predictor, fraction))
-        if name in POINT_SCALE:
+        if on_point_scale:
             errors.append((usable[predictor] - usable["label_points"]).abs().mean())
     series = pd.Series(spearmans, dtype="float64")
     return {

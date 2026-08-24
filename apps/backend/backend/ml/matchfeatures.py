@@ -59,7 +59,9 @@ def add_player_form(panel: pd.DataFrame) -> pd.DataFrame:
 
     Emits ``<stem>_l3``/``<stem>_l5`` (rolling means) and ``<stem>_std``
     (expanding season-to-date mean) for each source column, plus
-    ``games_std``, the count of prior gameweeks in which the player featured.
+    ``games_std``, the count of prior gameweeks in which the player featured,
+    and ``pts_sd_std``, the expanding standard deviation of prior gameweek
+    points (the dispersion behind a floor/ceiling band).
     """
     out = _sorted_panel(panel)
     grouped = out.groupby(KEY, sort=False)
@@ -75,6 +77,13 @@ def add_player_form(panel: pd.DataFrame) -> pd.DataFrame:
         out[f"{stem}_std"] = by_player.transform(lambda s: s.expanding().mean())
     for source, stem in (("total_points", "pts"), ("minutes", "mins")):
         out[f"{stem}_l1"] = grouped[source].shift(1)
+    # Dispersion of prior gameweek points — the floor/ceiling input. Expanding
+    # (not rolling) because a ceiling is a season-long property: one haul in
+    # GW2 still says something about a player in GW30.
+    prior_points = grouped["total_points"].shift(1)
+    out["pts_sd_std"] = prior_points.groupby(
+        [out["code"], out["season"]], sort=False
+    ).transform(lambda s: s.expanding().std())
     played_prior = grouped["played"].shift(1).astype("Float64").fillna(0)
     out["games_std"] = played_prior.groupby(
         [out["code"], out["season"]], sort=False
@@ -108,6 +117,7 @@ def team_form(panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
             lambda s: s.shift(1).expanding().mean()
         )
     overall = overall[["season", "gw", "team_id", "team_scored_pg", "team_conceded_pg"]]
+    overall = _carry_team_form(overall, panel)
 
     allowed = (
         panel.groupby(
@@ -124,6 +134,29 @@ def team_form(panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         ["season", "gw", "team_id", "element_type", "opp_pts_allowed_pg"]
     ]
     return overall, by_position
+
+
+def _carry_team_form(overall: pd.DataFrame, panel: pd.DataFrame) -> pd.DataFrame:
+    """Give every team a strength row in every gameweek, carried forward.
+
+    A team only appears in ``overall`` for gameweeks in which somebody played,
+    so a blank gameweek — or an upcoming one, which has no results yet —
+    leaves a hole that would join as NaN and silently drop the whole fixture
+    signal exactly when it is needed. Because these columns are already
+    "as of before this gameweek", the last completed value is the correct one
+    to carry into the gap.
+    """
+    grid = (
+        panel[["season", "gw"]].drop_duplicates()
+        .merge(overall[["season", "team_id"]].drop_duplicates(), on="season")
+    )
+    filled = (
+        grid.merge(overall, on=["season", "gw", "team_id"], how="left")
+        .sort_values(["season", "team_id", "gw"])
+    )
+    columns = ["team_scored_pg", "team_conceded_pg"]
+    filled[columns] = filled.groupby(["season", "team_id"], sort=False)[columns].ffill()
+    return filled.reset_index(drop=True)
 
 
 def add_fixture_context(panel: pd.DataFrame) -> pd.DataFrame:
