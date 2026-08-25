@@ -12,7 +12,7 @@ dependencies = [
     # Legacy chat stack (deprecated but kept compiling/tested — see CLAUDE.md §2.1)
     "fastapi==0.141.1",
     "uvicorn[standard]==0.42.0",
-    "apscheduler==3.11.2",
+    "apscheduler==3.11.3",
     "openai==1.63.2",
 ]
 
