@@ -13,7 +13,7 @@ dependencies = [
     "fastapi==0.141.1",
     "uvicorn[standard]==0.42.0",
     "apscheduler==3.11.2",
-    "openai==1.63.2",
+    "openai==3.3.1",
 ]
 
 [dependency-groups]
