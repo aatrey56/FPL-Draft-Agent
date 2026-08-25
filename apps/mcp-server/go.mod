@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.10.1
 	github.com/modelcontextprotocol/go-sdk v1.6.1
-	golang.org/x/text v0.3.8
+	golang.org/x/text v0.41.0
 )
 
 require (
