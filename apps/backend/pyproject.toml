@@ -7,7 +7,7 @@ dependencies = [
     # ML / data pipeline (the core)
     "pandas>=2.2",
     "pyarrow>=15",
-    "requests==2.32.5",
+    "requests==2.34.2",
     "python-dotenv==1.2.3",
     # Legacy chat stack (deprecated but kept compiling/tested — see CLAUDE.md §2.1)
     "fastapi==0.141.1",
