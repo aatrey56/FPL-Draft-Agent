@@ -5,6 +5,18 @@ Powers the weekly tools: `my_week` (start/sit), `waiver_plan` (add/drop),
 `trade_check`. The second of the two models (see `docs/RESHAPE_PLAN.md`); the
 first is the season model (`PROJECTION_MODEL_SPEC.md`). Build from this contract.
 
+**Status (2026-08-24): core built** in `matchmodel.py` — the two-stage
+availability-gated structure, fixture-aware per-position stage 2, the
+walk-forward backtest with a held-out alpha-selection window, and the
+`xp_gw{gw}.parquet` artifact. It beats every naive baseline in all four
+positions on held-out gameweeks (numbers in `docs/MODEL_ROADMAP.md`).
+**Not yet built:** the per-component decomposition and the explicit
+position × opponent buy matrix (both described below), the venue-split team
+environment, the `fixture_targets` view, the 3-GW/ROS horizons, and the
+rewiring of `waiver_plan` / `my_week` / `trade_check` onto this model — they
+still run the per-GW heuristic. The sections below remain the contract for
+that work.
+
 Depends on `player_gameweeks.parquet` (GAMEWEEK_INGEST_SPEC). This is where the
 user's "how do I know a player will have a good game" mental model is encoded:
 form, intrinsic quality, opponent strength, opponent context.
@@ -77,7 +89,10 @@ capture the majority of the signal.
 - v1: explainable per-position regression (`LightGBM`/linear). Must expose the
   drivers so `my_week` can say *why* ("nailed starter, soft home fixture vs a
   leaky defence, in form").
-- **Baseline to beat: FPL's own `ep_next`** (already in bootstrap). Report the
+- **Baseline to beat: the best naive predictor in `backend.ml.matcheval`**
+  (trailing minutes, per position, on the startable pool). FPL's own `ep_next`
+  was the intended bar but is unreachable: the draft API returns it null and no
+  archive carries it per gameweek — see `docs/MODEL_ROADMAP.md`. Report the
   improvement over it — if the model can't beat `ep_next`, diagnose before adding
   complexity.
 

@@ -59,7 +59,9 @@ working here right now:
   (Go MCP decision tools). Keep artifacts fresh before waiver deadlines.
 - ML work lives under `apps/backend/backend/ml/` with specs as contracts:
   HISTORY_INGEST, GAMEWEEK_INGEST, PROJECTION_MODEL (built), MATCH_MODEL
-  (next: replaces the per-GW heuristic once 26/27 GWs accumulate).
+  (core built — `matchmodel.py`, backtested and beating the naive baselines;
+  the weekly tools have NOT been rewired onto it yet and still serve the
+  per-GW heuristic. Remaining work is listed in `docs/MODEL_ROADMAP.md`).
 - **Data layout:** flat `data/raw|derived/` = the 2025-26 archive (never
   overwrite); current seasons nest as `<root>/<season>/` (fetcher `--season`,
   server `--default-season`, `ArchiveSeason` const in Go).
@@ -416,7 +418,8 @@ fpl-draft-mcp/
 │           ├── cli.py           # CLI entrypoint
 │           ├── constants.py     # Shared constants (GW_PATTERN, POSITION_TYPE_LABELS)
 │           ├── config.py        # SETTINGS (env-backed)
-│           └── ml/              # Preseason next-season modeling (see ml/HISTORY_INGEST_SPEC.md)
+│           └── ml/              # Modelling: ingest → parquet, season projection,
+│                                #   match xP model (matchmodel.py), decision artifacts
 ├── data/                    # FPL raw + derived data (gitignored)
 │   ├── raw/                 # LEGACY flat layout = the 2025-26 archive (do not overwrite)
 │   │   └── <season>/        # 2026-27 onward: season-nested (fetcher --season flag)

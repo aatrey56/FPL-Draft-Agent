@@ -266,9 +266,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bootstrap", type=Path,
                         default=repo_root / "data/raw/bootstrap/bootstrap-static.json")
     parser.add_argument("--max-gw", type=int, default=DEFAULT_MAX_GW)
+    parser.add_argument("--season", type=str, default=LOCAL_SEASON,
+                        help="season label written into the panel, e.g. 2026-27")
     args = parser.parse_args(argv)
 
-    frame = ingest_local(args.gw_root, args.bootstrap, max_gw=args.max_gw)
+    frame = ingest_local(args.gw_root, args.bootstrap, season=args.season,
+                         max_gw=args.max_gw)
     write_parquet(frame, args.out)
     summary = summarize(frame)
     logger.info("wrote %d rows -> %s", len(frame), args.out)

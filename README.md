@@ -47,13 +47,78 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   last-season-points, the model honestly *is* last-season-points. Measured
   outcome: ties the baseline for GKP/DEF/FWD, real MID edge via
   points-calibrated ICT. Deterministic, no deep learning, drivers explainable.
-- **Match xP model** (`backend/ml/MATCH_MODEL_SPEC.md`): in progress — trained
-  on the 29,747-row per-GW panel, must beat FPL's own `ep_next` to ship.
-  Replaces the current per-GW heuristic (projection/38 × fixture multiplier ×
-  availability) inside `waiver_plan` / `my_week`.
+- **Match xP model** (`backend/ml/matchmodel.py`): built and measured. A
+  two-stage, availability-gated model on the 29,747-row per-GW panel —
+  stage one predicts *who plays*, stage two *how many points if they do*, per
+  position, with the opponent in the features. It beats every naive baseline
+  in all four positions on a held-out slice of gameweeks (table below).
+  Not yet wired into `waiver_plan` / `my_week`, which still run the per-GW
+  heuristic (projection/38 × fixture multiplier × availability).
 - Players the model cannot value (long injury last season, promoted, new
   signings) are **surfaced for human judgment, never scored as zero** — the
   tools refuse to guess rather than quietly recommend dropping a returning star.
+
+## Research & evaluation
+
+Every model claim here is a measured number, and the measurement code ships
+with the repo.
+
+**The bar to beat** (`backend.ml.matcheval`) — five naive predictors scored
+walk-forward, per gameweek, per position, over 2025-26. Mean Spearman on the
+*startable* pool:
+
+| predictor | GKP | DEF | MID | FWD |
+|---|---|---|---|---|
+| last gameweek's points | 0.254 | 0.197 | 0.251 | 0.224 |
+| trailing 3-GW mean | 0.219 | 0.170 | 0.218 | 0.216 |
+| season-to-date mean | 0.220 | 0.208 | 0.219 | 0.198 |
+| **trailing minutes** | **0.297** | **0.253** | **0.277** | **0.239** |
+
+**The match model against that bar.** Ridge strength was selected on GW6-24 and
+the result claimed on GW25-38, so the comparison is not the model marking its
+own homework. Mean Spearman, startable pool, 14 held-out gameweeks:
+
+| position | match model | best naive baseline | edge |
+|---|---|---|---|
+| GKP | **0.340** | 0.300 (last gameweek) | +0.041 |
+| DEF | **0.378** | 0.243 (trailing minutes) | +0.135 |
+| MID | **0.430** | 0.266 (trailing minutes) | +0.164 |
+| FWD | **0.409** | 0.247 (trailing 5-GW mean) | +0.163 |
+
+Top-of-slice precision improves in every position too (e.g. MID 0.347 vs
+0.292), and stage one's `P(start)` is calibrated rather than merely ranked
+(Brier 0.16-0.20, predicted start rate within ~3pp of observed). Reproduce with
+`uv run python -m backend.ml.matchmodel --backtest`.
+
+Two results that shape the modelling:
+
+- **Minutes out-rank points.** Ranking players purely by recent minutes beats
+  every points-based form measure, in every position. Playing time is the
+  product; scoring is the margin — so a minutes model is stage one of the
+  match model, not a detail.
+- **The evaluation pool doubles the headline.** The same predictors score
+  0.42–0.65 across the full panel, because most rows are players who were
+  never going to feature and predicting zero for them is free accuracy. Every
+  metric here names its pool; the honest one is the smaller number.
+
+**Minutes and the cold-start problem** (`docs/MINUTES_FINDINGS.md`) — new
+managers and summer transfers make last season untrustworthy, so the question
+is *how* untrustworthy, and for how long:
+
+- One gameweek of current-season evidence already outranks a full prior
+  season (0.765 vs 0.611). From GW3 the optimal weight on last season is
+  **zero**.
+- Inside that window, club moves are the failure mode: prior start rate
+  correlates 0.656 for players who stayed and **0.245** for those who moved,
+  and only 40% of last season's nailed starters who changed club are still
+  nailed.
+- Trailing 3-gameweek mean minutes is the strongest single predictor of both
+  future starts (0.791) and future minutes (0.835). A single gameweek is the
+  worst predictor tested — recency wins, overreaction does not.
+
+Supporting analysis: `backend.ml.eval` (season-level backtests) and the
+per-stat correlation study over all 29,747 player-gameweeks. Roadmap and open
+questions: `docs/MODEL_ROADMAP.md`.
 
 ## Quickstart
 
@@ -116,10 +181,13 @@ apps/
     internal/            fetch, store, ledger, points, summary, config
   backend/               Python package
     backend/ml/          ingestion → parquet, projection model, waiver_plan,
-                         my_week, drop-radar, specs (treat *_SPEC.md as contracts)
-    tests/               pytest suite (306 tests, no network)
+                         my_week, drop-radar, matchfeatures (leakage-safe per-GW
+                         training table), matchmodel (two-stage match xP model),
+                         matcheval (walk-forward benchmark),
+                         specs (treat *_SPEC.md as contracts)
+    tests/               pytest suite (311 tests, no network)
 data/                    Raw + derived FPL data (gitignored; flat = 25/26 archive)
-docs/                    Setup + design docs
+docs/                    Setup, design docs, model roadmap, measured findings
 scripts/                 autorefresh (launchd/cron), autopilot install, preflight, notifications
 Makefile                 every operation: serve/fetch/derive/weekly/tui/autopilot/update/...
 PLAN.md / STATE.md / ISSUES.md   Living roadmap, checkpoint, known issues

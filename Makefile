@@ -1,7 +1,7 @@
 SEASON ?= 2026-27
 GO_ROOTS := --raw-root ../../data/raw --derived-root ../../data/derived
 
-.PHONY: serve fetch derive weekly matchday preflight
+.PHONY: serve fetch derive weekly matchday preflight backtest xp
 
 ## serve: run the MCP server (Ctrl-C to stop; restart after every git pull)
 serve:
@@ -17,6 +17,19 @@ derive:
 
 ## weekly: the whole weekly loop (fetch + derive)
 weekly: fetch derive
+
+## backtest: walk-forward evaluation of the match xP model vs the naive baselines
+backtest:
+	cd apps/backend && uv run python -m backend.ml.matcheval && uv run python -m backend.ml.matchmodel --backtest
+
+## xp: build xp_gw$(GW).parquet for an upcoming gameweek (needs GW= and SEASON=)
+xp:
+	@test -n "$(GW)" || (echo "usage: make xp GW=2 SEASON=2026-27"; exit 1)
+	@test -n "$(SEASON)" || (echo "usage: make xp GW=2 SEASON=2026-27"; exit 1)
+	cd apps/backend && uv run python -m backend.ml.matchmodel \
+		--panel ../../data/derived/ml/player_gameweeks.parquet \
+		        ../../data/derived/$(SEASON)/ml/player_gameweeks.parquet \
+		--gw $(GW) --season $(SEASON)
 
 ## livefetch: minimal in-play refresh — current GW live points only (~2s)
 livefetch:
