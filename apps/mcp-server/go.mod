@@ -1,13 +1,13 @@
 module github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.10.1
 	github.com/modelcontextprotocol/go-sdk v1.6.1
-	golang.org/x/text v0.3.8
+	golang.org/x/text v0.42.0
 )
 
 require (
