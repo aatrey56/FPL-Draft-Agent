@@ -11,7 +11,7 @@ from test_waiver import SEASONS, _players_fixture
 
 ME, OTHER, LEAGUE = 42, 99, 7
 T2 = "2026-08-27T17:30:00Z"            # waivers_time of GW2
-X, Y, Z, MY_FWD, OTHERS_PLAYER = 20, 21, 22, 11, 30
+X, Y, Z, W, MY_FWD, OTHERS_PLAYER = 20, 21, 22, 23, 11, 30
 TEAMS = [{"id": 1, "name": "Arsenal", "short_name": "ARS"},
          {"id": 2, "name": "Wolves", "short_name": "WOL"},
          {"id": 3, "name": "Hull City", "short_name": "HUL"}]
@@ -32,22 +32,27 @@ def _write(path, payload):
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _snapshot(x_owner=None):
-    return {"element_status": [
+def _snapshot(x_owner=None, with_w=False):
+    rows = [
         {"element": MY_FWD, "owner": ME, "status": "a"},
         {"element": X, "owner": x_owner, "status": "a"},
         {"element": Y, "owner": None, "status": "a"},
         {"element": Z, "owner": None, "status": "a"},
         {"element": OTHERS_PLAYER, "owner": OTHER, "status": "a"},
-    ]}
+    ]
+    if with_w:
+        rows.append({"element": W, "owner": None, "status": "a"})
+    return {"element_status": rows}
 
 
 def build_world(tmp_path, *, x_status="a", live3=True, live4=True, transactions=(),
-                bootstrap_fixtures=None):
+                bootstrap_fixtures=None, w_status=None, w_gw1_pts=0):
     """data_root with GW1-4 live files, projections, season table, snapshots.
 
     GW1: Z is the top scorer (std_points/form3 pick Z). X is the model's
-    favourite (highest projection) and hauls 20 in GW3.
+    favourite (highest projection) and hauls 20 in GW3. Optional free agent
+    W (projection 200, current bootstrap status ``w_status``, ``w_gw1_pts``
+    points in GW1 and never again) is absent unless w_status is given.
     """
     raw = tmp_path / "raw/2026-27"
     elements = [
@@ -59,6 +64,9 @@ def build_world(tmp_path, *, x_status="a", live3=True, live4=True, transactions=
         {"id": Z, "code": 1022, "web_name": "Zeta", "element_type": 4, "team": 3},
         {"id": OTHERS_PLAYER, "code": 1030, "web_name": "Theirs", "element_type": 3, "team": 1},
     ]
+    if w_status:
+        elements.append({"id": W, "code": 1023, "web_name": "Wex", "element_type": 4,
+                         "team": 1, "status": w_status})
     waivers = {1: "2026-08-20T17:30:00Z", 2: T2, 3: "2026-09-03T17:30:00Z",
                4: "2026-09-11T12:30:00Z", 5: "2026-09-17T17:30:00Z"}
     _write(raw / "bootstrap/bootstrap-static.json", {
@@ -68,15 +76,17 @@ def build_world(tmp_path, *, x_status="a", live3=True, live4=True, transactions=
             "3": [{"team_h": h, "team_a": a} for h, a in SCHEDULE[3]],
             "4": [{"team_h": h, "team_a": a} for h, a in SCHEDULE[4]]},
     })
-    _write(raw / "gw/1/live.json", _live(1, {Z: 9, X: 2, Y: 1}, fixtures=[(1, 2)]))
+    gw1 = {Z: 9, X: 2, Y: 1, **({W: w_gw1_pts} if w_gw1_pts else {})}
+    _write(raw / "gw/1/live.json", _live(1, gw1, fixtures=[(1, 2)]))
     _write(raw / "gw/2/live.json", _live(2, {X: 3, Y: 6, MY_FWD: 1}))
     if live3:
         _write(raw / "gw/3/live.json", _live(3, {X: 20}))
     if live4:
         _write(raw / "gw/4/live.json", _live(4, {X: 2}))
     league = raw / "league" / str(LEAGUE)
-    _write(league / "element_status_history/20260827T1700.json", _snapshot())
-    _write(league / "element_status_history/20260828T0100.json", _snapshot(x_owner=OTHER))
+    _write(league / "element_status_history/20260827T1700.json", _snapshot(with_w=bool(w_status)))
+    _write(league / "element_status_history/20260828T0100.json",
+           _snapshot(x_owner=OTHER, with_w=bool(w_status)))
     _write(league / "transactions.json", {"transactions": list(transactions)})
     derived = tmp_path / "derived/ml"
     derived.mkdir(parents=True)
@@ -86,7 +96,8 @@ def build_world(tmp_path, *, x_status="a", live3=True, live4=True, transactions=
     ]).to_parquet(derived / "player_seasons.parquet")
     _write(derived / "projections_2627.json", [
         {"code": 1011, "projected_points": 80.0}, {"code": 1020, "projected_points": 150.0},
-        {"code": 1021, "projected_points": 100.0}, {"code": 1022, "projected_points": 60.0}])
+        {"code": 1021, "projected_points": 100.0}, {"code": 1022, "projected_points": 60.0},
+        {"code": 1023, "projected_points": 200.0}])
     return tmp_path
 
 
@@ -150,7 +161,42 @@ def test_leak3_status_neutralised(tmp_path):
     assert flat[flat["element"] == X].iloc[0]["availability"] == 1.0
     doc = rp.run(world, "2026-27", LEAGUE, ME, [2])
     assert _picks(doc)["waiver_plan"][0] == "Xavier"                     # injured X recommendable
-    assert doc["availability_mode"] == "neutral"
+    assert doc["availability_mode"] == "neutral+departed"
+    assert "neutral+departed" in rp.format_table(doc)
+
+
+def test_departed_with_no_prior_minutes_is_excluded(tmp_path):
+    """(a) status "u" and 0 minutes in every GW < N: never recommended."""
+    world = build_world(tmp_path, w_status="u")                  # W: 0 minutes ever
+    bootstrap = json.loads((world / "raw/2026-27/bootstrap/bootstrap-static.json").read_text())
+    raw = world / "raw/2026-27"
+    assert rp.departed_before(bootstrap, raw, 2) == {W}
+    el = next(e for e in rp.neutralize_bootstrap(bootstrap, {W})["elements"] if e["id"] == W)
+    assert el["status"] == "u"
+    doc = rp.run(world, "2026-27", LEAGUE, ME, [2])
+    assert all(r["add"] != "Wex" for r in doc["rows"])
+    assert _picks(doc)["waiver_plan"][0] == "Xavier"             # next-best, not W (proj 200)
+
+
+def test_departed_with_prior_minutes_stays_eligible(tmp_path):
+    """(b) status "u" but played before N: he left later, so he stays eligible."""
+    world = build_world(tmp_path, w_status="u", w_gw1_pts=5)
+    bootstrap = json.loads((world / "raw/2026-27/bootstrap/bootstrap-static.json").read_text())
+    assert rp.departed_before(bootstrap, world / "raw/2026-27", 2) == set()
+    doc = rp.run(world, "2026-27", LEAGUE, ME, [2])
+    assert _picks(doc)["waiver_plan"][0] == "Wex"
+
+
+@pytest.mark.parametrize("status", ["i", "d"])
+def test_injured_or_doubtful_still_neutralised(tmp_path, status):
+    """(c) only "u" is kept out; "i"/"d" are neutralised to available."""
+    world = build_world(tmp_path, w_status=status)
+    bootstrap = json.loads((world / "raw/2026-27/bootstrap/bootstrap-static.json").read_text())
+    assert rp.departed_before(bootstrap, world / "raw/2026-27", 2) == set()
+    el = next(e for e in rp.neutralize_bootstrap(bootstrap)["elements"] if e["id"] == W)
+    assert el["status"] == "a"
+    doc = rp.run(world, "2026-27", LEAGUE, ME, [2])
+    assert _picks(doc)["waiver_plan"][0] == "Wex"
 
 
 def test_leak4_fixtures_as_of(tmp_path):
@@ -190,15 +236,13 @@ def test_leak5_exhausted_when_every_candidate_lost():
 
 
 def test_leak6_plan_regression_matches_pre_seam_recommendations(tmp_path):
-    players, status = _players_fixture(tmp_path)
-    squad = wv.my_squad(players, status, entry_id=42)
-    before = wv.recommend(players, squad)                 # the pre-seam call path
-    bootstrap = {"teams": [{"id": 1, "name": "Arsenal", "short_name": "ARS"},
-                           {"id": 2, "name": "Wolves", "short_name": "WOL"},
-                           {"id": 3, "name": "Hull City", "short_name": "HUL"}]}
+    """Golden: origin/main's recommend() on the _players_fixture world returned
+    exactly these (add, drop) pairs in this order, before the plan() seam."""
+    _, status = _players_fixture(tmp_path)
+    golden = [("SeasonStar", "MyWeakFWD"), ("Streamer", "MyWeakFWD")]
     # rebuild the same world through plan(): same elements/fixtures as _players_fixture
     fixture_bootstrap = {
-        **bootstrap,
+        "teams": TEAMS,
         "fixtures": {"1": [{"team_h": 1, "team_a": 2}], "2": [{"team_h": 2, "team_a": 1}],
                      "3": [{"team_h": 1, "team_a": 3}]},
         "elements": [
@@ -209,7 +253,7 @@ def test_leak6_plan_regression_matches_pre_seam_recommendations(tmp_path):
             {"id": 22, "code": 202, "web_name": "Departed", "element_type": 4, "team": 1, "status": "u"},
         ]}
     result = wv.plan(fixture_bootstrap, status, SEASONS, tmp_path / "projections.json", 42)
-    assert result["recommendations"] == before
+    assert [(r["add"], r["drop"]) for r in result["recommendations"]] == golden
     star = next(r for r in result["recommendations"] if r["add"] == "SeasonStar")
     assert (star["add_element"], star["drop_element"]) == (20, 11)
     assert set(result) == {"players", "squad", "xi_next3_xp", "recommendations", "unprojected_squad"}
@@ -242,7 +286,7 @@ def test_baseline_form3_window_and_tie_break():
     # event 5: form3 looks at GW2-4 only (3 scores only in GW1), std_points sees all of it
     assert rp.baseline_pick("form3", 5, [3, 4], [1, 2], elements, history)[0] == (4, 1)
     assert rp.baseline_pick("std_points", 5, [3, 4], [1, 2], elements, history)[0] == (3, 1)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         rp.baseline_pick("std_points", 3, [3], [1], elements, {3: {}})   # reads GW >= N
 
 

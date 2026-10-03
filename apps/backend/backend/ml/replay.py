@@ -18,12 +18,17 @@ As-of contract (nothing after T_N may influence a recommendation):
 * Player stats: ``gw/<k>/live.json`` for k <= N-1 only, and only by the
   baselines. Realized GW N..N+2 points are read after the picks are made.
 * Projections / ``player_seasons.parquet`` are the pre-GW1 artifacts; the
-  harness asserts the season table has no 2026-27 rows.
+  harness refuses to run if the season table has 2026-27 rows.
 * Bootstrap supplies identity only (id, code, web_name, element_type, team).
   Current status/news/chance_of_playing exist only for "now", so replay
-  neutralises them (status "a", availability 1.0). This is an unavoidable
-  leak-avoidance, recorded as ``availability_mode: "neutral"``; ``team`` is
-  a tiny accepted leak. ``form``/``total_points``/``ep_*`` are never read.
+  neutralises them (status "a", availability 1.0), recorded as
+  ``availability_mode: "neutral+departed"``. One exception: a player whose
+  CURRENT bootstrap status is "u" (departed) AND who had 0 minutes in every
+  GW < N stays unavailable, as in the live tool. That uses today's status, a
+  small deliberate leak, far smaller than recommending departed players
+  (a "u" player with minutes before N is kept eligible: he left later).
+  ``team`` is a tiny accepted leak. ``form``/``total_points``/``ep_*`` are
+  never read.
 * transactions.json is used for scoring only (contested claims, my moves).
 
 Scoring: each strategy yields one (add, drop) pair per GW, same position.
@@ -49,7 +54,8 @@ CLI (reads only; writes ``derived/<season>/ml/waiver_replay.json``):
         [--league ID --entry ID] [--data-root PATH]
 
 League/entry fall back to LEAGUE_ID / ENTRY_ID (repo .env, then the .env next
-to ``--data-root``). Output rows carry web names and "me"/"other" only.
+to ``--data-root``); since load_dotenv does not override values already set,
+the repo .env takes precedence over ``<data-root>/../.env``. Output rows carry web names and "me"/"other" only.
 """
 
 from __future__ import annotations
@@ -73,8 +79,10 @@ logger = logging.getLogger(__name__)
 STRATEGIES = ("no_change", "std_points", "form3", "waiver_plan", "me")
 MAX_CANDIDATES = 10
 STALE_SNAPSHOT_HOURS = 24
-CAVEAT = ("Caveat: n=4 deadlines, one league, availability neutralised, raw player "
-          "points. Harness check only - not model evidence.")
+AVAILABILITY_MODE = "neutral+departed"
+CAVEAT = ("Caveat: n=4 deadlines, one league, availability neutral+departed (today's "
+          "status 'u' with no prior minutes stays out), raw player points. Harness "
+          "check only - not model evidence.")
 _IDENTITY_FIELDS = ("id", "code", "web_name", "element_type", "team")
 _STEM_FMT = "%Y%m%dT%H%M"
 
@@ -133,17 +141,34 @@ def asof_fixtures(bootstrap: dict, raw_root: Path, event: int,
     return out
 
 
-def neutralize_bootstrap(bootstrap: dict) -> dict:
+def departed_before(bootstrap: dict, raw_root: Path, event: int) -> set[int]:
+    """Elements with current status "u" and 0 minutes in every GW < event.
+
+    Uses today's status (deliberate small leak, see module docstring); the
+    minutes come from live.json for GW1..event-1 only. A "u" player with any
+    prior minutes left later and stays eligible.
+    """
+    played: set[int] = set()
+    for k in range(1, event):
+        minutes = gw_points(raw_root, k, "minutes") or {}
+        played.update(e for e, m in minutes.items() if m > 0)
+    return {el["id"] for el in bootstrap.get("elements", [])
+            if el.get("status") == "u" and el["id"] not in played}
+
+
+def neutralize_bootstrap(bootstrap: dict, departed: set[int] | frozenset[int] = frozenset()) -> dict:
     """Identity-only copy of the bootstrap with availability neutralised.
 
-    Every element becomes status "a", no news, no chance_of_playing; fields
-    such as form/total_points/ep_* are dropped; the (future) fixtures key is
-    omitted so it cannot be used by accident.
+    Every element becomes status "a", no news, no chance_of_playing, except
+    ``departed`` ids which stay status "u" (never recommended). Fields such as
+    form/total_points/ep_* are dropped; the (future) fixtures key is omitted
+    so it cannot be used by accident.
     """
     elements = []
     for el in bootstrap.get("elements", []):
         slim = {k: el.get(k) for k in _IDENTITY_FIELDS}
-        slim.update({"status": "a", "news": "", "chance_of_playing_next_round": None,
+        slim.update({"status": "u" if el["id"] in departed else "a", "news": "",
+                     "chance_of_playing_next_round": None,
                      "chance_of_playing_this_round": None})
         elements.append(slim)
     return {"teams": bootstrap.get("teams", []), "elements": elements}
@@ -178,7 +203,8 @@ def baseline_pick(strategy: str, event: int, free: list[int], squad: list[int],
     (``form3``). Each add is paired with the weakest same-position squad
     player by the same metric; ties go to the lower element id.
     """
-    assert all(k < event for k in history), "baseline read a gameweek >= the deadline"
+    if any(k >= event for k in history):
+        raise ValueError("baseline history includes a gameweek >= the deadline (leak)")
     if strategy == "std_points":
         window = sorted(history)
         divisor = 1
@@ -302,8 +328,8 @@ def _load_inputs(data_root: Path, season: str, league: int) -> dict:
     raw = Path(data_root) / "raw" / season
     league_dir = raw / "league" / str(league)
     seasons = pd.read_parquet(Path(data_root) / "derived/ml/player_seasons.parquet")
-    assert not (seasons["season"] == season).any(), \
-        f"player_seasons already contains {season}: not a pre-season table"
+    if (seasons["season"] == season).any():
+        raise ValueError(f"player_seasons already contains {season}: not a pre-season table")
     return {
         "raw": raw,
         "bootstrap": json.loads((raw / "bootstrap/bootstrap-static.json").read_text(encoding="utf-8")),
@@ -320,18 +346,20 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int]) -
     inputs = _load_inputs(data_root, season, league)
     raw, bootstrap = inputs["raw"], inputs["bootstrap"]
     events = {e["id"]: e for e in bootstrap["events"]["data"]}
-    neutral = neutralize_bootstrap(bootstrap)
-    elements = {el["id"]: el for el in neutral["elements"]}
+    elements = {el["id"]: el for el in neutralize_bootstrap(bootstrap)["elements"]}
     transactions = inputs["transactions"]
     rows: list[dict] = []
     for event in gws:
         if event < 2:
             raise ValueError("replay needs GW >= 2 (GW1 has no prior gameweek)")
+        departed = departed_before(bootstrap, raw, event)
+        neutral = neutralize_bootstrap(bootstrap, departed)
         _, snap = asof_snapshot(inputs["history_dir"], events[event]["waivers_time"])
         status_rows = [r for r in snap.get("element_status", []) if int(r["element"]) in elements]
         # Locked (status "l") and other non-"a" unowned elements are not claimable.
         status_rows = [r for r in status_rows if r.get("owner") is not None or r.get("status") == "a"]
-        free = sorted(int(r["element"]) for r in status_rows if r.get("owner") is None)
+        free = sorted(int(r["element"]) for r in status_rows
+                      if r.get("owner") is None and int(r["element"]) not in departed)
         squad = sorted(int(r["element"]) for r in status_rows if r.get("owner") == entry)
 
         result = wv.plan(neutral, {"element_status": status_rows}, inputs["seasons"],
@@ -358,7 +386,7 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int]) -
                              [elements[a]["web_name"] for a in skipped]))
         rows.append(score_actual(my_moves(transactions, event, entry), event, elements,
                                  live_points, minutes))
-    return {"season": season, "gws": gws, "availability_mode": "neutral",
+    return {"season": season, "gws": gws, "availability_mode": AVAILABILITY_MODE,
             "caveat": CAVEAT, "totals": _totals(rows), "rows": rows}
 
 
@@ -430,8 +458,10 @@ def main(argv: list[str] | None = None) -> int:
     print(format_table(doc))
     out = args.data_root / "derived" / args.season / "ml/waiver_replay.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(jsonutil.dumps_strict(
+    tmp = out.with_name(out.name + ".tmp")
+    tmp.write_text(jsonutil.dumps_strict(
         {k: doc[k] for k in ("season", "gws", "availability_mode", "caveat", "rows")}, indent=1))
+    os.replace(tmp, out)  # atomic: readers never see a partial file
     logger.info("wrote %s", out.name)
     return 0
 
