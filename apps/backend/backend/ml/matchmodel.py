@@ -534,19 +534,35 @@ def build_gw_xp(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
 
 
 def next_gameweek(bootstrap: dict) -> int:
-    """First gameweek whose ``finished`` flag is false (lowest id).
+    """The upcoming gameweek: bootstrap ``events.next``, else the first unfinished.
 
-    Mid-GW the in-progress gameweek is not finished, so it is returned until
-    it completes. Accepts the draft shape (``events`` = {"data": [...]}) or a
-    plain list. Raises ValueError when every event is finished (season over).
+    Mid-GW ``events.next`` is current+1, so the in-progress GW is never the
+    target. Accepts the draft shape (``events`` = {"current", "next", "data"})
+    or a plain list. Raises ValueError when neither exists (season over).
     """
     events = bootstrap.get("events") or []
+    nxt = None
     if isinstance(events, dict):
+        nxt = events.get("next")
         events = events.get("data") or []
+    if nxt is not None:
+        return int(nxt)
     pending = [int(e["id"]) for e in events if not e.get("finished")]
     if not pending:
-        raise ValueError("no unfinished gameweek in the bootstrap (season over?)")
+        raise ValueError("no next gameweek in the bootstrap (season over?)")
     return min(pending)
+
+
+def _gw_arg(value: str) -> str:
+    """argparse type for --gw: a positive integer or the literal 'next'."""
+    if value == "next":
+        return value
+    try:
+        if int(value) > 0:
+            return value
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError(f"--gw must be a positive integer or 'next', got {value!r}")
 
 
 def _repo_root() -> Path:
@@ -667,7 +683,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="run the walk-forward evaluation and print the report")
     parser.add_argument("--selection-max-gw", type=int, default=SELECTION_MAX_GW,
                         help="last gameweek used to select alpha; later ones are held out")
-    parser.add_argument("--gw", type=str, default=None,
+    parser.add_argument("--gw", type=_gw_arg, default=None,
                         help="build xp_gw{N}.parquet for this upcoming gameweek; "
                              "'next' picks the first unfinished one from the bootstrap")
     parser.add_argument("--season", type=str, default=None,

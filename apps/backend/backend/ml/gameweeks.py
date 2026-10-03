@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -209,17 +210,34 @@ def build_dataframe(rows: list[dict]) -> pd.DataFrame:
     return frame
 
 
+def finished_gameweeks(bootstrap: dict) -> set[int]:
+    """Gameweek ids whose bootstrap event is finished (draft or plain-list shape)."""
+    events = bootstrap.get("events") or []
+    if isinstance(events, dict):
+        events = events.get("data") or []
+    return {int(e["id"]) for e in events if e.get("finished")}
+
+
 def ingest_local(
     gw_root: Path,
     bootstrap_path: Path,
     season: str = LOCAL_SEASON,
     max_gw: int = DEFAULT_MAX_GW,
 ) -> pd.DataFrame:
-    """Ingest all local per-GW live.json files into the panel frame."""
+    """Ingest local per-GW live.json files for finished gameweeks into the panel.
+
+    An in-progress GW is skipped: its partial rows would otherwise be trained on
+    and scored as a second fixture beside the upcoming-GW stub rows.
+    """
     bootstrap = json.loads(Path(bootstrap_path).read_text(encoding="utf-8"))
     id_maps = build_id_maps(bootstrap)
+    finished = finished_gameweeks(bootstrap)
     rows: list[dict] = []
     for gw in range(1, max_gw + 1):
+        if gw not in finished:
+            if (Path(gw_root) / str(gw) / "live.json").exists():
+                logger.warning("GW%d is not finished in the bootstrap; skipping", gw)
+            continue
         path = Path(gw_root) / str(gw) / "live.json"
         if not path.exists():
             logger.warning("missing %s; skipping GW%d", path, gw)
@@ -252,7 +270,16 @@ def write_parquet(frame: pd.DataFrame, out_path: Path) -> None:
 
 def guard_archive_write(out_path: Path, season: str, flat_path: Path) -> None:
     """Refuse to write a non-archive season over the flat 2025-26 panel."""
-    if season != LOCAL_SEASON and Path(out_path).resolve() == flat_path.resolve():
+    if season == LOCAL_SEASON:
+        return
+    out_path, flat_path = Path(out_path), Path(flat_path)
+    if out_path.exists() and flat_path.exists():
+        same = os.path.samefile(out_path, flat_path)
+    else:
+        # Case-folded: APFS is case-insensitive, so a differently-cased path
+        # that does not exist yet could still land on the archive.
+        same = str(out_path.resolve()).casefold() == str(flat_path.resolve()).casefold()
+    if same:
         raise ValueError(
             f"refusing to write season {season} to the flat {LOCAL_SEASON} archive "
             f"{flat_path}; pass a season-nested --out")
@@ -268,15 +295,22 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     repo_root = _repo_root()
     parser = argparse.ArgumentParser(description="Phase A.2 per-gameweek panel ingestion")
-    parser.add_argument("--out", type=Path,
-                        default=repo_root / "data/derived/ml/player_gameweeks.parquet")
-    parser.add_argument("--gw-root", type=Path, default=repo_root / "data/raw/gw")
-    parser.add_argument("--bootstrap", type=Path,
-                        default=repo_root / "data/raw/bootstrap/bootstrap-static.json")
+    parser.add_argument("--out", type=Path, default=None,
+                        help="default: season-nested panel (flat path for 2025-26)")
+    parser.add_argument("--gw-root", type=Path, default=None)
+    parser.add_argument("--bootstrap", type=Path, default=None)
     parser.add_argument("--max-gw", type=int, default=DEFAULT_MAX_GW)
     parser.add_argument("--season", type=str, default=LOCAL_SEASON,
                         help="season label written into the panel, e.g. 2026-27")
     args = parser.parse_args(argv)
+    # Flat layout = the 2025-26 archive; any other season defaults to nested paths.
+    raw = repo_root / "data/raw" if args.season == LOCAL_SEASON else (
+        repo_root / "data/raw" / args.season)
+    derived = repo_root / "data/derived" if args.season == LOCAL_SEASON else (
+        repo_root / "data/derived" / args.season)
+    args.out = args.out or derived / "ml/player_gameweeks.parquet"
+    args.gw_root = args.gw_root or raw / "gw"
+    args.bootstrap = args.bootstrap or raw / "bootstrap/bootstrap-static.json"
     guard_archive_write(args.out, args.season,
                         repo_root / "data/derived/ml/player_gameweeks.parquet")
 

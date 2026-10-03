@@ -10,6 +10,7 @@ real data are recorded in ``docs/MODEL_ROADMAP.md`` and reproduced by
 ``python -m backend.ml.matchmodel --backtest``.
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -376,12 +377,43 @@ def test_next_gameweek_normal_draft_shape():
     assert mm.next_gameweek({"events": events}) == 3
 
 
-def test_next_gameweek_mid_gw_returns_unfinished_current():
-    events = [{"id": 1, "finished": True}, {"id": 2, "finished": False},
-              {"id": 3, "finished": False}]
+def test_next_gameweek_mid_gw_returns_current_plus_one():
+    events = {"current": 2, "next": 3,
+              "data": [{"id": 1, "finished": True}, {"id": 2, "finished": False},
+                       {"id": 3, "finished": False}]}
+    assert mm.next_gameweek({"events": events}) == 3
+
+
+def test_next_gameweek_falls_back_to_first_unfinished():
+    events = {"current": 1, "next": None,
+              "data": [{"id": 1, "finished": True}, {"id": 2, "finished": False}]}
     assert mm.next_gameweek({"events": events}) == 2
 
 
 def test_next_gameweek_season_over_raises():
     with pytest.raises(ValueError, match="season over"):
-        mm.next_gameweek({"events": {"data": [{"id": 38, "finished": True}]}})
+        mm.next_gameweek({"events": {"next": None, "data": [{"id": 38, "finished": True}]}})
+
+
+def test_gw_arg_rejects_garbage_and_accepts_int_or_next():
+    assert mm._gw_arg("next") == "next"
+    assert mm._gw_arg("6") == "6"
+    for bad in ("abc", "0", "-2"):
+        with pytest.raises(mm.argparse.ArgumentTypeError):
+            mm._gw_arg(bad)
+
+
+def test_cli_gw_next_resolves_end_to_end(tmp_path):
+    panel = _panel()
+    panel_path = tmp_path / "panel.parquet"
+    panel.to_parquet(panel_path)
+    bootstrap = _bootstrap(panel, N_GWS + 1)
+    bootstrap["events"] = {"current": N_GWS, "next": N_GWS + 1, "data": []}
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text(json.dumps(bootstrap), encoding="utf-8")
+    out = tmp_path / "xp.parquet"
+    code = mm.main(["--gw", "next", "--season", SEASON, "--panel", str(panel_path),
+                    "--bootstrap", str(bootstrap_path), "--out", str(out)])
+    assert code == 0
+    assert out.exists()
+    assert len(pd.read_parquet(out)) > 0
