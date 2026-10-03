@@ -459,9 +459,12 @@ def main(argv: list[str] | None = None) -> int:
     out = args.data_root / "derived" / args.season / "ml/waiver_replay.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
-    tmp.write_text(jsonutil.dumps_strict(
-        {k: doc[k] for k in ("season", "gws", "availability_mode", "caveat", "rows")}, indent=1))
-    os.replace(tmp, out)  # atomic: readers never see a partial file
+    try:
+        tmp.write_text(jsonutil.dumps_strict(
+            {k: doc[k] for k in ("season", "gws", "availability_mode", "caveat", "rows")}, indent=1))
+        os.replace(tmp, out)  # atomic: readers never see a partial file
+    finally:
+        tmp.unlink(missing_ok=True)  # no-op after a successful replace
     logger.info("wrote %s", out.name)
     return 0
 
