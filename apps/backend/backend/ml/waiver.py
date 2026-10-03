@@ -82,15 +82,19 @@ def fixture_multiplier(opponent_strength: float, strengths: dict[int, float],
 
 
 def next_fixture_load(bootstrap: dict, strengths: dict[int, float],
-                      n_events: int = NEXT_GWS) -> dict[int, float]:
+                      n_events: int = NEXT_GWS, *,
+                      fixtures_by_event: dict | None = None) -> dict[int, float]:
     """team id -> summed fixture multiplier over the next n events.
 
     ``bootstrap['fixtures']`` is a dict keyed by event number holding that
     event's fixtures; a team appearing 0/1/2 times in an event is a blank /
     normal / double gameweek and the sum reflects it automatically.
+    ``fixtures_by_event`` (same shape) overrides the bootstrap schedule — the
+    replay harness uses it to supply the as-of schedule.
     """
     load: dict[int, float] = {t["id"]: 0.0 for t in bootstrap.get("teams", [])}
-    fixtures_by_event = bootstrap.get("fixtures", {}) or {}
+    if fixtures_by_event is None:
+        fixtures_by_event = bootstrap.get("fixtures", {}) or {}
     events = sorted(int(e) for e in fixtures_by_event)[:n_events]
     for event in events:
         for fx in fixtures_by_event[str(event)]:
@@ -116,10 +120,17 @@ def availability_factor(element: dict) -> float:
 
 
 def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
-                       projections_path: Path) -> pd.DataFrame:
-    """One row per 26/27 element: identity, availability, next-3 xP, ROS value."""
+                       projections_path: Path, *,
+                       fixtures_by_event: dict | None = None,
+                       neutral_availability: bool = False) -> pd.DataFrame:
+    """One row per 26/27 element: identity, availability, next-3 xP, ROS value.
+
+    ``fixtures_by_event`` overrides the bootstrap schedule and
+    ``neutral_availability`` forces availability to 1.0 (both used by the
+    replay harness, where only the current status/news snapshot exists).
+    """
     strengths = team_strengths(seasons, bootstrap.get("teams", []))
-    load = next_fixture_load(bootstrap, strengths)
+    load = next_fixture_load(bootstrap, strengths, fixtures_by_event=fixtures_by_event)
     projections = {}
     if Path(projections_path).exists():
         projections = {int(r["code"]): r for r in
@@ -133,7 +144,7 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     for el in bootstrap.get("elements", []):
         projection = projections.get(el.get("code"), {})
         ros = projection.get("projected_points")
-        avail = availability_factor(el)
+        avail = 1.0 if neutral_availability else availability_factor(el)
         per_gw = (ros / TOTAL_GWS) if ros is not None else None
         next3 = (per_gw * load.get(el.get("team"), 0.0) * avail) if per_gw is not None else None
         rows.append({
@@ -227,7 +238,9 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
         else:
             label = "hold"          # tough fixtures now, better player long-term
         recs.append({
-            "add": fa["web_name"], "add_team": fa["team"], "position": fa["position"],
+            "add": fa["web_name"], "add_element": int(fa["element"]),
+            "drop_element": int(drop["element"]),
+            "add_team": fa["team"], "position": fa["position"],
             "drop": drop["web_name"],
             "next3_gain": round(next3_gain, 1),
             "season_gain": round(season_gain, 1),
@@ -251,6 +264,31 @@ def unprojected_squad(squad: pd.DataFrame) -> list[dict[str, Any]]:
         "web_name": p["web_name"], "position": p["position"], "team": p["team"],
         "availability": p["status"], "news": p["news"],
     } for _, p in rows.iterrows()]
+
+
+def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
+         projections_path: Path, entry_id: int, top_n: int = 10, *,
+         fixtures_by_event: dict | None = None,
+         neutral_availability: bool = False) -> dict[str, Any]:
+    """Pure waiver plan: players table, my squad, best-XI xP, ranked recs.
+
+    Free agents are the element-status rows with no owner. Returns
+    ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``recommendations``
+    and ``unprojected_squad``. No I/O beyond reading ``projections_path``.
+    """
+    players = build_player_table(
+        bootstrap, seasons, projections_path,
+        fixtures_by_event=fixtures_by_event, neutral_availability=neutral_availability)
+    free = {row["element"] for row in element_status.get("element_status", [])
+            if row.get("owner") is None}
+    players["is_free_agent"] = players["element"].isin(free)
+    squad = my_squad(players, element_status, entry_id)
+    _, xi_total = best_xi(squad)
+    return {
+        "players": players, "squad": squad, "xi_next3_xp": xi_total,
+        "recommendations": recommend(players, squad, top_n),
+        "unprojected_squad": unprojected_squad(squad),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -279,13 +317,10 @@ def main(argv: list[str] | None = None) -> int:
         (raw_root / f"league/{args.league}/element-status.json").read_text(encoding="utf-8"))
     seasons = pd.read_parquet(_repo_root() / "data/derived/ml/player_seasons.parquet")
 
-    players = build_player_table(
-        bootstrap, seasons, _repo_root() / "data/derived/ml/projections_2627.json")
-    free = {row["element"] for row in element_status.get("element_status", [])
-            if row.get("owner") is None}
-    players["is_free_agent"] = players["element"].isin(free)
-
-    squad = my_squad(players, element_status, args.entry)
+    result = plan(bootstrap, element_status, seasons,
+                  _repo_root() / "data/derived/ml/projections_2627.json",
+                  args.entry, args.top)
+    squad = result["squad"]
     xi, xi_total = best_xi(squad)
     bench = squad[~squad["element"].isin(xi["element"])]
 
@@ -303,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {p['position']:<4} {p['web_name']:<20} {p['team']:<4} "
               f"next3 {_fmt(p['next3_xp'])} | ROS {_fmt(p['ros_points'])}{flag}")
 
-    unknown = unprojected_squad(squad)
+    unknown = result["unprojected_squad"]
     if unknown:
         print("\n== UNPROJECTED SQUAD PLAYERS (model has no value — judge manually) ==")
         for p in unknown:
@@ -311,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {p['position']:<4} {p['web_name']:<20} {p['team']:<4}"
                   f" use player_card for their history{flag}")
 
-    recs = recommend(players, squad, args.top)
+    recs = result["recommendations"]
     print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}) ==")
     print("   label    add                    ->  drop                next3   season")
     for r in recs:

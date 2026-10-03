@@ -161,6 +161,19 @@ prospectively. Until then, the baselines above are the bar.
 - Calibration plots, edge-vs-baseline charts, and a written account of what
   worked, what did not, and why.
 
+## Waiver replay harness
+
+`backend.ml.replay` rebuilds each 2026-27 waiver deadline (GW2-5 by default)
+from the ownership snapshots and per-GW live files as they stood at
+`waivers_time`, scores `waiver_plan`'s rank-1 add/drop against realized raw
+points, and compares it with `no_change`, `std_points`, `form3` and my actual
+moves (`me`). Run `uv run python -m backend.ml.replay --season 2026-27
+--gws 2-5` from `apps/backend` (`--data-root` points at another checkout's
+`data/`); it writes `derived/2026-27/ml/waiver_replay.json`. Availability is
+neutralised (only the current status/news snapshot exists), so n=4 deadlines
+proves the harness runs, not the model. The as-of contract and caveats are in
+the module docstring.
+
 ## Working rules
 
 - Plain Python → parquet first (per `CLAUDE.md`); no warehouse until a task
