@@ -250,6 +250,14 @@ def write_parquet(frame: pd.DataFrame, out_path: Path) -> None:
     frame.to_parquet(out_path, index=False)
 
 
+def guard_archive_write(out_path: Path, season: str, flat_path: Path) -> None:
+    """Refuse to write a non-archive season over the flat 2025-26 panel."""
+    if season != LOCAL_SEASON and Path(out_path).resolve() == flat_path.resolve():
+        raise ValueError(
+            f"refusing to write season {season} to the flat {LOCAL_SEASON} archive "
+            f"{flat_path}; pass a season-nested --out")
+
+
 def _repo_root() -> Path:
     """Repo root resolved relative to this file (.../apps/backend/backend/ml)."""
     return Path(__file__).resolve().parents[4]
@@ -269,6 +277,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--season", type=str, default=LOCAL_SEASON,
                         help="season label written into the panel, e.g. 2026-27")
     args = parser.parse_args(argv)
+    guard_archive_write(args.out, args.season,
+                        repo_root / "data/derived/ml/player_gameweeks.parquet")
 
     frame = ingest_local(args.gw_root, args.bootstrap, season=args.season,
                          max_gw=args.max_gw)

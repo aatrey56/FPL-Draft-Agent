@@ -106,3 +106,17 @@ def test_unmappable_element_dropped():
     }
     rows = gameweeks.parse_gw_live(live, 1, "2025-26", _maps())
     assert rows == []
+
+
+def test_guard_blocks_new_season_write_to_flat_archive(tmp_path):
+    import pytest
+    flat = tmp_path / "data/derived/ml/player_gameweeks.parquet"
+    with pytest.raises(ValueError, match="archive"):
+        gameweeks.guard_archive_write(flat, "2026-27", flat)
+
+
+def test_guard_allows_archive_season_and_nested_path(tmp_path):
+    flat = tmp_path / "data/derived/ml/player_gameweeks.parquet"
+    gameweeks.guard_archive_write(flat, "2025-26", flat)
+    nested = tmp_path / "data/derived/2026-27/ml/p.parquet"
+    gameweeks.guard_archive_write(nested, "2026-27", flat)

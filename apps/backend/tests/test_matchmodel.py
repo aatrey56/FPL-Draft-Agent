@@ -368,3 +368,20 @@ def test_model_is_deterministic(frame):
     first = mm.score_panel(mm.MatchModel(alpha=100.0, min_train_rows=SMALL_FIT).fit(train), target)
     second = mm.score_panel(mm.MatchModel(alpha=100.0, min_train_rows=SMALL_FIT).fit(train), target)
     pd.testing.assert_frame_equal(first, second)
+
+
+def test_next_gameweek_normal_draft_shape():
+    events = {"data": [{"id": 1, "finished": True}, {"id": 2, "finished": True},
+                       {"id": 3, "finished": False}, {"id": 4, "finished": False}]}
+    assert mm.next_gameweek({"events": events}) == 3
+
+
+def test_next_gameweek_mid_gw_returns_unfinished_current():
+    events = [{"id": 1, "finished": True}, {"id": 2, "finished": False},
+              {"id": 3, "finished": False}]
+    assert mm.next_gameweek({"events": events}) == 2
+
+
+def test_next_gameweek_season_over_raises():
+    with pytest.raises(ValueError, match="season over"):
+        mm.next_gameweek({"events": {"data": [{"id": 38, "finished": True}]}})

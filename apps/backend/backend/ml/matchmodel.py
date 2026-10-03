@@ -533,6 +533,22 @@ def build_gw_xp(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
     return scored.sort_values("xp", ascending=False).reset_index(drop=True)
 
 
+def next_gameweek(bootstrap: dict) -> int:
+    """First gameweek whose ``finished`` flag is false (lowest id).
+
+    Mid-GW the in-progress gameweek is not finished, so it is returned until
+    it completes. Accepts the draft shape (``events`` = {"data": [...]}) or a
+    plain list. Raises ValueError when every event is finished (season over).
+    """
+    events = bootstrap.get("events") or []
+    if isinstance(events, dict):
+        events = events.get("data") or []
+    pending = [int(e["id"]) for e in events if not e.get("finished")]
+    if not pending:
+        raise ValueError("no unfinished gameweek in the bootstrap (season over?)")
+    return min(pending)
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3].parent
 
@@ -651,8 +667,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="run the walk-forward evaluation and print the report")
     parser.add_argument("--selection-max-gw", type=int, default=SELECTION_MAX_GW,
                         help="last gameweek used to select alpha; later ones are held out")
-    parser.add_argument("--gw", type=int, default=None,
-                        help="build xp_gw{N}.parquet for this upcoming gameweek")
+    parser.add_argument("--gw", type=str, default=None,
+                        help="build xp_gw{N}.parquet for this upcoming gameweek; "
+                             "'next' picks the first unfinished one from the bootstrap")
     parser.add_argument("--season", type=str, default=None,
                         help="season for --gw, e.g. 2026-27 (also picks the data root)")
     parser.add_argument("--bootstrap", type=Path, default=None)
@@ -681,9 +698,10 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_path = args.bootstrap or (
         root / f"data/raw/{season}/bootstrap/bootstrap-static.json")
     bootstrap = json.loads(Path(bootstrap_path).read_text(encoding="utf-8"))
-    scored = build_gw_xp(panel, bootstrap, args.gw, season,
+    gw = next_gameweek(bootstrap) if args.gw == "next" else int(args.gw)
+    scored = build_gw_xp(panel, bootstrap, gw, season,
                          alpha=args.alpha or dict(SELECTED_ALPHAS))
-    out = args.out or root / f"data/derived/{season}/ml/xp_gw{args.gw}.parquet"
+    out = args.out or root / f"data/derived/{season}/ml/xp_gw{gw}.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     scored.to_parquet(out, index=False)
     logger.info("wrote %s (%d players)", out, len(scored))
