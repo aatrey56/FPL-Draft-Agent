@@ -173,8 +173,10 @@ type RefreshResult struct {
 // fixtures outside the window are carried over unchanged, and an in-window
 // fetch replaces a stored entry only when it actually carries sheets, so a
 // not-yet-published or transiently null team list never erases stored data.
-// When no fixture is in the window nothing is written. Best-effort by design: callers log the error and move on — a
-// pulse outage must never break the FPL refresh path.
+// When no fixture is in the window nothing is written. An existing file that
+// fails to parse is an error and is left untouched, never merged into empty.
+// Best-effort by design: callers log the error and move on — a pulse outage
+// must never break the FPL refresh path.
 func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) (RefreshResult, error) {
 	var res RefreshResult
 	raw, err := st.ReadRaw("bootstrap/bootstrap-static.json")
@@ -204,7 +206,10 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) (Refre
 	evRel := fmt.Sprintf("gw/%d/match_events.json", gw)
 	fixtures := map[int]FixtureSquads{}
 	var prev File
-	if body, err := st.ReadRaw(rel); err == nil && json.Unmarshal(body, &prev) == nil {
+	if body, err := st.ReadRaw(rel); err == nil {
+		if err := json.Unmarshal(body, &prev); err != nil {
+			return res, fmt.Errorf("existing %s is corrupt, not overwriting: %w", rel, err)
+		}
 		for _, fs := range prev.Fixtures {
 			fixtures[fs.PulseID] = fs
 		}
@@ -212,7 +217,10 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) (Refre
 	events := map[int][]MatchEvent{} // pulse fixture id -> stored events
 	finalEvents := map[int]bool{}    // fixtures whose stored events are final
 	var prevEv EventsFile
-	if body, err := st.ReadRaw(evRel); err == nil && json.Unmarshal(body, &prevEv) == nil {
+	if body, err := st.ReadRaw(evRel); err == nil {
+		if err := json.Unmarshal(body, &prevEv); err != nil {
+			return res, fmt.Errorf("existing %s is corrupt, not overwriting: %w", evRel, err)
+		}
 		for _, e := range prevEv.Events {
 			events[e.PulseID] = append(events[e.PulseID], e)
 			if e.Final {
@@ -342,9 +350,11 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) (Refre
 				}
 			}
 		}
-		// Events resolve through the lineups, so a null sheet yields none:
-		// keep the stored events in that case.
-		if len(fresh) > 0 {
+		// Events resolve through the lineups, so a fetch without sheets (failed
+		// or empty) says nothing about events: keep the stored ones. Otherwise
+		// the fresh list is authoritative, even when empty (e.g. a goal
+		// overturned by VAR must disappear).
+		if len(fs.Sheets) > 0 {
 			events[id] = fresh
 		}
 	}

@@ -21,6 +21,7 @@ type fakeFx struct {
 	id      int
 	ko      time.Time
 	lineups bool // false: teamLists are null (sheets not published)
+	goal    bool // one goal by the first ARS player at 10'
 }
 
 var clubs = []string{"ARS", "CHE"}
@@ -55,9 +56,13 @@ func (f fakeFx) json() string {
 		}
 		lists = `"teamLists":[` + strings.Join(sides, ",") + `]`
 	}
+	events := ""
+	if f.goal {
+		events = `{"type":"G","personId":1,"clock":{"secs":600,"label":"10'00"}}`
+	}
 	return fmt.Sprintf(`{"id":%d,"status":"U","kickoff":{"millis":%d},
-"teams":[{"team":{"id":1,"club":{"abbr":"ARS"}}},{"team":{"id":2,"club":{"abbr":"CHE"}}}],%s,"events":[]}`,
-		f.id, f.ko.UnixMilli(), lists)
+"teams":[{"team":{"id":1,"club":{"abbr":"ARS"}}},{"team":{"id":2,"club":{"abbr":"CHE"}}}],%s,"events":[%s]}`,
+		f.id, f.ko.UnixMilli(), lists, events)
 }
 
 // newFakePulse serves the given fixtures as upcoming. The returned pointer
@@ -246,5 +251,71 @@ func TestRefreshSquadsCarriesOverAcrossRuns(t *testing.T) {
 	ids := readFixtureIDs(t, st)
 	if len(ids) != 2 || !ids[1] || !ids[2] {
 		t.Fatalf("want both fixtures complete, got %v", ids)
+	}
+}
+
+func readEventCount(t *testing.T, st *store.JSONStore) int {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(st.Root, "gw/6/match_events.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f EventsFile
+	if err := json.Unmarshal(body, &f); err != nil {
+		t.Fatal(err)
+	}
+	return len(f.Events)
+}
+
+// A goal overturned by VAR: the fresh fetch has sheets and zero events, so the
+// stored goal must go. A fetch without sheets must not touch events.
+func TestRefreshSquadsFreshEmptyEventsReplaceStored(t *testing.T) {
+	now := time.Now()
+	st := newStore(t)
+	fxs := []fakeFx{{id: 1, ko: now.Add(-time.Hour), lineups: true, goal: true}}
+	c := newFakePulse(t, &fxs)
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+	if n := readEventCount(t, st); n != 1 {
+		t.Fatalf("want 1 stored goal, got %d", n)
+	}
+
+	fxs[0].lineups, fxs[0].goal = false, false // fetch without sheets: keep
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+	if n := readEventCount(t, st); n != 1 {
+		t.Fatalf("sheetless fetch must keep stored events, got %d", n)
+	}
+
+	fxs[0].lineups = true // sheets present, goal overturned
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+	if n := readEventCount(t, st); n != 0 {
+		t.Fatalf("overturned goal must be removed, got %d events", n)
+	}
+}
+
+// A corrupt existing file is an error and is left byte-identical.
+func TestRefreshSquadsCorruptExistingFileIsNotOverwritten(t *testing.T) {
+	for _, rel := range []string{"gw/6/squads.json", "gw/6/match_events.json"} {
+		t.Run(rel, func(t *testing.T) {
+			now := time.Now()
+			st := newStore(t)
+			const corrupt = `{"gw":6,"fixtures":[{"pulse_id":`
+			if err := st.WriteRaw(rel, []byte(corrupt), false); err != nil {
+				t.Fatal(err)
+			}
+			fxs := []fakeFx{{id: 1, ko: now.Add(time.Hour), lineups: true}}
+			if _, err := RefreshSquads(newFakePulse(t, &fxs), st, 6, now); err == nil {
+				t.Fatal("expected an error for corrupt existing file")
+			}
+			got, err := os.ReadFile(filepath.Join(st.Root, rel))
+			if err != nil || string(got) != corrupt {
+				t.Fatalf("corrupt file modified: %q (err %v)", got, err)
+			}
+		})
 	}
 }
