@@ -160,18 +160,30 @@ type bootstrapSlice struct {
 	} `json:"teams"`
 }
 
+// RefreshResult reports what a RefreshSquads call actually got, so callers
+// can tell "nothing to fetch" and "feed had no sheets" from real success.
+type RefreshResult struct {
+	InWindow    int // fixtures kicking off inside the fetch window
+	WithLineups int // of those, fixtures with both teams' sheets stored (fresh or cached)
+}
+
 // RefreshSquads fetches team sheets for fixtures kicking off within the
-// window around now and writes gw/<gw>/squads.json. Best-effort by design:
-// callers log the error and move on — a pulse outage must never break the
-// FPL refresh path.
-func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) error {
+// window around now and merges them into gw/<gw>/squads.json (and match
+// events into match_events.json). The existing files are the starting point:
+// fixtures outside the window are carried over unchanged, and an in-window
+// fetch replaces a stored entry only when it actually carries sheets, so a
+// not-yet-published or transiently null team list never erases stored data.
+// When no fixture is in the window nothing is written. Best-effort by design: callers log the error and move on — a
+// pulse outage must never break the FPL refresh path.
+func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) (RefreshResult, error) {
+	var res RefreshResult
 	raw, err := st.ReadRaw("bootstrap/bootstrap-static.json")
 	if err != nil {
-		return fmt.Errorf("bootstrap not on disk yet: %w", err)
+		return res, fmt.Errorf("bootstrap not on disk yet: %w", err)
 	}
 	var boot bootstrapSlice
 	if err := json.Unmarshal(raw, &boot); err != nil {
-		return err
+		return res, err
 	}
 	elemsByClub := map[string][]Element{}
 	clubByID := map[int]string{}
@@ -183,26 +195,28 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) error 
 		elemsByClub[club] = append(elemsByClub[club], Element{e.ID, e.FirstName, e.SecondName, e.WebName})
 	}
 
-	// Sheets already stored never change — carry them over. Match events are
-	// cached only once a fixture is final (completed); live fixtures always
+	// Existing files are the merge base. Sheets already stored never change —
+	// fixtures outside the window are carried over as-is, and in-window ones
+	// are replaced only by a fetch that carries sheets. Match events are
+	// skipped for refetch only once a fixture is final; live fixtures always
 	// refetch so the clock advances.
 	rel := fmt.Sprintf("gw/%d/squads.json", gw)
 	evRel := fmt.Sprintf("gw/%d/match_events.json", gw)
-	stored := map[int]FixtureSquads{}
+	fixtures := map[int]FixtureSquads{}
 	var prev File
 	if body, err := st.ReadRaw(rel); err == nil && json.Unmarshal(body, &prev) == nil {
 		for _, fs := range prev.Fixtures {
-			if fs.complete() {
-				stored[fs.PulseID] = fs
-			}
+			fixtures[fs.PulseID] = fs
 		}
 	}
-	storedEvents := map[int][]MatchEvent{} // pulse fixture id -> final events
+	events := map[int][]MatchEvent{} // pulse fixture id -> stored events
+	finalEvents := map[int]bool{}    // fixtures whose stored events are final
 	var prevEv EventsFile
 	if body, err := st.ReadRaw(evRel); err == nil && json.Unmarshal(body, &prevEv) == nil {
 		for _, e := range prevEv.Events {
+			events[e.PulseID] = append(events[e.PulseID], e)
 			if e.Final {
-				storedEvents[e.PulseID] = append(storedEvents[e.PulseID], e)
+				finalEvents[e.PulseID] = true
 			}
 		}
 	}
@@ -213,10 +227,10 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) error 
 		} `json:"content"`
 	}
 	if err := c.getJSON("/competitions/1/compseasons?pageSize=1", &cs); err != nil {
-		return err
+		return res, err
 	}
 	if len(cs.Content) == 0 {
-		return fmt.Errorf("no compseason")
+		return res, fmt.Errorf("no compseason")
 	}
 	season := int(cs.Content[0].ID)
 
@@ -229,36 +243,28 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) error 
 			Content []fixtureJSON `json:"content"`
 		}
 		if err := c.getJSON(q, &list); err != nil {
-			return err
+			return res, err
 		}
 		relevant = append(relevant, list.Content...)
 	}
 
-	out := File{GW: gw, Fetched: now.UTC().Format(time.RFC3339)}
-	evOut := EventsFile{GW: gw, Fetched: now.UTC().Format(time.RFC3339)}
+	var inWindow []int
 	lo, hi := now.Add(-12*time.Hour), now.Add(2*time.Hour)
 	for _, f := range relevant {
 		ko := time.UnixMilli(int64(f.Kickoff.Millis)).UTC()
 		if ko.Before(lo) || ko.After(hi) || len(f.Teams) != 2 {
 			continue
 		}
+		res.InWindow++
 		id := int(f.ID)
-		sheetCached, sheetOK := stored[id]
-		evCached, evOK := storedEvents[id]
-		// Reuse only when the fixture is final and both are cached; live
-		// fixtures always refetch so goals/cards keep flowing.
-		if f.Status == "C" && sheetOK && evOK {
-			out.Fixtures = append(out.Fixtures, sheetCached)
-			evOut.Events = append(evOut.Events, evCached...)
+		inWindow = append(inWindow, id)
+		// Final fixture with both sheets and events stored: nothing can change.
+		if f.Status == "C" && fixtures[id].complete() && finalEvents[id] {
 			continue
 		}
 		var detail fixtureJSON
 		if err := c.getJSON(fmt.Sprintf("/fixtures/%d", id), &detail); err != nil {
-			if sheetOK { // keep what we had on a transient error
-				out.Fixtures = append(out.Fixtures, sheetCached)
-				evOut.Events = append(evOut.Events, evCached...)
-			}
-			continue
+			continue // keep what we had on a transient error
 		}
 		abbrByTeam := map[int]string{}
 		for _, t := range f.Teams {
@@ -297,9 +303,12 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) error 
 			sheet.Unmatched = append(miss1, miss2...)
 			fs.Sheets[club] = sheet
 		}
-		if len(fs.Sheets) > 0 {
-			out.Fixtures = append(out.Fixtures, fs)
+		// Replace the stored entry only with a fetch that has sheets, and never
+		// downgrade a complete stored entry to a partial one.
+		if cached := fixtures[id]; len(fs.Sheets) > 0 && (fs.complete() || !cached.complete()) {
+			fixtures[id] = fs
 		}
+		var fresh []MatchEvent
 
 		// Resolve match events to FPL elements with exact minute + real time.
 		final := detail.Status == "C"
@@ -308,7 +317,7 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) error 
 			if !ok {
 				return
 			}
-			evOut.Events = append(evOut.Events, MatchEvent{
+			fresh = append(fresh, MatchEvent{
 				Element: elem, Kind: kind, Minute: minuteLabel(label), Secs: int(secs),
 				UTC:  ko.Add(time.Duration(secs) * time.Second).Format(time.RFC3339),
 				Club: personClub[personID], PulseID: id, Final: final,
@@ -333,21 +342,56 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) error 
 				}
 			}
 		}
+		// Events resolve through the lineups, so a null sheet yields none:
+		// keep the stored events in that case.
+		if len(fresh) > 0 {
+			events[id] = fresh
+		}
 	}
-	sort.Slice(evOut.Events, func(a, b int) bool { return evOut.Events[a].Secs < evOut.Events[b].Secs })
+	for _, id := range inWindow {
+		if fixtures[id].complete() {
+			res.WithLineups++
+		}
+	}
+	if res.InWindow == 0 {
+		return res, nil
+	}
+	out := File{GW: gw, Fetched: now.UTC().Format(time.RFC3339)}
+	for _, fs := range fixtures {
+		out.Fixtures = append(out.Fixtures, fs)
+	}
+	sort.Slice(out.Fixtures, func(a, b int) bool {
+		if out.Fixtures[a].KickoffUTC != out.Fixtures[b].KickoffUTC {
+			return out.Fixtures[a].KickoffUTC < out.Fixtures[b].KickoffUTC
+		}
+		return out.Fixtures[a].PulseID < out.Fixtures[b].PulseID
+	})
+	evOut := EventsFile{GW: gw, Fetched: now.UTC().Format(time.RFC3339)}
+	for _, evs := range events {
+		evOut.Events = append(evOut.Events, evs...)
+	}
+	sort.Slice(evOut.Events, func(a, b int) bool {
+		if evOut.Events[a].Secs != evOut.Events[b].Secs {
+			return evOut.Events[a].Secs < evOut.Events[b].Secs
+		}
+		if evOut.Events[a].PulseID != evOut.Events[b].PulseID {
+			return evOut.Events[a].PulseID < evOut.Events[b].PulseID
+		}
+		return evOut.Events[a].UTC < evOut.Events[b].UTC
+	})
 
 	body, err := json.MarshalIndent(out, "", " ")
 	if err != nil {
-		return err
+		return res, err
 	}
 	if err := st.WriteRaw(rel, body, false); err != nil {
-		return err
+		return res, err
 	}
 	evBody, err := json.MarshalIndent(evOut, "", " ")
 	if err != nil {
-		return err
+		return res, err
 	}
-	return st.WriteRaw(evRel, evBody, false)
+	return res, st.WriteRaw(evRel, evBody, false)
 }
 
 // minuteLabel turns a pulse clock label ("55'00", "90+3'00") into a display
