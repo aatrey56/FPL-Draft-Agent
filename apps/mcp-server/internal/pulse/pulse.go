@@ -337,6 +337,12 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) (Refre
 				merged.Sheets[club] = sheet
 			}
 			fixtures[id] = merged
+		} else if _, stored := fixtures[id]; !stored {
+			// No sheets yet: record a placeholder so CurrentRoles sees this
+			// fixture as the club's current one and drops older fixtures'
+			// roles (a DGW's second match before its lineup is out). It has
+			// no sheets, so it is never complete and never counts as a lineup.
+			fixtures[id] = fs
 		}
 		var fresh []MatchEvent
 

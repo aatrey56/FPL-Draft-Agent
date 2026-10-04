@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -398,6 +399,83 @@ func TestRefreshSquadsCorrectionWithUnmatchedNameWins(t *testing.T) {
 	ars := f.Fixtures[0].Sheets["ARS"]
 	if len(ars.XI) != 10 || len(ars.Unmatched) != 1 || !ars.Full {
 		t.Fatalf("correction rejected: XI %d, unmatched %v, full %v", len(ars.XI), ars.Unmatched, ars.Full)
+	}
+}
+
+func readFile(t *testing.T, st *store.JSONStore) File {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(st.Root, "gw/6/squads.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f File
+	if err := json.Unmarshal(body, &f); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// DGW: match 1 stored with sheets, match 2 in window but its team lists are
+// still null. A placeholder for match 2 must be stored so CurrentRoles stops
+// reporting match-1 roles, without counting as a lineup.
+func TestRefreshSquadsPlaceholderForUnpublishedSecondMatch(t *testing.T) {
+	now := time.Now()
+	st := newStore(t)
+	fxs := []fakeFx{{id: 1, ko: now.Add(-time.Hour), lineups: true}}
+	c := newFakePulse(t, &fxs)
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+
+	fxs = []fakeFx{
+		{id: 1, ko: now.Add(-time.Hour), lineups: true},
+		{id: 2, ko: now.Add(time.Hour), lineups: false},
+	}
+	res, err := RefreshSquads(c, st, 6, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.InWindow != 2 || res.WithLineups != 1 {
+		t.Fatalf("got %+v, want placeholder counted in window only (2/1)", res)
+	}
+	f := readFile(t, st)
+	var placeholder *FixtureSquads
+	for i := range f.Fixtures {
+		if f.Fixtures[i].PulseID == 2 {
+			placeholder = &f.Fixtures[i]
+		}
+	}
+	if placeholder == nil || len(placeholder.Sheets) != 0 || placeholder.complete() {
+		t.Fatalf("want empty match-2 placeholder, got %+v", placeholder)
+	}
+	roles, clubs := CurrentRoles(f, now)
+	if len(roles) != 0 || len(clubs) != 0 {
+		t.Fatalf("match-1 roles must clear until match 2 publishes, got %v %v", roles, clubs)
+	}
+	if n := readEventCount(t, st); n != 0 {
+		t.Fatalf("placeholder must not store events, got %d", n)
+	}
+}
+
+// A cached fixture with sheets and a null fetch keeps its cached sheets
+// exactly (no placeholder overwrite).
+func TestRefreshSquadsNilFetchLeavesCachedSheetsUnchanged(t *testing.T) {
+	now := time.Now()
+	st := newStore(t)
+	fxs := []fakeFx{{id: 1, ko: now.Add(time.Hour), lineups: true}}
+	c := newFakePulse(t, &fxs)
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+	before := readFile(t, st).Fixtures[0].Sheets
+
+	fxs[0].lineups = false
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+	after := readFile(t, st).Fixtures
+	if len(after) != 1 || !reflect.DeepEqual(after[0].Sheets, before) {
+		t.Fatalf("cached sheets changed: before %v after %+v", before, after)
 	}
 }
 
