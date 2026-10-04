@@ -126,7 +126,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     """One row per 26/27 element: identity, availability, next-3 xP, ROS value.
 
     ``fixtures_by_event`` overrides the bootstrap schedule and
-    ``neutral_availability`` forces availability to 1.0 (both used by the
+    ``neutral_availability`` forces availability to 1.0, except 0.0 for
+    departed (status "u") players (both used by the
     replay harness, where only the current status/news snapshot exists).
     """
     strengths = team_strengths(seasons, bootstrap.get("teams", []))
@@ -144,7 +145,11 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     for el in bootstrap.get("elements", []):
         projection = projections.get(el.get("code"), {})
         ros = projection.get("projected_points")
-        avail = 1.0 if neutral_availability else availability_factor(el)
+        if neutral_availability:
+            # replay mode: everyone available except departed ("u") players
+            avail = 0.0 if el.get("status") == "u" else 1.0
+        else:
+            avail = availability_factor(el)
         per_gw = (ros / TOTAL_GWS) if ros is not None else None
         next3 = (per_gw * load.get(el.get("team"), 0.0) * avail) if per_gw is not None else None
         rows.append({

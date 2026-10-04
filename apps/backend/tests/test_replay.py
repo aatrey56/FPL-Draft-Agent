@@ -178,6 +178,28 @@ def test_departed_with_no_prior_minutes_is_excluded(tmp_path):
     assert _picks(doc)["waiver_plan"][0] == "Xavier"             # next-best, not W (proj 200)
 
 
+def test_departed_squad_player_has_zero_next3_and_is_not_in_xi(tmp_path):
+    """A departed player in MY squad keeps status "u" in replay: availability 0,
+    so next3_xp is 0 and the best XI leaves him out."""
+    spec = [(1, 1)] + [(i, 2) for i in range(2, 6)] + [(i, 3) for i in range(6, 10)] \
+        + [(i, 4) for i in range(10, 13)]                      # GK, 4 DEF, 4 MID, 3 FWD
+    elements = [{"id": i, "code": 100 + i, "web_name": f"P{i}", "element_type": pos,
+                 "team": 1, "status": "u" if i == 12 else "a"} for i, pos in spec]
+    bootstrap = {"teams": TEAMS, "elements": elements}
+    projections = tmp_path / "p.json"
+    projections.write_text(json.dumps(
+        [{"code": 100 + i, "projected_points": 120.0} for i, _ in spec]))
+    status = {"element_status": [{"element": i, "owner": ME} for i, _ in spec]}
+    fixtures = {"2": [{"team_h": 1, "team_a": 2}]}
+    neutral = rp.neutralize_bootstrap(bootstrap, {12})
+    result = wv.plan(neutral, status, SEASONS, projections, ME,
+                     fixtures_by_event=fixtures, neutral_availability=True)
+    players = result["players"].set_index("element")
+    assert players.loc[12, "next3_xp"] == 0.0 and players.loc[11, "next3_xp"] > 0
+    xi, _ = wv.best_xi(result["squad"])
+    assert 12 not in set(xi["element"])
+
+
 def test_departed_with_prior_minutes_stays_eligible(tmp_path):
     """(b) status "u" but played before N: he left later, so he stays eligible."""
     world = build_world(tmp_path, w_status="u", w_gw1_pts=5)
