@@ -96,7 +96,14 @@ type Sheet struct {
 	XI        []int    `json:"xi"`
 	Bench     []int    `json:"bench"`
 	Unmatched []string `json:"unmatched,omitempty"`
+	// Full records that pulselive returned a full 11-man lineup, whether or
+	// not every name matched an FPL element (XI only holds the matched ones).
+	Full bool `json:"full,omitempty"`
 }
+
+// isFull reports whether the sheet is a full lineup. Files written before
+// Full existed are judged by the matched XI.
+func (s Sheet) isFull() bool { return s.Full || len(s.XI) == 11 }
 
 // FixtureSquads is one fixture's sheets, keyed by FPL club short name.
 type FixtureSquads struct {
@@ -134,11 +141,12 @@ type EventsFile struct {
 	Events  []MatchEvent `json:"events"`
 }
 
-// complete reports whether both sides' sheets are stored with a full XI.
+// complete reports whether both sides' sheets are stored with a full lineup
+// as published by pulselive (not as matched to FPL elements).
 func (f FixtureSquads) complete() bool {
 	n := 0
 	for _, s := range f.Sheets {
-		if len(s.XI) == 11 {
+		if s.isFull() {
 			n++
 		}
 	}
@@ -309,6 +317,7 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) (Refre
 			sheet.XI, miss1 = MatchNames(names[:len(side.Lineup)], pool)
 			sheet.Bench, miss2 = MatchNames(names[len(side.Lineup):], pool)
 			sheet.Unmatched = append(miss1, miss2...)
+			sheet.Full = len(side.Lineup) == 11
 			fs.Sheets[club] = sheet
 		}
 		// Merge per club: start from the stored sheets and overwrite each club
@@ -322,7 +331,7 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) (Refre
 				merged.Sheets[club] = sheet
 			}
 			for club, sheet := range fs.Sheets {
-				if old, ok := merged.Sheets[club]; ok && len(old.XI) == 11 && len(sheet.XI) != 11 {
+				if old, ok := merged.Sheets[club]; ok && old.isFull() && !sheet.isFull() {
 					continue
 				}
 				merged.Sheets[club] = sheet

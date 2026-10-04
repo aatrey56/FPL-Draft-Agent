@@ -27,6 +27,9 @@ type fakeFx struct {
 	// only, when set with lineups, publishes just that club's sheet; the
 	// other side's team list is null.
 	only string
+	// unmatched makes one ARS starter a name missing from bootstrap, so only
+	// 10 of the 11 published starters resolve to an FPL element.
+	unmatched bool
 }
 
 var clubs = []string{"ARS", "CHE"}
@@ -58,8 +61,12 @@ func (f fakeFx) json() string {
 			}
 			var xi []string
 			for n := 0; n < 11; n++ {
+				name := playerName(club, n)
+				if f.unmatched && club == "ARS" && n == 10 {
+					name = "NewSigning" // not in bootstrap: lineup stays 11, matched XI is 10
+				}
 				xi = append(xi, fmt.Sprintf(`{"id":%d,"name":{"display":%q,"first":"F","last":%q}}`,
-					ti*100+n+1, playerName(club, n), playerName(club, n)))
+					ti*100+n+1, name, name))
 			}
 			sides = append(sides, fmt.Sprintf(`{"teamId":%d,"lineup":[%s],"substitutes":[]}`, ti+1, strings.Join(xi, ",")))
 		}
@@ -335,6 +342,62 @@ func TestRefreshSquadsMergesSheetsPerClub(t *testing.T) {
 	}
 	if res.WithLineups != 1 {
 		t.Fatalf("got %+v, want merged fixture to count as 1 with lineups", res)
+	}
+}
+
+// One unmatched starter on a full published lineup must not freeze events:
+// the fixture is still complete, so each fetch's events replace the stored.
+func TestRefreshSquadsUnmatchedStarterStillRefreshesEvents(t *testing.T) {
+	now := time.Now()
+	st := newStore(t)
+	fxs := []fakeFx{{id: 1, ko: now.Add(-time.Hour), lineups: true, unmatched: true}}
+	c := newFakePulse(t, &fxs)
+	res, err := RefreshSquads(c, st, 6, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.WithLineups != 1 {
+		t.Fatalf("got %+v, want full lineup with 10 matched to count", res)
+	}
+	if n := readEventCount(t, st); n != 0 {
+		t.Fatalf("want 0 events, got %d", n)
+	}
+
+	fxs[0].goalAway = true // a new goal appears mid-match
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+	if n := readEventCount(t, st); n != 1 {
+		t.Fatalf("new goal not picked up: got %d events, want 1", n)
+	}
+}
+
+// A correction (different full XI, one name unmatched) replaces the stored
+// full sheet even though its matched XI has only 10 players.
+func TestRefreshSquadsCorrectionWithUnmatchedNameWins(t *testing.T) {
+	now := time.Now()
+	st := newStore(t)
+	fxs := []fakeFx{{id: 1, ko: now.Add(time.Hour), lineups: true}}
+	c := newFakePulse(t, &fxs)
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+
+	fxs[0].unmatched = true
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(st.Root, "gw/6/squads.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f File
+	if err := json.Unmarshal(body, &f); err != nil {
+		t.Fatal(err)
+	}
+	ars := f.Fixtures[0].Sheets["ARS"]
+	if len(ars.XI) != 10 || len(ars.Unmatched) != 1 || !ars.Full {
+		t.Fatalf("correction rejected: XI %d, unmatched %v, full %v", len(ars.XI), ars.Unmatched, ars.Full)
 	}
 }
 
