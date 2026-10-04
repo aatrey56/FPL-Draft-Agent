@@ -374,8 +374,9 @@ def test_model_is_deterministic(frame):
 
 def test_next_gameweek_normal_draft_shape():
     events = {"data": [{"id": 1, "finished": True}, {"id": 2, "finished": True},
-                       {"id": 3, "finished": False}, {"id": 4, "finished": False}]}
-    assert mm.next_gameweek({"events": events}) == 3
+                       {"id": 3, "finished": False, "deadline_time": "2099-01-01T00:00:00Z"},
+                       {"id": 4, "finished": False, "deadline_time": "2099-02-01T00:00:00Z"}]}
+    assert mm.next_gameweek({"events": events}, now=NOW) == 3
 
 
 def test_next_gameweek_mid_gw_returns_current_plus_one():
@@ -387,8 +388,10 @@ def test_next_gameweek_mid_gw_returns_current_plus_one():
 
 def test_next_gameweek_falls_back_to_first_unfinished():
     events = {"current": 1, "next": None,
-              "data": [{"id": 1, "finished": True}, {"id": 2, "finished": False}]}
-    assert mm.next_gameweek({"events": events}) == 2
+              "data": [{"id": 1, "finished": True},
+                       {"id": 2, "finished": False,
+                        "deadline_time": "2099-01-01T00:00:00Z"}]}
+    assert mm.next_gameweek({"events": events}, now=NOW) == 2
 
 
 def test_next_gameweek_season_over_raises():
@@ -474,3 +477,41 @@ def test_next_gameweek_list_shape_mid_gw_without_flags_uses_future_deadline():
     events = [{"id": 5, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"},
               {"id": 6, "finished": False, "deadline_time": "2099-01-01T00:00:00Z"}]
     assert mm.next_gameweek({"events": events}, now=NOW) == 6
+
+
+def test_next_gameweek_dict_mid_gw_next_null_uses_future_deadline_event():
+    events = {"current": 5, "next": None, "data": [
+        {"id": 5, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"},
+        {"id": 6, "finished": False, "deadline_time": "2099-01-01T00:00:00Z"}]}
+    assert mm.next_gameweek({"events": events}, now=NOW) == 6
+
+
+def test_next_gameweek_mid_final_gw_has_no_actionable_next():
+    events = {"current": 38, "next": None, "data": [
+        {"id": 38, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"}]}
+    with pytest.raises(ValueError, match="no actionable next gameweek"):
+        mm.next_gameweek({"events": events}, now=NOW)
+
+
+def test_cli_skips_missing_archive_panel_with_warning(tmp_path, caplog):
+    panel = _panel()
+    season_panel = tmp_path / "season.parquet"
+    panel.to_parquet(season_panel)
+    bootstrap = _bootstrap(panel, N_GWS + 1)
+    bootstrap["events"] = {"current": N_GWS, "next": N_GWS + 1, "data": []}
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text(json.dumps(bootstrap), encoding="utf-8")
+    out = tmp_path / "xp.parquet"
+    missing = tmp_path / "no_archive.parquet"
+    with caplog.at_level("WARNING"):
+        code = mm.main(["--gw", "next", "--season", SEASON, "--panel", str(missing),
+                        str(season_panel), "--bootstrap", str(bootstrap_path),
+                        "--out", str(out)])
+    assert code == 0 and out.exists()
+    assert "not found; skipping" in caplog.text
+
+
+def test_cli_errors_when_no_usable_panel(tmp_path):
+    with pytest.raises(SystemExit):
+        mm.main(["--gw", "next", "--season", SEASON,
+                 "--panel", str(tmp_path / "nope.parquet")])

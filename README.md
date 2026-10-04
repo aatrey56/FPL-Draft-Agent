@@ -156,7 +156,7 @@ make autopilot-off
 ```
 
 Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
-derive: season panel, next-GW xP, ownership, waiver, my_week; `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
+derive: ownership, waiver, my_week first, then season panel and next-GW xP (a panel/xP failure fails `make derive` but never blocks the decision artifacts); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
 Non-Mac or cron fans: schedule `scripts/autorefresh.sh` (crontab example inline).
 
 Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):

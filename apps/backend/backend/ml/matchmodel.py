@@ -539,12 +539,12 @@ def next_gameweek(bootstrap: dict, now: datetime | None = None) -> int:
 
     Order: (1) ``events.current`` if it is unfinished and its deadline is still
     in the future (not started, e.g. before the GW1 deadline); (2) ``events.next``;
-    (3) the first unfinished event. Mid-GW (past deadline, unfinished) therefore
+    (3) the first unfinished event with a future deadline. Mid-GW (past deadline, unfinished) therefore
     yields current+1. Assumption, unverified against a real pre-GW1 draft
     bootstrap: before the first deadline the API may report current=1 with
     next=2, which rule (1) corrects. Accepts the draft shape (``events`` =
     {"current", "next", "data"}) or a plain list. ``now`` is injectable for
-    tests. Raises ValueError when none apply (season over).
+    tests. Raises ValueError when none apply (season over, or only locked events).
     """
     now = now or datetime.now(timezone.utc)
     events = bootstrap.get("events") or []
@@ -573,7 +573,12 @@ def next_gameweek(bootstrap: dict, now: datetime | None = None) -> int:
                     if (d := _parse_deadline(e.get("deadline_time"))) and d > now]
         if upcoming:
             return min(upcoming)
-    return min(int(e["id"]) for e in unfinished)
+    # Final fallback: an unfinished event past its deadline is locked, not actionable.
+    actionable = [int(e["id"]) for e in unfinished
+                  if (d := _parse_deadline(e.get("deadline_time"))) and d > now]
+    if not actionable:
+        raise ValueError("no actionable next gameweek in the bootstrap")
+    return min(actionable)
 
 
 def _parse_deadline(value: str | None) -> datetime | None:
@@ -725,11 +730,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
 
-    # An empty panel (new season, no finished GW yet) is skipped, not concatenated.
-    panels = [frame for frame in (pd.read_parquet(path) for path in args.panel)
-              if not frame.empty]
+    # A missing or empty panel (new season, no finished GW yet) is skipped, not concatenated.
+    panels = []
+    for path in args.panel:
+        if not path.exists():
+            logger.warning("panel %s not found; skipping", path)
+            continue
+        frame = pd.read_parquet(path)
+        if not frame.empty:
+            panels.append(frame)
     if not panels:
-        parser.error("every --panel is empty; nothing to train on")
+        parser.error("no usable --panel (all missing or empty); nothing to train on")
     panel = pd.concat(panels, ignore_index=True)
 
     if args.backtest:
