@@ -18,6 +18,8 @@ trap 'rmdir "$LOCK"' EXIT
 
 echo "=== autorefresh $(date) ==="
 make fetch
-make derive
+# A derive failure (e.g. no actionable next GW after the season ends) must not
+# skip the deadline notifications below; decision artifacts are written first.
+make derive || echo "derive failed — see above; retrying next cycle"
 # Deadline + state-change notifications (macOS; harmless no-op elsewhere).
 python3 scripts/notify_state.py || true
