@@ -43,6 +43,7 @@ import argparse
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -533,24 +534,45 @@ def build_gw_xp(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
     return scored.sort_values("xp", ascending=False).reset_index(drop=True)
 
 
-def next_gameweek(bootstrap: dict) -> int:
-    """The upcoming gameweek: bootstrap ``events.next``, else the first unfinished.
+def next_gameweek(bootstrap: dict, now: datetime | None = None) -> int:
+    """The gameweek to forecast.
 
-    Mid-GW ``events.next`` is current+1, so the in-progress GW is never the
-    target. Accepts the draft shape (``events`` = {"current", "next", "data"})
-    or a plain list. Raises ValueError when neither exists (season over).
+    Order: (1) ``events.current`` if it is unfinished and its deadline is still
+    in the future (not started, e.g. before the GW1 deadline); (2) ``events.next``;
+    (3) the first unfinished event. Mid-GW (past deadline, unfinished) therefore
+    yields current+1. Assumption, unverified against a real pre-GW1 draft
+    bootstrap: before the first deadline the API may report current=1 with
+    next=2, which rule (1) corrects. Accepts the draft shape (``events`` =
+    {"current", "next", "data"}) or a plain list. ``now`` is injectable for
+    tests. Raises ValueError when none apply (season over).
     """
+    now = now or datetime.now(timezone.utc)
     events = bootstrap.get("events") or []
-    nxt = None
+    current = nxt = None
     if isinstance(events, dict):
-        nxt = events.get("next")
+        current, nxt = events.get("current"), events.get("next")
         events = events.get("data") or []
+    if current is not None:
+        event = next((e for e in events if int(e["id"]) == int(current)), None)
+        deadline = _parse_deadline(event.get("deadline_time")) if event else None
+        if event and not event.get("finished") and deadline and deadline > now:
+            return int(current)
     if nxt is not None:
         return int(nxt)
     pending = [int(e["id"]) for e in events if not e.get("finished")]
     if not pending:
         raise ValueError("no next gameweek in the bootstrap (season over?)")
     return min(pending)
+
+
+def _parse_deadline(value: str | None) -> datetime | None:
+    """Parse an ISO deadline like 2026-10-10T10:00:00Z; None if absent/invalid."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _gw_arg(value: str) -> str:
@@ -692,8 +714,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
 
-    panel = pd.concat([pd.read_parquet(path) for path in args.panel],
-                      ignore_index=True)
+    # An empty panel (new season, no finished GW yet) is skipped, not concatenated.
+    panels = [frame for frame in (pd.read_parquet(path) for path in args.panel)
+              if not frame.empty]
+    if not panels:
+        parser.error("every --panel is empty; nothing to train on")
+    panel = pd.concat(panels, ignore_index=True)
 
     if args.backtest:
         frame = build_match_frame(panel)

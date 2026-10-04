@@ -251,6 +251,9 @@ def ingest_local(
 
 def summarize(frame: pd.DataFrame) -> dict:
     """Coverage summary: totals, GWs, played share, DGW / blank counts."""
+    if frame.empty:
+        return {"rows": 0, "distinct_players": 0, "gws": 0, "pct_played": None,
+                "dgw_rows": 0, "blank_rows": 0}
     return {
         "rows": len(frame),
         "distinct_players": int(frame["code"].nunique()),

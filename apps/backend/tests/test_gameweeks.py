@@ -178,3 +178,22 @@ def test_main_calls_guard_and_defaults_to_nested_paths(tmp_path, monkeypatch):
     assert gameweeks.main(["--season", "2026-27"]) == 0
     assert (tmp_path / "data/derived/2026-27/ml/player_gameweeks.parquet").exists()
     assert not flat.exists()
+
+
+def test_no_finished_gameweek_writes_empty_panel_and_exits_zero(tmp_path, monkeypatch):
+    """Regression: pre-GW1 (live.json present, nothing finished) must not crash."""
+    monkeypatch.setattr(gameweeks, "_repo_root", lambda: tmp_path)
+    root = tmp_path / "data/raw/2026-27"
+    _write_season(root, False)
+    bootstrap = json.loads((root / "bootstrap/bootstrap-static.json").read_text())
+    bootstrap["events"]["data"] = [{"id": 1, "finished": False}]
+    (root / "bootstrap/bootstrap-static.json").write_text(json.dumps(bootstrap))
+    assert gameweeks.main(["--season", "2026-27"]) == 0
+    panel = pd.read_parquet(tmp_path / "data/derived/2026-27/ml/player_gameweeks.parquet")
+    assert panel.empty
+    assert list(panel.columns) == gameweeks.CANONICAL_COLUMNS
+
+
+def test_summarize_empty_frame():
+    summary = gameweeks.summarize(gameweeks.build_dataframe([]))
+    assert summary["rows"] == 0 and summary["pct_played"] is None

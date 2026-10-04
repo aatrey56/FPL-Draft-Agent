@@ -11,6 +11,7 @@ real data are recorded in ``docs/MODEL_ROADMAP.md`` and reproduced by
 """
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -417,3 +418,45 @@ def test_cli_gw_next_resolves_end_to_end(tmp_path):
     assert code == 0
     assert out.exists()
     assert len(pd.read_parquet(out)) > 0
+
+
+def _events(current, nxt, current_finished, deadline):
+    data = [{"id": 4, "finished": True, "deadline_time": "2026-09-01T10:00:00Z"},
+            {"id": current, "finished": current_finished, "deadline_time": deadline},
+            {"id": current + 1, "finished": False,
+             "deadline_time": "2099-01-01T00:00:00Z"}]
+    return {"events": {"current": current, "next": nxt, "data": data}}
+
+
+NOW = datetime(2026, 10, 3, tzinfo=timezone.utc)
+
+
+def test_next_gameweek_pre_deadline_current_is_the_target():
+    boot = _events(1, 2, False, "2026-10-10T10:00:00Z")
+    assert mm.next_gameweek(boot, now=NOW) == 1
+
+
+def test_next_gameweek_mid_gw_past_deadline_is_current_plus_one():
+    boot = _events(5, 6, False, "2026-09-18T17:30:00Z")
+    assert mm.next_gameweek(boot, now=NOW) == 6
+
+
+def test_next_gameweek_between_gws_uses_next():
+    boot = _events(5, 6, True, "2026-09-18T17:30:00Z")
+    assert mm.next_gameweek(boot, now=NOW) == 6
+
+
+def test_cli_tolerates_empty_season_panel_beside_archive(tmp_path):
+    panel = _panel()
+    archive = tmp_path / "archive.parquet"
+    panel.to_parquet(archive)
+    empty = tmp_path / "empty.parquet"
+    panel.iloc[0:0].to_parquet(empty)
+    bootstrap = _bootstrap(panel, N_GWS + 1)
+    bootstrap["events"] = {"current": N_GWS, "next": N_GWS + 1, "data": []}
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text(json.dumps(bootstrap), encoding="utf-8")
+    out = tmp_path / "xp.parquet"
+    assert mm.main(["--gw", "next", "--season", SEASON, "--panel", str(archive),
+                    str(empty), "--bootstrap", str(bootstrap_path), "--out", str(out)]) == 0
+    assert out.exists()
