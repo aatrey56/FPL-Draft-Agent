@@ -311,10 +311,23 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) (Refre
 			sheet.Unmatched = append(miss1, miss2...)
 			fs.Sheets[club] = sheet
 		}
-		// Replace the stored entry only with a fetch that has sheets, and never
-		// downgrade a complete stored entry to a partial one.
-		if cached := fixtures[id]; len(fs.Sheets) > 0 && (fs.complete() || !cached.complete()) {
-			fixtures[id] = fs
+		// Merge per club: start from the stored sheets and overwrite each club
+		// the fresh fetch carries, never downgrading a stored full XI to a
+		// partial one.
+		freshComplete := fs.complete()
+		if len(fs.Sheets) > 0 {
+			merged := fs
+			merged.Sheets = map[string]Sheet{}
+			for club, sheet := range fixtures[id].Sheets {
+				merged.Sheets[club] = sheet
+			}
+			for club, sheet := range fs.Sheets {
+				if old, ok := merged.Sheets[club]; ok && len(old.XI) == 11 && len(sheet.XI) != 11 {
+					continue
+				}
+				merged.Sheets[club] = sheet
+			}
+			fixtures[id] = merged
 		}
 		var fresh []MatchEvent
 
@@ -350,11 +363,11 @@ func RefreshSquads(c *Client, st *store.JSONStore, gw int, now time.Time) (Refre
 				}
 			}
 		}
-		// Events resolve through the lineups, so a fetch without sheets (failed
-		// or empty) says nothing about events: keep the stored ones. Otherwise
-		// the fresh list is authoritative, even when empty (e.g. a goal
-		// overturned by VAR must disappear).
-		if len(fs.Sheets) > 0 {
+		// Events resolve through this response's lineups, so only a fetch that
+		// itself carried both clubs' full sheets can vouch for the event list.
+		// Then it is authoritative, even when empty (a goal overturned by VAR
+		// must disappear); otherwise (failed, null or one-sided) keep stored.
+		if freshComplete {
 			events[id] = fresh
 		}
 	}

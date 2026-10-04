@@ -22,6 +22,11 @@ type fakeFx struct {
 	ko      time.Time
 	lineups bool // false: teamLists are null (sheets not published)
 	goal    bool // one goal by the first ARS player at 10'
+	// goalAway adds one goal by the first CHE player at 20'.
+	goalAway bool
+	// only, when set with lineups, publishes just that club's sheet; the
+	// other side's team list is null.
+	only string
 }
 
 var clubs = []string{"ARS", "CHE"}
@@ -47,6 +52,10 @@ func (f fakeFx) json() string {
 	if f.lineups {
 		var sides []string
 		for ti, club := range clubs {
+			if f.only != "" && f.only != club {
+				sides = append(sides, "null")
+				continue
+			}
 			var xi []string
 			for n := 0; n < 11; n++ {
 				xi = append(xi, fmt.Sprintf(`{"id":%d,"name":{"display":%q,"first":"F","last":%q}}`,
@@ -56,10 +65,14 @@ func (f fakeFx) json() string {
 		}
 		lists = `"teamLists":[` + strings.Join(sides, ",") + `]`
 	}
-	events := ""
+	var evs []string
 	if f.goal {
-		events = `{"type":"G","personId":1,"clock":{"secs":600,"label":"10'00"}}`
+		evs = append(evs, `{"type":"G","personId":1,"clock":{"secs":600,"label":"10'00"}}`)
 	}
+	if f.goalAway {
+		evs = append(evs, `{"type":"G","personId":101,"clock":{"secs":1200,"label":"20'00"}}`)
+	}
+	events := strings.Join(evs, ",")
 	return fmt.Sprintf(`{"id":%d,"status":"U","kickoff":{"millis":%d},
 "teams":[{"team":{"id":1,"club":{"abbr":"ARS"}}},{"team":{"id":2,"club":{"abbr":"CHE"}}}],%s,"events":[%s]}`,
 		f.id, f.ko.UnixMilli(), lists, events)
@@ -295,6 +308,59 @@ func TestRefreshSquadsFreshEmptyEventsReplaceStored(t *testing.T) {
 	}
 	if n := readEventCount(t, st); n != 0 {
 		t.Fatalf("overturned goal must be removed, got %d events", n)
+	}
+}
+
+// Cached home-only sheet plus a fresh away-only fetch must end with both
+// sheets stored, not the away sheet alone.
+func TestRefreshSquadsMergesSheetsPerClub(t *testing.T) {
+	now := time.Now()
+	st := newStore(t)
+	fxs := []fakeFx{{id: 1, ko: now.Add(time.Hour), lineups: true, only: "ARS"}}
+	c := newFakePulse(t, &fxs)
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+	if complete, ok := readFixtureIDs(t, st)[1]; !ok || complete {
+		t.Fatal("want home-only fixture stored as incomplete after run 1")
+	}
+
+	fxs[0].only = "CHE"
+	res, err := RefreshSquads(c, st, 6, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete := readFixtureIDs(t, st)[1]; !complete {
+		t.Fatal("home sheet lost: fixture not complete after away-only merge")
+	}
+	if res.WithLineups != 1 {
+		t.Fatalf("got %+v, want merged fixture to count as 1 with lineups", res)
+	}
+}
+
+// A one-sided fetch cannot resolve the other side's players, so it must not
+// overwrite stored events for a fixture whose stored sheets are complete.
+func TestRefreshSquadsOneSidedFetchKeepsStoredEvents(t *testing.T) {
+	now := time.Now()
+	st := newStore(t)
+	fxs := []fakeFx{{id: 1, ko: now.Add(-time.Hour), lineups: true, goal: true, goalAway: true}}
+	c := newFakePulse(t, &fxs)
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+	if n := readEventCount(t, st); n != 2 {
+		t.Fatalf("want 2 stored goals, got %d", n)
+	}
+
+	fxs[0].only = "ARS" // away side's goal can no longer resolve
+	if _, err := RefreshSquads(c, st, 6, now); err != nil {
+		t.Fatal(err)
+	}
+	if n := readEventCount(t, st); n != 2 {
+		t.Fatalf("one-sided fetch changed stored events: got %d, want 2", n)
+	}
+	if complete := readFixtureIDs(t, st)[1]; !complete {
+		t.Fatal("stored complete sheets were downgraded")
 	}
 }
 
