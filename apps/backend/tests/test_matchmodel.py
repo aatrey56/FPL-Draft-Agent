@@ -460,3 +460,17 @@ def test_cli_tolerates_empty_season_panel_beside_archive(tmp_path):
     assert mm.main(["--gw", "next", "--season", SEASON, "--panel", str(archive),
                     str(empty), "--bootstrap", str(bootstrap_path), "--out", str(out)]) == 0
     assert out.exists()
+
+
+def test_next_gameweek_list_shape_mid_gw_prefers_is_next():
+    events = [{"id": 5, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"},
+              {"id": 6, "finished": False, "is_next": True,
+               "deadline_time": "2099-01-01T00:00:00Z"},
+              {"id": 7, "finished": False, "deadline_time": "2099-02-01T00:00:00Z"}]
+    assert mm.next_gameweek({"events": events}, now=NOW) == 6
+
+
+def test_next_gameweek_list_shape_mid_gw_without_flags_uses_future_deadline():
+    events = [{"id": 5, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"},
+              {"id": 6, "finished": False, "deadline_time": "2099-01-01T00:00:00Z"}]
+    assert mm.next_gameweek({"events": events}, now=NOW) == 6

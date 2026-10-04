@@ -549,6 +549,7 @@ def next_gameweek(bootstrap: dict, now: datetime | None = None) -> int:
     now = now or datetime.now(timezone.utc)
     events = bootstrap.get("events") or []
     current = nxt = None
+    is_list_shape = not isinstance(events, dict)
     if isinstance(events, dict):
         current, nxt = events.get("current"), events.get("next")
         events = events.get("data") or []
@@ -559,10 +560,20 @@ def next_gameweek(bootstrap: dict, now: datetime | None = None) -> int:
             return int(current)
     if nxt is not None:
         return int(nxt)
-    pending = [int(e["id"]) for e in events if not e.get("finished")]
-    if not pending:
+    unfinished = [e for e in events if not e.get("finished")]
+    if not unfinished:
         raise ValueError("no next gameweek in the bootstrap (season over?)")
-    return min(pending)
+    if is_list_shape:
+        # Plain-list shape has no current/next: prefer the is_next flag, then the
+        # first unfinished event that has not yet passed its deadline.
+        flagged = [int(e["id"]) for e in unfinished if e.get("is_next")]
+        if flagged:
+            return min(flagged)
+        upcoming = [int(e["id"]) for e in unfinished
+                    if (d := _parse_deadline(e.get("deadline_time"))) and d > now]
+        if upcoming:
+            return min(upcoming)
+    return min(int(e["id"]) for e in unfinished)
 
 
 def _parse_deadline(value: str | None) -> datetime | None:

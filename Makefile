@@ -22,7 +22,9 @@ derive:
 	cd apps/backend && uv run python -m backend.ml.matchmodel --gw next --season $(SEASON) \
 		--panel ../../data/derived/ml/player_gameweeks.parquet $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
 		--bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json
-	cd apps/backend && uv run python -m backend.ml.ownership && uv run python -m backend.ml.waiver && uv run python -m backend.ml.myweek
+	cd apps/backend && uv run python -m backend.ml.ownership --season $(SEASON) \
+		&& uv run python -m backend.ml.waiver --season $(SEASON) \
+		&& uv run python -m backend.ml.myweek --season $(SEASON)
 
 ## weekly: the whole weekly loop (fetch + derive)
 weekly: fetch derive
