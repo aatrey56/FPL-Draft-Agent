@@ -598,6 +598,15 @@ def served_walk_forward(panel: pd.DataFrame, season: str, eval_gws: list[int],
     parity holds by construction. Outcomes are attached only after features
     and predictions exist.
 
+    Known divergence — double and blank gameweeks. Serving
+    (``score_fixtures``) scores each real fixture of a double against its own
+    opponent and sums. The panel records no opponent for a double-gameweek row
+    (a known ingest gap, see MODEL_ROADMAP.md), so there are no per-fixture
+    stubs to build: such a row is scored once with imputed opponent features
+    and multiplied by ``num_fixtures`` (``score_panel``). A blank row
+    (``num_fixtures == 0``) scores 0, where serving has no row at all.
+    Single-fixture gameweeks are unaffected.
+
     Takes the raw ``panel``, not a built frame: the frame is rebuilt per
     target gameweek, as serving does. Returns the scored rows with features,
     model columns and realized outcomes, in the shape ``walk_forward`` returns.

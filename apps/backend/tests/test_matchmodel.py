@@ -363,6 +363,32 @@ def test_season_start_orders_by_start_year_and_rejects_garbage():
         mm.season_start("last season")
 
 
+def test_served_walk_forward_scores_a_panel_double_as_one_imputed_fixture():
+    """Pins the documented DGW limitation of the as-served eval.
+
+    The panel stores a double as one row with ``num_fixtures == 2`` and no
+    opponent, so the eval cannot score each fixture the way ``score_fixtures``
+    serves it: it scores one fixture with imputed opponent features and
+    doubles it. If the panel ever gains per-fixture rows, this test should be
+    replaced by a parity test against ``score_fixtures``.
+    """
+    panel = _two_season_panel()
+    doubled_team = 101
+    at = ((panel["season"] == LIVE_SEASON) & (panel["gw"] == PARITY_GW)
+          & (panel["team_id"] == doubled_team))
+    panel.loc[at, "num_fixtures"] = 2
+    panel.loc[at, ["opponent_team", "opponent_name"]] = np.nan
+    scored = mm.served_walk_forward(panel, LIVE_SEASON, [PARITY_GW], alpha=100.0,
+                                    min_train_rows=SMALL_FIT)
+
+    doubled = scored[scored["team_id"] == doubled_team]
+    single = scored[scored["team_id"] != doubled_team]
+    assert len(doubled) == at.sum()
+    assert doubled[["opp_scored_pg", "opp_conceded_pg"]].isna().all().all()
+    assert doubled["xp"].to_numpy() == pytest.approx(2 * doubled["xp_fixture"].to_numpy())
+    assert single["xp"].to_numpy() == pytest.approx(single["xp_fixture"].to_numpy())
+
+
 def test_served_walk_forward_needs_the_archive_for_a_thin_season():
     """Within the live season alone GW2 has no labelled history; the archive fixes that."""
     alone = mm.served_walk_forward(_live_panel(), LIVE_SEASON, [2], alpha=100.0,
