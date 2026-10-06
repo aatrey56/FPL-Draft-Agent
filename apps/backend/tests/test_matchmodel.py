@@ -435,6 +435,25 @@ def test_walk_forward_default_is_unchanged(frame):
     assert predicted["xp"].sum() == pytest.approx(4470.087216015732)
 
 
+def test_walk_forward_default_stays_within_season_on_two_seasons():
+    """Regression: the default path must never train across a season boundary.
+
+    With a second full season beside it, the archive season reproduces its
+    single-season golden output exactly, and the second season its own — so
+    any change that lets the default path pool seasons is caught.
+    """
+    second = _panel(seed=11).assign(season=LIVE_SEASON)
+    second["team_id"] += 100
+    second["opponent_team"] += 100
+    frame = build_match_frame(pd.concat([_panel(), second], ignore_index=True))
+    predicted = mm.walk_forward(frame, min_gw=6, alpha=100.0,
+                                min_train_rows=SMALL_FIT)
+    by_season = predicted.groupby("season")["xp"]
+    assert by_season.size().to_dict() == {SEASON: 1680, LIVE_SEASON: 1680}
+    assert by_season.sum()[SEASON] == pytest.approx(4470.087216015732)
+    assert by_season.sum()[LIVE_SEASON] == pytest.approx(3785.2729618143544)
+
+
 # --- acceptance criterion 3: double gameweeks -------------------------------
 
 def test_double_gameweek_sums_both_fixtures():
