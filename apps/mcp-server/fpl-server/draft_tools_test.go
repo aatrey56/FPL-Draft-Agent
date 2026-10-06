@@ -165,21 +165,39 @@ func TestWaiverPlanServesSeasonArtifact(t *testing.T) {
 	}
 }
 
-// The labels and ordering of waiver_plan depend on the scorer that ran, so the
-// note must describe that mode and not the other one.
+// The labels and ordering of waiver_plan depend on the ranking that ran
+// (rank_by; the scorer field in files written before it), so the note must
+// describe that mode and none of the others.
 func TestWaiverPlanNoteDescribesTheRankingUsed(t *testing.T) {
-	const next1, next3 = "labels and ordering are next-GW based", "labels and ordering are next-3-GW based"
+	const (
+		next1  = "labels and ordering are next-GW based"
+		next3  = "labels and ordering are next-3-GW based"
+		model3 = "labels and ordering are 3-GW-horizon based"
+		ros    = "ordering is rest-of-season based"
+	)
+	markers := []string{next1, next3, model3, ros}
 	cases := []struct {
-		name          string
-		meta          map[string]any
-		want, notWant string
+		name string
+		meta map[string]any
+		want string
 	}{
-		{"model", map[string]any{"scorer": "model", "scorer_requested": "model", "xp_fallback": false}, next1, next3},
-		{"heuristic requested", map[string]any{"scorer": "heuristic", "scorer_requested": "heuristic", "xp_fallback": false}, next3, next1},
-		{"model fell back", map[string]any{"scorer": "heuristic", "scorer_requested": "model", "xp_fallback": true,
-			"xp_fallback_reason": "match xP file xp_gw6.parquet missing"}, next3, next1},
+		{"model ranked on gw3", map[string]any{"scorer": "model", "rank_by": "next3"}, model3},
+		{"model ranked on gw1", map[string]any{"scorer": "model", "rank_by": "next1"}, next1},
+		{"model ranked on ros", map[string]any{"scorer": "model", "rank_by": "ros"}, ros},
+		{"horizon file missing", map[string]any{"scorer": "model", "rank_by": "next1",
+			"horizon_requested": "3", "horizon_fallback": true}, next1},
+		{"heuristic requested", map[string]any{"scorer": "heuristic", "rank_by": "legacy",
+			"scorer_requested": "heuristic", "xp_fallback": false}, next3},
+		{"model fell back", map[string]any{"scorer": "heuristic", "rank_by": "legacy",
+			"scorer_requested": "model", "xp_fallback": true,
+			"xp_fallback_reason": "match xP file xp_gw6.parquet missing"}, next3},
+		// written before rank_by existed: keyed on the scorer that ran
+		{"old model file", map[string]any{"scorer": "model", "scorer_requested": "model", "xp_fallback": false}, next1},
+		{"old heuristic file", map[string]any{"scorer": "heuristic", "xp_fallback": false}, next3},
 		// written before the scorer field existed: the heuristic next-3 plan
-		{"no scorer field", map[string]any{}, next3, next1},
+		{"no scorer field", map[string]any{}, next3},
+		// an unknown ranking is described as the conservative heuristic one
+		{"unknown rank_by", map[string]any{"scorer": "model", "rank_by": "next9"}, next3},
 	}
 	for _, c := range cases {
 		cfg := fixtureConfig(t)
@@ -198,11 +216,16 @@ func TestWaiverPlanNoteDescribesTheRankingUsed(t *testing.T) {
 		if err := json.Unmarshal([]byte(resultText(t, res)), &plan); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(plan.Note, c.want) || strings.Contains(plan.Note, c.notWant) {
-			t.Errorf("%s: note describes the wrong ranking:\n%s", c.name, plan.Note)
+		for _, marker := range markers {
+			if strings.Contains(plan.Note, marker) != (marker == c.want) {
+				t.Errorf("%s: note describes the wrong ranking (marker %q):\n%s", c.name, marker, plan.Note)
+			}
 		}
-		if !strings.Contains(plan.Note, "unprojected_squad") || !strings.Contains(plan.Note, "backend.ml.waiver") {
-			t.Errorf("%s: note lost its shared part:\n%s", c.name, plan.Note)
+		for _, shared := range []string{"unprojected_squad", "backend.ml.waiver", "gains = {gw1, gw3, ros}",
+			"add_next3_source", "horizon_fallback"} {
+			if !strings.Contains(plan.Note, shared) {
+				t.Errorf("%s: note lost %q from its shared part:\n%s", c.name, shared, plan.Note)
+			}
 		}
 	}
 }

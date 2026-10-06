@@ -261,27 +261,44 @@ type WaiverPlanArgs struct {
 	Season string `json:"season,omitempty" jsonschema:"Season (default: server default season)"`
 }
 
-// The waiver_plan note has a ranking part, which differs between the two modes
-// of backend.ml.waiver.recommend, and a part shared by both.
+// The waiver_plan note has a ranking part, which differs between the modes of
+// backend.ml.waiver.recommend (its rank_by), and a part shared by all.
 const (
-	// rank_by "next1": the match model's xP was used.
-	waiverNoteModelRanking = "scorer = model: labels and ordering are next-GW based. next1_gain = next-GW xP of the add minus the drop (xp_source on each rec says whether the add's value came from the model or, for a player the model does not cover, the heuristic). labels: upgrade = better next GW and all season; stream = next-GW help only (plan to re-drop); hold = no next-GW gain but better rest-of-season. Ordered by next1_gain, with holds listed after the others. next3_gain (heuristic 3-GW xP of the add minus the drop) is shown for context and does not drive labels or order. A free agent without a ROS projection (e.g. promoted club) can only be a stream, with season_gain, next3_gain and add_next3_xp null and season_unknown true (no ROS projection to compare)."
+	// rank_by "next1": the match model's xP, ranked on the next GW.
+	waiverNoteModelRanking = "scorer = model, ranked on the next GW (rank_by next1: --horizon 1, or --horizon 3 without a usable horizon file — see horizon_fallback): labels and ordering are next-GW based. next1_gain = next-GW xP of the add minus the drop (add_xp_source on each rec says whether the add's value came from the model or, for a player the model does not cover, the heuristic). labels: upgrade = better next GW and all season; stream = next-GW help only (plan to re-drop); hold = no next-GW gain but better rest-of-season. Ordered by next1_gain, with holds listed after the others. next3_gain (3-GW xP of the add minus the drop) is shown for context and does not drive labels or order. A free agent without a ROS projection (e.g. promoted club) can only be a stream, with season_gain null and season_unknown true (no ROS projection to compare)."
+	// rank_by "next3": the match model's xP, ranked on its 3-GW horizon.
+	waiverNoteModelHorizon = "scorer = model, ranked on the next 3 GWs (rank_by next3, the default --horizon 3): labels and ordering are 3-GW-horizon based. next3_gain = 3-GW xP of the add minus the drop. labels: upgrade = better over the next 3 GWs and all season; stream = 3-GW help only (plan to re-drop); hold = no 3-GW gain but better rest-of-season. Ordered by next3_gain, with holds listed after the others. next1_gain (next-GW xP of the add minus the drop) is shown for context and does not drive labels or order. A free agent without a ROS projection (e.g. promoted club) can only be a stream, with season_gain null and season_unknown true (no ROS projection to compare)."
+	// rank_by "ros": the match model's xP, ranked on the rest of the season.
+	waiverNoteModelSeason = "scorer = model, ranked on the rest of the season (rank_by ros, --horizon ros): ordering is rest-of-season based — by season_gain (role-adjusted ROS of the add minus the drop), ties by next3_gain; holds are not demoted. Labels are the 3-GW ones: upgrade = better over the next 3 GWs and all season; stream = 3-GW help only (plan to re-drop); hold = no 3-GW gain but better rest-of-season. A free agent without a ROS projection has season_gain null and season_unknown true and ranks as a zero season gain."
 	// rank_by "legacy": the heuristic scorer, requested or after a fallback.
-	waiverNoteHeuristicRanking = "scorer = heuristic (when xp_fallback is true the model was requested but its xP file was missing, unreadable or stale — see xp_fallback_reason): every value is heuristic, and labels and ordering are next-3-GW based, not next-GW. next3_gain = heuristic 3-GW xP of the add minus the drop. labels: upgrade = better over the next 3 GWs and all season; stream = next-3-GW help only (plan to re-drop); hold = no next-3-GW gain but better rest-of-season. Ordered by the larger of next3_gain and season_gain. next1_gain (heuristic next-GW xP of the add minus the drop) is shown for context and does not drive labels or order. A free agent without a ROS projection is never recommended."
-	waiverNoteCommon           = "unprojected_squad = squad players with neither a ROS projection nor model xP (never auto-dropped — check their player_card); only players with a ROS projection are ever the drop — except a departed (status u) squad player, who is always the drop at his position. Role signals: club_moved = current club differs from last season's (null = new to the league); add_expected_minutes = mean minutes over the last 5 finished GWs (through minutes_through_gw); for available (status a) club-movers only, add_ros_adj = add_ros × clip(expected_minutes/60, 0.15, 1) and season_gain compares ros_adj, so a transferred player who is not playing is no longer rated on his old club's role (an injured or doubtful club-mover keeps his full ROS — his absence, not his role, explains the minutes). drop_candidates = the 3 most droppable squad players per position (departed first, then lowest ros_adj). role_overrides.json entries replace a player's next-GW p_start (overrides_applied / overrides_unmatched / overrides_expired / overrides_stale / overrides_blocked — an entry with neither return_gw nor valid_through_gw is stale after the first deadline following its as_of (file updated/mtime fallback); an override never lifts the availability gate: a player with availability 0 is blocked; add_role_override carries the fact). Regenerate with: python -m backend.ml.waiver"
+	waiverNoteHeuristicRanking = "scorer = heuristic (when xp_fallback is true the model was requested but its xP file was missing, unreadable or stale — see xp_fallback_reason): every value is heuristic, --horizon is ignored, and labels and ordering are next-3-GW based, not next-GW. next3_gain = heuristic 3-GW xP of the add minus the drop. labels: upgrade = better over the next 3 GWs and all season; stream = next-3-GW help only (plan to re-drop); hold = no next-3-GW gain but better rest-of-season. Ordered by the larger of next3_gain and season_gain. next1_gain (heuristic next-GW xP of the add minus the drop) is shown for context and does not drive labels or order. A free agent without a ROS projection is never recommended."
+	waiverNoteCommon           = "Horizons: gains = {gw1, gw3, ros} on each rec repeats next1_gain / next3_gain / season_gain (null = unknown at that horizon, never zero). add_next3_source says where the add's 3-GW value came from: model = the match model's xP summed over horizon_events (GW N..N+2; a blank GW adds 0, a double both fixtures), scored with the player's form frozen at GW N — a schedule view that ignores form drift — and today's availability applied to all three GWs; heuristic = ROS/38 × 3-GW fixture load × availability. horizon_fallback true (see horizon_fallback_reason) = the model ran without a usable horizon file, so every 3-GW value is heuristic. unprojected_squad = squad players with neither a ROS projection nor model xP (never auto-dropped — check their player_card); only players with a ROS projection are ever the drop — except a departed (status u) squad player, who is always the drop at his position. Role signals: club_moved = current club differs from last season's (null = new to the league); add_expected_minutes = mean minutes over the last 5 finished GWs (through minutes_through_gw); for available (status a) club-movers only, add_ros_adj = add_ros × clip(expected_minutes/60, 0.15, 1) and season_gain compares ros_adj, so a transferred player who is not playing is no longer rated on his old club's role (an injured or doubtful club-mover keeps his full ROS — his absence, not his role, explains the minutes). drop_candidates = the 3 most droppable squad players per position (departed first, then lowest ros_adj). role_overrides.json entries replace a player's next-GW p_start, and re-weight his model 3-GW value only for the GWs an entry covers (undated: the next GW only; valid_through_gw: through that GW; return_gw: every GW before it counts 0) (overrides_applied / overrides_unmatched / overrides_expired / overrides_stale / overrides_blocked — an entry with neither return_gw nor valid_through_gw is stale after the first deadline following its as_of (file updated/mtime fallback); an override never lifts the availability gate: a player with availability 0 is blocked; add_role_override carries the fact). Regenerate with: python -m backend.ml.waiver [--horizon {1,3,ros}]"
 )
 
 // waiverPlanNote describes the labels and ordering the served plan actually
-// used, keyed on its scorer field (the scorer that ran, not the one asked
-// for). backend.ml.waiver ranks on next1_gain only with the match model's xP
-// (scorer "model"). With --scorer heuristic, after a model fallback
-// (xp_fallback true, scorer "heuristic"), or in a file written before the
-// field existed, labels and order are the next-3-GW ones.
+// used. backend.ml.waiver records that as rank_by (next1 / next3 / ros under
+// the match model, legacy for the heuristic scorer or after a model
+// fallback). A file written before rank_by existed is keyed on its scorer
+// field (the scorer that ran, not the one asked for): "model" ranked on the
+// next GW, anything else — including no field at all — on the heuristic
+// next 3 GWs.
 func waiverPlanNote(plan map[string]any) string {
-	if scorer, _ := plan["scorer"].(string); scorer == "model" {
-		return waiverNoteModelRanking + " " + waiverNoteCommon
+	rankBy, _ := plan["rank_by"].(string)
+	if rankBy == "" {
+		if scorer, _ := plan["scorer"].(string); scorer == "model" {
+			rankBy = "next1"
+		}
 	}
-	return waiverNoteHeuristicRanking + " " + waiverNoteCommon
+	ranking := waiverNoteHeuristicRanking
+	switch rankBy {
+	case "next1":
+		ranking = waiverNoteModelRanking
+	case "next3":
+		ranking = waiverNoteModelHorizon
+	case "ros":
+		ranking = waiverNoteModelSeason
+	}
+	return ranking + " " + waiverNoteCommon
 }
 
 func waiverPlanHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, WaiverPlanArgs) (*mcp.CallToolResult, any, error) {

@@ -366,10 +366,14 @@ func (m *model) sugDetailBody(width int) string {
 				r.Name, r.AddROS, r.Drop, r.DropROS, r.SeasonGain))
 		}
 		b.WriteString("\n")
-		if r.Next3Unknown {
-			para(fmt.Sprintf("Next 3 GWs: unavailable — %s has no projection to build a 3-GW value from.",
+		switch {
+		case r.Next3Unknown:
+			para(fmt.Sprintf("Next 3 GWs: unavailable — %s has no match-model horizon and no projection to build a 3-GW value from.",
 				r.Name))
-		} else {
+		case r.Next3Model:
+			para(fmt.Sprintf("Next 3 GWs (match model, by fixtures — form held at this GW): %s projects %.1f xP, %+.1f over %s.",
+				r.Name, r.AddNext3, r.Next3Gain, r.Drop))
+		default:
 			para(fmt.Sprintf("Next 3 GWs: %s projects %.1f xP, %+.1f over %s.",
 				r.Name, r.AddNext3, r.Next3Gain, r.Drop))
 		}
