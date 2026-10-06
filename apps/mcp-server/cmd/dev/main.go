@@ -114,7 +114,7 @@ func main() {
 			gw = game.NextEvent
 		}
 		must(client.EventLive(gw, true))
-		refreshSquads(st, gw)
+		refreshSquads(pulse.NewClient(), st, gw, time.Now())
 		// Standings and transactions are tiny GETs — refreshing them here
 		// keeps the League and Transactions panels live too.
 		must(client.LeagueDetails(*leagueID, true))
@@ -207,7 +207,7 @@ func main() {
 	for gw := minGW; gw <= maxGW; gw++ {
 		log.Printf("Queueing GW %d live + entry events...\n", gw)
 	}
-	refreshSquads(st, maxGW)
+	refreshSquads(pulse.NewClient(), st, maxGW, time.Now())
 	if err := runFetchTasks(client, entryIDs, minGW, maxGW, refreshLive, refreshEntry, *workers); err != nil {
 		log.Fatalf("fetch failed: %v", err)
 	}
@@ -344,11 +344,17 @@ func buildEntrySnapshots(st *store.JSONStore, derivedRoot string, leagueID int, 
 // refreshSquads pulls official team sheets (pulselive) for fixtures around
 // now into gw/<n>/squads.json. Best-effort: the FPL refresh never depends on
 // the pulse feed being up.
-func refreshSquads(st *store.JSONStore, gw int) {
-	if err := pulse.RefreshSquads(pulse.NewClient(), st, gw, time.Now()); err != nil {
+func refreshSquads(c *pulse.Client, st *store.JSONStore, gw int, now time.Time) {
+	res, err := pulse.RefreshSquads(c, st, gw, now)
+	switch {
+	case err != nil:
 		log.Printf("team sheets (pulse) skipped: %v", err)
-	} else {
-		log.Printf("team sheets refreshed: GW %d", gw)
+	case res.InWindow == 0:
+		log.Printf("team sheets: no fixtures in team-sheet window, GW %d squads.json left untouched", gw)
+	case res.WithLineups == 0:
+		log.Printf("WARN team sheets: %d fixtures in window but no lineups published, GW %d", res.InWindow, gw)
+	default:
+		log.Printf("team sheets refreshed: GW %d (%d fixtures in window, %d with lineups)", gw, res.InWindow, res.WithLineups)
 	}
 }
 

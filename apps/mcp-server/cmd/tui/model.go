@@ -17,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/autosub"
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/pulse"
 )
 
 type playerRow struct {
@@ -718,34 +719,18 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	// Official team sheets (pulse), when released: element -> xi/bench, plus
 	// which clubs have a sheet at all. A club with a sheet and a player in
 	// neither list means "not in the squad".
-	var squads struct {
-		Fixtures []struct {
-			Sheets map[string]struct {
-				XI    []int `json:"xi"`
-				Bench []int `json:"bench"`
-			} `json:"sheets"`
-		} `json:"fixtures"`
-	}
 	sheetRole := map[int]string{}
 	clubSheet := map[int]bool{}
 	shortToTeam := map[string]int{}
 	for id, short := range teamShort {
 		shortToTeam[short] = id
 	}
+	var squads pulse.File
 	if err := readJSON(filepath.Join(dir, fmt.Sprintf("gw/%d/squads.json", gw)), &squads); err == nil {
-		for _, fx := range squads.Fixtures {
-			for club, sheet := range fx.Sheets {
-				if len(sheet.XI) == 0 {
-					continue
-				}
-				clubSheet[shortToTeam[club]] = true
-				for _, id := range sheet.XI {
-					sheetRole[id] = "xi"
-				}
-				for _, id := range sheet.Bench {
-					sheetRole[id] = "bench"
-				}
-			}
+		roles, clubs := pulse.CurrentRoles(squads, time.Now())
+		sheetRole = roles
+		for club := range clubs {
+			clubSheet[shortToTeam[club]] = true
 		}
 	}
 

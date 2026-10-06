@@ -42,7 +42,40 @@ func (s *JSONStore) WriteRaw(rel string, body []byte, pretty bool) error {
 		}
 	}
 
-	return os.WriteFile(path, body, 0o644)
+	return writeAtomic(path, body)
+}
+
+// writeAtomic writes body to a temp file in path's directory, fsyncs it, then
+// renames it over path, so readers never observe a partial file.
+func writeAtomic(path string, body []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	fail := func(cause error) error {
+		tmp.Close()
+		os.Remove(tmpName)
+		return cause
+	}
+	if _, err := tmp.Write(body); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 func (s *JSONStore) ReadRaw(rel string) ([]byte, error) {

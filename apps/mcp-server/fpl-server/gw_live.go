@@ -17,10 +17,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/autosub"
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/pulse"
 )
 
 type GwLiveArgs struct {
@@ -175,33 +177,14 @@ func gwLiveHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 			}
 		}
 
-		// Official team sheets (best effort): xi/bench per element, and which
-		// clubs have released one. Absent file = no sheet knowledge.
-		var squads struct {
-			Fixtures []struct {
-				Sheets map[string]struct {
-					XI    []int `json:"xi"`
-					Bench []int `json:"bench"`
-				} `json:"sheets"`
-			} `json:"fixtures"`
-		}
+		// Official team sheets (best effort): xi/bench per element from each
+		// club's current fixture, and which clubs have released one. Absent
+		// file = no sheet knowledge.
 		sheetRole := map[int]string{}
 		clubSheet := map[string]bool{}
+		var squads pulse.File
 		if err := readJSONFile(filepath.Join(rawDir, fmt.Sprintf("gw/%d/squads.json", gw)), &squads); err == nil {
-			for _, fx := range squads.Fixtures {
-				for club, sheet := range fx.Sheets {
-					if len(sheet.XI) == 0 {
-						continue
-					}
-					clubSheet[club] = true
-					for _, id := range sheet.XI {
-						sheetRole[id] = "xi"
-					}
-					for _, id := range sheet.Bench {
-						sheetRole[id] = "bench"
-					}
-				}
-			}
+			sheetRole, clubSheet = pulse.CurrentRoles(squads, time.Now())
 		}
 
 		side := func(entryID int) (map[string]any, error) {
