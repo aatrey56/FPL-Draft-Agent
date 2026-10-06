@@ -181,6 +181,22 @@ def test_gameweek_without_xp_or_training_rows_errors_naming_it(tmp_path):
     assert not (tmp_path / "ml" / "track_record.csv").exists()
 
 
+def test_replay_sees_only_what_was_known_at_the_deadline(panel):
+    """Replay is the serving path: GW3's xP ignores GW3 outcomes and anything later."""
+    baseline = tr.replay_predictions(panel, LIVE_SEASON, [3], min_train_rows=SMALL_FIT)
+
+    tampered = panel[~((panel["season"] == LIVE_SEASON) & (panel["gw"] > 3))].copy()
+    week = (tampered["season"] == LIVE_SEASON) & (tampered["gw"] == 3)
+    tampered.loc[week, "total_points"] = tampered.loc[week, "total_points"] + 10
+    later = _season("2027-28", 5, seed=13, team_offset=200)
+    replayed = tr.replay_predictions(pd.concat([tampered, later], ignore_index=True),
+                                     LIVE_SEASON, [3], min_train_rows=SMALL_FIT)
+
+    pd.testing.assert_series_equal(replayed["xp"], baseline["xp"])
+    # Realized points are attached after scoring, so the tampered labels show up there.
+    assert (replayed["label_points"] == baseline["label_points"] + 10).all()
+
+
 def test_thin_position_scores_nan_not_crash(frame):
     rows = frame[(frame["season"] == LIVE_SEASON) & (frame["gw"] == 3)].copy()
     rows["xp"] = rows["label_points"].astype(float)
