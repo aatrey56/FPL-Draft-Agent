@@ -219,15 +219,18 @@ predictors = 192 rows at GW5) and rewrites `track_record.md`.
   the last pre-deadline write. A file modified after the deadline (a manual
   `make xp GW=n`) is ignored with a warning; live rows already in the CSV are
   kept even if the file later disappears.
-- **`replay`** — otherwise: rebuilt as-of with the prior-season walk-forward
-  (archive + earlier GWs of the season, today's code, no availability gate).
-  Not live evidence, and the markdown labels every replay row as such.
+- **`replay`** — otherwise: rebuilt as it would have been served, through
+  `matchmodel.served_walk_forward` (the live-season check's path: earlier
+  seasons + earlier GWs of this one, features from outcome-free stubs via
+  `stub_frame`; today's code, no availability gate). Not live evidence, and
+  the markdown labels every replay row as such.
 - GW1 is skipped (no in-season history, so no trailing predictor can rank it).
   Each predictor is scored on the players the model covered that week. A re-run
   with unchanged inputs leaves the CSV byte-identical. No `ep_next` column: the
   draft API leaves it null.
 
-First record (2026-10-06, GW2 live, GW3-5 replay), startable pool, mean Spearman:
+First record (2026-10-06, GW2 live, GW3-5 replay; re-run on the serving path the
+same day — every replayed score unchanged), startable pool, mean Spearman:
 GKP 0.289 vs 0.223 (mean l5), DEF 0.345 vs 0.226 (minutes), MID 0.305 vs 0.291
 (minutes), FWD 0.406 vs 0.356 (minutes). The one live week is the warning: the
 served GW2 forecast scored GKP −0.021 and MID 0.188, where the GW2 replay
