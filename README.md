@@ -82,8 +82,9 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   0; null before GW1 finishes). For club-movers only, `ros_adj = ros_points ×
   clip(expected_minutes / 60, 0.15, 1.0)` (`ROLE_MINUTES_FULL`, `ROLE_FLOOR`
   in `waiver.py`), and `season_gain`, the drop pick and the heuristic per-GW
-  baseline use `ros_adj`; `ros_points` stays in the output. An injured
-  club-mover is under-valued (accepted, conservative). The drop pick sorts on
+  baseline use `ros_adj`; `ros_points` stays in the output. A club-mover
+  whose status is not `a` (injured, doubtful, suspended) keeps factor 1.0:
+  the absence, not a lost role, explains his minutes. The drop pick sorts on
   `(status != "u", ros_adj, xp_next)`: a departed squad player is always the
   drop at his position, and `drop_candidates` lists the top 3 per position.
   An optional `data/derived/<season>/ml/role_overrides.json`

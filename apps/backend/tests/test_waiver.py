@@ -632,6 +632,33 @@ def test_role_factor_math():
     assert wv.role_factor(False, 0.0) == 1.0                     # not moved: never scaled
     assert wv.role_factor(None, 0.0) == 1.0                      # no prior club: unknown
     assert wv.role_factor(True, None) == 1.0                     # no minutes yet: unknown
+    assert wv.role_factor(True, 0.0, "a") == wv.ROLE_FLOOR       # available: scaled
+    for status in ("d", "i", "s", None):                         # absence explains the minutes
+        assert wv.role_factor(True, 0.0, status) == 1.0, status
+
+
+def test_injured_or_doubtful_club_mover_keeps_his_full_projection(tmp_path):
+    """Regression (live GW6): flagged club-movers were scaled for minutes
+    their injury cost them (Struijk ROS 108 -> 35, Wilson 105 -> 51)."""
+    panel = _panel({300: [0, 0, 0, 0, 0], 303: [0, 0, 0, 0, 0]})
+    hurt = [{"id": 33, "code": 303, "web_name": "HurtMover", "element_type": 2, "team": 1,
+             "status": "d", "chance_of_playing_next_round": 50, "news": "Knock"}]
+    seasons = pd.concat([ROLE_SEASONS, pd.DataFrame([
+        {"season": "2025-26", "code": 303, "team_name": "Wolves", "total_points": 140}])],
+        ignore_index=True)
+    projections = tmp_path / "projections.json"
+    projections.write_text(json.dumps([{"code": 300, "projected_points": 175.0},
+                                       {"code": 303, "projected_points": 140.0}]))
+    bootstrap = {"teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]}, "elements": [
+        {"id": 30, "code": 300, "web_name": "ClubMover", "element_type": 2, "team": 1, "status": "a"},
+        *hurt]}
+    table = wv.build_player_table(bootstrap, seasons, projections,
+                                  season_panel=panel).set_index("web_name")
+    assert bool(table.loc["HurtMover", "club_moved"]) is True
+    assert table.loc["HurtMover", "role_factor"] == 1.0
+    assert table.loc["HurtMover", "ros_adj"] == 140.0
+    assert table.loc["HurtMover", "availability"] == 0.5          # the gate still applies
+    assert table.loc["ClubMover", "role_factor"] == wv.ROLE_FLOOR  # available: unchanged rule
 
 
 def test_club_mover_with_no_minutes_gets_the_floor(tmp_path):

@@ -388,8 +388,11 @@ changed club). Three signals, all in `backend/ml/waiver.py`, used by
   heuristic replay's rank-1 add at the GW4 and GW5 deadlines, for -1 and 0
   points) now carries `ros_adj` 52.5 and drops out of the list. Scope is
   club-movers only, the measured failure: a player benched at the same club
-  keeps factor 1.0 (a general bench factor is Phase B), and an injured
-  club-mover is under-valued (conservative; his news is on the rec).
+  keeps factor 1.0 (a general bench factor is Phase B). A club-mover whose
+  status is not `a` also keeps 1.0 — injured or doubtful, his low minutes
+  are the absence, not a lost role (live: Struijk ROS 108 was scaled to 35
+  and Wilson 105 to 51 while flagged); the availability gate handles his
+  next gameweek.
 - **Departed drop pick.** Sort key `(status != "u", ros_adj, xp_next)`, with
   `ros_adj` 0 for a departed player (projected or not), so he is always the
   drop at his position and replacing him counts as a season gain.

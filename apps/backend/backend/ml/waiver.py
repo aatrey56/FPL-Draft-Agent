@@ -53,10 +53,10 @@ Design (v1, pre-GW1-honest):
   finished), ``minutes_season`` = their sum. For club-movers ONLY,
   ``ros_adj = ros_points x role_factor`` with ``role_factor =
   clip(expected_minutes / ROLE_MINUTES_FULL, ROLE_FLOOR, 1.0)``; everyone
-  else has factor 1.0. ``season_gain``, the drop pick and the heuristic
+  else — and any club-mover whose status is not "a" (injured, doubtful,
+  suspended: the absence explains the minutes) — has factor 1.0. ``season_gain``, the drop pick and the heuristic
   per-GW baseline (``ros_adj / 38``) use ``ros_adj``; ``ros_points`` stays in
-  the output. Known bias, accepted: an injured club-mover is under-valued
-  (conservative). A general "benched at his old club too" factor is Phase B.
+  the output. A general "benched at his old club too" factor is Phase B.
 * **Departed squad players** (status ``u``) have ``ros_adj`` 0 and are
   always the drop at their position — sort key ``(status != "u", ros_adj,
   xp_next)`` — with or without a projection. ``drop_candidates`` lists the
@@ -221,13 +221,19 @@ def minutes_profile(season_panel: pd.DataFrame | None,
             for code, total in season_total.items()}
 
 
-def role_factor(club_moved: bool | None, expected_minutes: float | None) -> float:
+def role_factor(club_moved: bool | None, expected_minutes: float | None,
+                status: str | None = "a") -> float:
     """Multiplier on a season projection for a player whose role is unproven.
 
-    1.0 unless the player changed clubs AND his minutes are known; then
-    ``clip(expected_minutes / ROLE_MINUTES_FULL, ROLE_FLOOR, 1.0)``.
+    1.0 unless the player changed clubs, his minutes are known AND he is
+    available (status "a"); then
+    ``clip(expected_minutes / ROLE_MINUTES_FULL, ROLE_FLOOR, 1.0)``. An
+    injured, doubtful or suspended club-mover's low minutes are explained by
+    the absence, not by a lost role, so his projection is not scaled down
+    (the availability gate already handles the next gameweek).
     """
-    if club_moved is not True or expected_minutes is None or pd.isna(expected_minutes):
+    if (club_moved is not True or status != "a"
+            or expected_minutes is None or pd.isna(expected_minutes)):
         return 1.0
     return max(ROLE_FLOOR, min(1.0, float(expected_minutes) / ROLE_MINUTES_FULL))
 
@@ -434,7 +440,7 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
         club_moved = moves.get(el.get("code"))
         expected_minutes, minutes_season = (
             (None, None) if profile is None else profile.get(el.get("code"), (0.0, 0)))
-        factor = role_factor(club_moved, expected_minutes)
+        factor = role_factor(club_moved, expected_minutes, el.get("status"))
         ros_role = ros * factor if ros is not None else None
         # A departed player scores nothing from here on, projection or not.
         ros_adj = 0.0 if el.get("status") == "u" else ros_role
