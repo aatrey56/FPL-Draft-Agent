@@ -26,11 +26,43 @@ def _world(tmp_path, elements, projections):
     return bootstrap, mw.gw_xp_table(bootstrap, SEASONS, proj)
 
 
-def test_next_event_is_smallest_fixture_key():
-    bootstrap = {"fixtures": {"4": [], "5": [], "6": []}}
-    assert mw.next_event(bootstrap) == 4
-    assert mw.next_event({"fixtures": {}}) is None
+def _events(current, nxt, current_finished, current_deadline):
+    return {"current": current, "next": nxt, "data": [
+        {"id": current, "finished": current_finished, "deadline_time": current_deadline},
+        {"id": nxt, "finished": False, "deadline_time": "2099-01-01T00:00:00Z"}]}
+
+
+def test_next_event_follows_the_event_calendar():
+    between = {"events": _events(5, 6, True, "2026-09-18T17:30:00Z"),
+               "fixtures": {"6": [], "7": []}}
+    assert mw.next_event(between) == 6
+    assert mw.next_event({"fixtures": {"4": []}}) is None   # no calendar
     assert mw.next_event({}) is None
+
+
+def test_mid_gameweek_plans_the_next_gw_not_the_one_in_play(tmp_path):
+    """Review regression: mid-GW the fixture map still holds the in-play GW,
+    so its smallest key (6) disagreed with matchmodel.next_gameweek (7).
+    my_week's gw, its fixture load and waiver's xP file must all say GW7."""
+    bootstrap = {
+        "teams": TEAMS,
+        "events": _events(6, 7, False, "2026-10-03T10:00:00Z"),   # GW6 in play
+        "fixtures": {"6": [{"team_h": 1, "team_a": 2}],             # GW6: both play
+                     "7": [{"team_h": 1, "team_a": 3}]},            # GW7: Wolves blank
+        "elements": [
+            {"id": 1, "code": 10, "web_name": "Gunner", "element_type": 3, "team": 1, "status": "a"},
+            {"id": 2, "code": 11, "web_name": "Wolf", "element_type": 3, "team": 2, "status": "a"}]}
+    proj = tmp_path / "p.json"
+    proj.write_text(json.dumps([{"code": 10, "projected_points": 76.0},
+                                {"code": 11, "projected_points": 76.0}]))
+    assert mw.next_event(bootstrap) == 7
+    players = mw.gw_xp_table(bootstrap, SEASONS, proj).set_index("web_name")
+    assert players.loc["Wolf", "gw_fixture_load"] == 0 and players.loc["Wolf", "gw_xp"] == 0
+    assert players.loc["Gunner", "gw_fixture_load"] > 0
+
+    _model_frame([(10, 5.0)], gw=7).to_parquet(tmp_path / "xp_gw7.parquet")
+    frame, meta = mw.wv.resolve_scorer("model", bootstrap, tmp_path)
+    assert frame is not None and meta["scorer"] == "model"
 
 
 def test_gw_xp_scores_single_event_and_availability(tmp_path):

@@ -49,6 +49,7 @@ import argparse
 import json
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -134,10 +135,34 @@ def availability_factor(element: dict) -> float:
     return 0.75 if status == "d" else 0.0
 
 
-def next_event(bootstrap: dict) -> int | None:
-    """The upcoming event number = smallest key of the next-events fixture map."""
-    events = sorted(int(e) for e in (bootstrap.get("fixtures") or {}))
-    return events[0] if events else None
+def next_event(bootstrap: dict, now: datetime | None = None) -> int | None:
+    """The gameweek the weekly tools plan for, or None (season over / no calendar).
+
+    Delegates to ``matchmodel.next_gameweek`` so waiver_plan, my_week and the
+    ``xp_gw{N}`` build agree on N. The bootstrap's fixture map can still hold
+    the in-play gameweek mid-GW (its smallest key = current), which is why
+    the smallest key is not used: it would plan for a locked gameweek.
+    """
+    # Local import: matchmodel imports availability_factor from this module.
+    from backend.ml import matchmodel
+    try:
+        return matchmodel.next_gameweek(bootstrap, now)
+    except ValueError:
+        return None
+
+
+def upcoming_fixtures(bootstrap: dict) -> dict:
+    """The bootstrap fixture map from ``next_event`` onward.
+
+    Drops an in-play gameweek still present mid-GW so the heuristic's fixture
+    loads describe the same gameweek as the match xP. Without an event
+    calendar (``next_event`` None) the map is returned as given.
+    """
+    fixtures = bootstrap.get("fixtures") or {}
+    event = next_event(bootstrap)
+    if event is None:
+        return fixtures
+    return {k: v for k, v in fixtures.items() if int(k) >= event}
 
 
 def read_gw_xp(path: Path, expected_gw: int | None) -> tuple[pd.DataFrame | None, str | None]:
@@ -218,7 +243,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
                        gw_xp: pd.DataFrame | None = None) -> pd.DataFrame:
     """One row per 26/27 element: identity, availability, xP, ROS value.
 
-    ``fixtures_by_event`` overrides the bootstrap schedule and
+    ``fixtures_by_event`` overrides the bootstrap schedule (default:
+    ``upcoming_fixtures``, i.e. from ``next_event`` onward) and
     ``neutral_availability`` forces availability to 1.0, except 0.0 for
     departed (status "u") players (both used by the
     replay harness, where only the current status/news snapshot exists).
@@ -232,6 +258,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     ``next3_xp`` stays heuristic.
     """
     strengths = team_strengths(seasons, bootstrap.get("teams", []))
+    if fixtures_by_event is None:
+        fixtures_by_event = upcoming_fixtures(bootstrap)
     load = next_fixture_load(bootstrap, strengths, fixtures_by_event=fixtures_by_event)
     load1 = next_fixture_load(bootstrap, strengths, n_events=1,
                               fixtures_by_event=fixtures_by_event)

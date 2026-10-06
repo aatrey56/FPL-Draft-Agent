@@ -314,7 +314,10 @@ FWD 0.412 vs 0.356) met the win rule in 4 of 4 positions. The Makefile
 `SCORER` variable and `replay` CLI default the same way. `model` joins
 `xp_gw<N>.parquet` on the permanent `code`; players it does not cover (blank
 GW) get the heuristic value, tagged `xp_source` = `heuristic` (`none` when
-there is no projection either). `xp_gw<N>.parquet` is stale unless its `gw`
+there is no projection either). N is `matchmodel.next_gameweek` for the xP
+build, `waiver_plan` and `my_week` alike (the heuristic fixture loads start
+at N too, dropping a still-in-play gameweek from the bootstrap fixture
+map). `xp_gw<N>.parquet` is stale unless its `gw`
 is N and its `panel_max_gw` (the last finished GW in the training panel,
 stamped by `build_gw_xp`) is N-1; `make derive` chains the panel rebuild and
 the xP build with `&&`, so a failed panel step never yields an xP file

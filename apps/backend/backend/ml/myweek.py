@@ -49,7 +49,8 @@ def gw_xp_table(bootstrap: dict, seasons: pd.DataFrame,
     """
     players = wv.build_player_table(bootstrap, seasons, projections_path, gw_xp=gw_xp)
     strengths = wv.team_strengths(seasons, bootstrap.get("teams", []))
-    load1 = wv.next_fixture_load(bootstrap, strengths, n_events=1)
+    load1 = wv.next_fixture_load(bootstrap, strengths, n_events=1,
+                                 fixtures_by_event=wv.upcoming_fixtures(bootstrap))
     team_load = {t["id"]: load1.get(t["id"], 0.0) for t in bootstrap.get("teams", [])}
     by_short = {(t.get("short_name") or t.get("name")): team_load[t["id"]]
                 for t in bootstrap.get("teams", [])}

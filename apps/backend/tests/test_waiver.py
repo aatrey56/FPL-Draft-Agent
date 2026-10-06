@@ -254,8 +254,14 @@ def test_load_gw_xp_missing_and_stale_return_none_with_warning(tmp_path, caplog)
     assert wv.load_gw_xp(path, 5) is not None
 
 
+NEXT_GW6 = {"events": {"current": 5, "next": 6, "data": [
+    {"id": 5, "finished": True, "deadline_time": "2026-09-18T17:30:00Z"},
+    {"id": 6, "finished": False, "deadline_time": "2099-10-10T10:00:00Z"}]},
+    "fixtures": {"6": []}}
+
+
 def test_resolve_scorer_heuristic_never_reads_the_file(tmp_path):
-    bootstrap = {"fixtures": {"6": []}}
+    bootstrap = NEXT_GW6
     _gw_xp([(200, 6.5)], gw=6).to_parquet(tmp_path / "xp_gw6.parquet")
     frame, meta = wv.resolve_scorer("heuristic", bootstrap, tmp_path)
     assert frame is None and meta["scorer"] == "heuristic" and not meta["xp_fallback"]
@@ -265,7 +271,7 @@ def test_resolve_scorer_heuristic_never_reads_the_file(tmp_path):
 
 
 def test_resolve_scorer_reports_fallback_when_file_missing_or_stale(tmp_path):
-    bootstrap = {"fixtures": {"6": []}}
+    bootstrap = NEXT_GW6
     frame, meta = wv.resolve_scorer("model", bootstrap, tmp_path)
     assert frame is None
     assert meta["scorer"] == "heuristic" and meta["scorer_requested"] == "model"
@@ -387,3 +393,18 @@ def test_load_gw_xp_accepts_gw1_with_an_empty_season_panel(tmp_path):
     path = tmp_path / "xp_gw1.parquet"
     _gw_xp([(200, 6.5)], gw=1).to_parquet(path)              # panel_max_gw 0
     assert wv.load_gw_xp(path, 1) is not None
+
+
+def test_resolve_scorer_without_an_event_calendar_falls_back():
+    frame, meta = wv.resolve_scorer("model", {"fixtures": {"6": []}}, "/nonexistent")
+    assert frame is None and meta["xp_fallback"]
+    assert meta["xp_fallback_reason"] == "no upcoming gameweek in the bootstrap"
+
+
+def test_upcoming_fixtures_drops_the_in_play_gameweek():
+    bootstrap = {"events": {"current": 6, "next": 7, "data": [
+        {"id": 6, "finished": False, "deadline_time": "2026-10-03T10:00:00Z"},
+        {"id": 7, "finished": False, "deadline_time": "2099-10-17T10:00:00Z"}]},
+        "fixtures": {"6": ["a"], "7": ["b"], "8": ["c"]}}
+    assert wv.upcoming_fixtures(bootstrap) == {"7": ["b"], "8": ["c"]}
+    assert wv.upcoming_fixtures({"fixtures": {"6": ["a"]}}) == {"6": ["a"]}
