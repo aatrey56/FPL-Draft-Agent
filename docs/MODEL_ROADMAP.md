@@ -193,7 +193,10 @@ stores a double as one row with `num_fixtures == 2` and *no* opponent or venue
 eval scores such a row once with imputed opponent features × 2, and a blank
 row (`num_fixtures == 0`) as 0 where serving has no row. Pinned by a test. It
 does not touch this check: 2026-27 GW2-5 has **0** double and 0 blank rows.
-Fixing it needs per-fixture rows in `GAMEWEEK_INGEST`.
+The same gap reaches 8 single-fixture rows of 2026-27 GW2-5
+(`num_fixtures == 1`, no `opponent_team`): the eval imputes their opponent
+features where serving would know the opponent. Fixing both needs
+per-fixture rows in `GAMEWEEK_INGEST`.
 
 ## Phases
 
