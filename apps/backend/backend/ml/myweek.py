@@ -5,7 +5,9 @@ deadline?* Scored over the single next event. ``gw_xp`` is the match model's
 ``xp_gw{N}.parquet`` value when ``--scorer model`` and the player is covered,
 else the heuristic (season projection / 38, mild fixture multiplier, live
 availability gate); each row carries ``xp_source`` (model / heuristic / none).
-A missing or stale xP file falls back to the heuristic with a WARNING.
+A missing or stale xP file falls back to the heuristic with a WARNING, and
+the JSON records it: ``scorer`` is the scorer actually used, with
+``scorer_requested``, ``xp_fallback`` and ``xp_fallback_reason`` beside it.
 
 Reads local files only. CLI:
     python -m backend.ml.myweek --league <id> --entry <id> [--scorer {heuristic,model}]
@@ -159,14 +161,18 @@ def main(argv: list[str] | None = None) -> int:
     seasons = pd.read_parquet(args.data_root / "derived/ml/player_seasons.parquet")
     ml_dir = args.data_root / "derived" / args.season / "ml"
 
+    gw_xp, scorer_meta = wv.resolve_scorer(args.scorer, bootstrap, ml_dir)
     players = gw_xp_table(
         bootstrap, seasons, args.data_root / "derived/ml/projections_2627.json",
-        gw_xp=wv.scorer_gw_xp(args.scorer, bootstrap, ml_dir))
+        gw_xp=gw_xp)
     week = build_my_week(players, element_status, entry)
     week["gw"] = next_event(bootstrap)
-    week["scorer"] = args.scorer
+    # scorer = what actually ran; xp_fallback/_reason say why model was not used
+    week.update(scorer_meta)
 
-    print(f"\n== MY WEEK — GW{week['gw']} best XI (xP {week['xi_gw_xp']}) ==")
+    fallback = f" — FALLBACK: {week['xp_fallback_reason']}" if week["xp_fallback"] else ""
+    print(f"\n== MY WEEK — GW{week['gw']} best XI (xP {week['xi_gw_xp']}, "
+          f"scorer {week['scorer']}{fallback}) ==")
     for p in week["xi"]:
         flags = f"  !! {'; '.join(p['warnings'])}" if p["warnings"] else ""
         gw_xp = "?" if p["gw_xp"] is None else p["gw_xp"]

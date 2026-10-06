@@ -201,3 +201,19 @@ def test_heuristic_scorer_does_not_warn_on_every_player(tmp_path):
     players = _xp_world(tmp_path, None)
     status = {"element_status": [{"element": e, "owner": 42} for e in (1, 2)]}
     assert mw.build_my_week(players, status, 42)["attention"] == []
+
+
+def test_cli_writes_the_scorer_actually_used(weekly_cli_root, weekly_cli_argv, tmp_path):
+    """Review regression: --scorer model with a stale xP file wrote scorer "model"."""
+    xp_path = weekly_cli_root / "derived/2026-27/ml/xp_gw6.parquet"
+    _model_frame([(101, 3.0)], gw=5).to_parquet(xp_path)          # built for GW5
+    out = tmp_path / "out" / "my_week.json"
+    assert mw.main(weekly_cli_argv(out, "model")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["gw"] == 6
+    assert doc["scorer"] == "heuristic" and doc["scorer_requested"] == "model"
+    assert doc["xp_fallback"] is True and "stale" in doc["xp_fallback_reason"]
+
+    assert mw.main(weekly_cli_argv(out, "heuristic")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["scorer"] == "heuristic" and doc["xp_fallback"] is False

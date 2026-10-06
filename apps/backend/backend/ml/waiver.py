@@ -140,23 +140,30 @@ def next_event(bootstrap: dict) -> int | None:
     return events[0] if events else None
 
 
+def read_gw_xp(path: Path, expected_gw: int | None) -> tuple[pd.DataFrame | None, str | None]:
+    """Read the match model's ``xp_gw{N}.parquet``: ``(frame, None)`` when it
+    is usable for ``expected_gw``, else ``(None, reason)`` — the reason is
+    written to the artifact so a fallback is never silent."""
+    path = Path(path)
+    if not path.exists():
+        return None, f"match xP file {path.name} missing"
+    frame = pd.read_parquet(path)
+    gws = sorted(int(g) for g in frame["gw"].unique()) if "gw" in frame else []
+    if expected_gw is None or gws != [expected_gw]:
+        return None, f"match xP file {path.name} is for gw {gws}, expected {expected_gw} (stale)"
+    return frame, None
+
+
 def load_gw_xp(path: Path, expected_gw: int | None) -> pd.DataFrame | None:
     """Read the match model's ``xp_gw{N}.parquet`` for the upcoming gameweek.
 
     Returns None (with a WARNING, so the caller falls back to the heuristic
     loudly) when the file is missing or was built for a different gameweek
-    than ``expected_gw`` (stale).
+    than ``expected_gw`` (stale). See ``read_gw_xp`` for the reason string.
     """
-    path = Path(path)
-    if not path.exists():
-        logger.warning("match xP file %s missing — falling back to heuristic", path)
-        return None
-    frame = pd.read_parquet(path)
-    gws = set(frame["gw"].unique()) if "gw" in frame else set()
-    if expected_gw is None or gws != {expected_gw}:
-        logger.warning("match xP file %s is for gw %s, expected %s — stale, "
-                       "falling back to heuristic", path, sorted(gws), expected_gw)
-        return None
+    frame, reason = read_gw_xp(path, expected_gw)
+    if reason:
+        logger.warning("%s — falling back to heuristic", reason)
     return frame
 
 
@@ -164,20 +171,33 @@ SCORERS = ("heuristic", "model")
 DEFAULT_SCORER = "model"
 
 
-def scorer_gw_xp(scorer: str, bootstrap: dict, ml_dir: Path) -> pd.DataFrame | None:
-    """The next-GW xP frame the chosen scorer uses (None = heuristic only).
+def resolve_scorer(scorer: str, bootstrap: dict,
+                   ml_dir: Path) -> tuple[pd.DataFrame | None, dict[str, Any]]:
+    """The next-GW xP frame for the requested scorer, plus run metadata.
 
     ``model`` reads ``<ml_dir>/xp_gw{N}.parquet`` for the bootstrap's next
-    event; a missing or stale file is logged by ``load_gw_xp`` and the plan
-    falls back to the heuristic for everyone (``xp_source`` shows it).
+    event; a missing or stale file falls back to the heuristic for everyone.
+    The metadata (merged into the waiver_plan / my_week JSON) records what
+    actually ran, never just what was asked for:
+
+    * ``scorer`` — the scorer used (``heuristic`` after a fallback)
+    * ``scorer_requested`` — the ``--scorer`` value
+    * ``xp_fallback`` — True when ``model`` was requested but not used
+    * ``xp_fallback_reason`` — why (None when there was no fallback)
     """
+    meta: dict[str, Any] = {"scorer": scorer, "scorer_requested": scorer,
+                            "xp_fallback": False, "xp_fallback_reason": None}
     if scorer != "model":
-        return None
+        return None, meta
     event = next_event(bootstrap)
     if event is None:
-        logger.warning("no upcoming fixtures in the bootstrap — heuristic scoring")
-        return None
-    return load_gw_xp(Path(ml_dir) / f"xp_gw{event}.parquet", event)
+        frame, reason = None, "no upcoming gameweek in the bootstrap"
+    else:
+        frame, reason = read_gw_xp(Path(ml_dir) / f"xp_gw{event}.parquet", event)
+    if reason:
+        logger.warning("%s — falling back to heuristic", reason)
+        meta.update(scorer="heuristic", xp_fallback=True, xp_fallback_reason=reason)
+    return frame, meta
 
 
 def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
@@ -451,10 +471,10 @@ def main(argv: list[str] | None = None) -> int:
     seasons = pd.read_parquet(args.data_root / "derived/ml/player_seasons.parquet")
     ml_dir = args.data_root / "derived" / args.season / "ml"
 
+    gw_xp, scorer_meta = resolve_scorer(args.scorer, bootstrap, ml_dir)
     result = plan(bootstrap, element_status, seasons,
                   args.data_root / "derived/ml/projections_2627.json",
-                  entry, args.top,
-                  gw_xp=scorer_gw_xp(args.scorer, bootstrap, ml_dir))
+                  entry, args.top, gw_xp=gw_xp)
     squad = result["squad"]
     xi, xi_total = best_xi(squad)
     bench = squad[~squad["element"].isin(xi["element"])]
@@ -482,7 +502,9 @@ def main(argv: list[str] | None = None) -> int:
                   f" use player_card for their history{flag}")
 
     recs = result["recommendations"]
-    print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}, scorer {args.scorer}) ==")
+    fallback = (f" — FALLBACK: {scorer_meta['xp_fallback_reason']}"
+                if scorer_meta["xp_fallback"] else "")
+    print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}, scorer {scorer_meta['scorer']}{fallback}) ==")
     print("   label    add                    ->  drop                next1  next3   season  src")
     for r in recs:
         flag = f"  [{r['availability']}] {r['news']}" if r["availability"] != "a" else ""
@@ -493,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     out = args.out or ml_dir / "waiver_plan.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(jsonutil.dumps_strict(
-        {"scorer": args.scorer, "xi_next3_xp": xi_total, "recommendations": recs,
+        {**scorer_meta, "xi_next3_xp": xi_total, "recommendations": recs,
          "unprojected_squad": unknown}, indent=1))
     logger.info("wrote %s", out)
     return 0

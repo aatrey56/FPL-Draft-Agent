@@ -253,11 +253,42 @@ def test_load_gw_xp_missing_and_stale_return_none_with_warning(tmp_path, caplog)
     assert wv.load_gw_xp(path, 5) is not None
 
 
-def test_scorer_gw_xp_heuristic_never_reads_the_file(tmp_path):
+def test_resolve_scorer_heuristic_never_reads_the_file(tmp_path):
     bootstrap = {"fixtures": {"6": []}}
     _gw_xp([(200, 6.5)], gw=6).to_parquet(tmp_path / "xp_gw6.parquet")
-    assert wv.scorer_gw_xp("heuristic", bootstrap, tmp_path) is None
-    assert wv.scorer_gw_xp("model", bootstrap, tmp_path) is not None
+    frame, meta = wv.resolve_scorer("heuristic", bootstrap, tmp_path)
+    assert frame is None and meta["scorer"] == "heuristic" and not meta["xp_fallback"]
+    frame, meta = wv.resolve_scorer("model", bootstrap, tmp_path)
+    assert frame is not None and meta == {"scorer": "model", "scorer_requested": "model",
+                                          "xp_fallback": False, "xp_fallback_reason": None}
+
+
+def test_resolve_scorer_reports_fallback_when_file_missing_or_stale(tmp_path):
+    bootstrap = {"fixtures": {"6": []}}
+    frame, meta = wv.resolve_scorer("model", bootstrap, tmp_path)
+    assert frame is None
+    assert meta["scorer"] == "heuristic" and meta["scorer_requested"] == "model"
+    assert meta["xp_fallback"] and "missing" in meta["xp_fallback_reason"]
+    _gw_xp([(200, 6.5)], gw=5).to_parquet(tmp_path / "xp_gw6.parquet")
+    frame, meta = wv.resolve_scorer("model", bootstrap, tmp_path)
+    assert frame is None and "stale" in meta["xp_fallback_reason"]
+
+
+def test_cli_writes_the_scorer_actually_used(weekly_cli_root, weekly_cli_argv, tmp_path):
+    """Review regression: --scorer model with no xP file wrote scorer "model"."""
+    out = tmp_path / "out" / "waiver_plan.json"
+    assert wv.main(weekly_cli_argv(out, "model")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["scorer"] == "heuristic" and doc["scorer_requested"] == "model"
+    assert doc["xp_fallback"] is True and "xp_gw6.parquet missing" in doc["xp_fallback_reason"]
+    assert {r["add_xp_source"] for r in doc["recommendations"]} <= {"heuristic"}
+
+    xp_path = weekly_cli_root / "derived/2026-27/ml/xp_gw6.parquet"
+    _gw_xp([(102, 6.0), (101, 1.0)], gw=6).to_parquet(xp_path)
+    assert wv.main(weekly_cli_argv(out, "model")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["scorer"] == "model" and doc["xp_fallback"] is False
+    assert doc["xp_fallback_reason"] is None
 
 
 def test_next1_gain_ranks_and_hold_follows_stream(tmp_path):

@@ -315,7 +315,11 @@ FWD 0.412 vs 0.356) met the win rule in 4 of 4 positions. The Makefile
 `xp_gw<N>.parquet` on the permanent `code`; players it does not cover (blank
 GW) get the heuristic value, tagged `xp_source` = `heuristic` (`none` when
 there is no projection either). A missing or stale file falls back to the
-heuristic for everyone with a WARNING. Waiver recs rank by `next1_gain`;
+heuristic for everyone with a WARNING, and the JSON says so: `scorer` is the
+scorer actually used (`heuristic` after a fallback), beside
+`scorer_requested`, `xp_fallback` and `xp_fallback_reason`. Waiver recs rank
+by `next1_gain`; a free agent with no ROS projection but a model `xp_next`
+(promoted clubs) is ranked too, with `season_gain` 0 (at most a `stream`);
 `next3_xp` is still heuristic (horizons are a later section) and the drop
 pick is unchanged. Known scale mismatch: model xP averages higher than the
 `ros/38` heuristic fallback, so a heuristic-valued drop flatters model-valued
