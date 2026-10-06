@@ -584,6 +584,125 @@ def test_usable_gw_xp_keeps_a_predicted_blank_and_drops_no_opinion_rows():
     assert list(wv.usable_gw_xp(frame)["code"]) == [200]        # xp 0 with a p_start stays
 
 
+# ---------------------------------------------------------------------------
+# Role signals: club_moved / expected_minutes / ros_adj
+# ---------------------------------------------------------------------------
+
+ROLE_SEASONS = pd.DataFrame([
+    {"season": "2025-26", "code": 300, "team_name": "Wolves", "total_points": 1200},
+    {"season": "2025-26", "code": 301, "team_name": "Arsenal", "total_points": 2000},
+    {"season": "2024-25", "code": 302, "team_name": "Wolves", "total_points": 900},
+])
+
+
+def _panel(minutes_by_code: dict[int, list[int]]) -> pd.DataFrame:
+    """Season panel: one row per (code, gw); ``None`` minutes = no row that GW."""
+    return pd.DataFrame([
+        {"season": "2026-27", "code": code, "gw": gw, "minutes": minutes}
+        for code, per_gw in minutes_by_code.items()
+        for gw, minutes in enumerate(per_gw, start=1) if minutes is not None])
+
+
+def _role_table(tmp_path, season_panel, *, gw_xp=None, extra_elements=()):
+    """ClubMover (Wolves -> Arsenal, proj 175), Stayer (Arsenal), Newcomer."""
+    projections = [{"code": 300, "projected_points": 175.0},
+                   {"code": 301, "projected_points": 100.0},
+                   {"code": 302, "projected_points": 90.0}]
+    proj_path = tmp_path / "projections.json"
+    proj_path.write_text(json.dumps(projections))
+    bootstrap = {
+        "teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]},
+        "elements": [
+            {"id": 30, "code": 300, "web_name": "ClubMover", "element_type": 2, "team": 1, "status": "a"},
+            {"id": 31, "code": 301, "web_name": "Stayer", "element_type": 2, "team": 1, "status": "a"},
+            {"id": 32, "code": 302, "web_name": "Newcomer", "element_type": 2, "team": 2, "status": "a"},
+            *extra_elements]}
+    table = wv.build_player_table(bootstrap, ROLE_SEASONS, proj_path, gw_xp=gw_xp,
+                                  season_panel=season_panel)
+    return table.set_index("web_name")
+
+
+def test_role_factor_math():
+    assert wv.role_factor(True, 0.0) == wv.ROLE_FLOOR            # 0 min -> floor
+    assert wv.role_factor(True, 30.0) == pytest.approx(0.5)      # linear in between
+    assert wv.role_factor(True, 60.0) == 1.0
+    assert wv.role_factor(True, 90.0) == 1.0                     # 60+ min -> full
+    assert wv.role_factor(False, 0.0) == 1.0                     # not moved: never scaled
+    assert wv.role_factor(None, 0.0) == 1.0                      # no prior club: unknown
+    assert wv.role_factor(True, None) == 1.0                     # no minutes yet: unknown
+
+
+def test_club_mover_with_no_minutes_gets_the_floor(tmp_path):
+    """The synthetic check from the spec: proj 175, 0 minutes -> ros_adj 26.2."""
+    table = _role_table(tmp_path, _panel({300: [0, 0, 0, 0, 0], 301: [0, 0, 0, 0, 0]}))
+    mover = table.loc["ClubMover"]
+    assert bool(mover["club_moved"]) is True
+    assert mover["expected_minutes"] == 0.0 and mover["minutes_season"] == 0
+    assert mover["role_factor"] == wv.ROLE_FLOOR
+    assert mover["ros_adj"] == 26.2 and mover["ros_points"] == 175.0   # raw ROS kept
+    stayer = table.loc["Stayer"]                                       # benched, not moved
+    assert bool(stayer["club_moved"]) is False
+    assert stayer["role_factor"] == 1.0 and stayer["ros_adj"] == 100.0
+
+
+def test_club_mover_playing_sixty_plus_keeps_his_projection(tmp_path):
+    table = _role_table(tmp_path, _panel({300: [90, 90, 60, 90, 75]}))
+    mover = table.loc["ClubMover"]
+    assert mover["role_factor"] == 1.0 and mover["ros_adj"] == 175.0
+    assert mover["minutes_season"] == 405
+
+
+def test_club_moved_is_none_without_a_prior_season_row(tmp_path):
+    table = _role_table(tmp_path, _panel({302: [0, 0]}))
+    newcomer = table.loc["Newcomer"]             # only a 2024-25 row: no prior club
+    assert newcomer["club_moved"] is None
+    assert newcomer["role_factor"] == 1.0 and newcomer["ros_adj"] == 90.0
+
+
+def test_expected_minutes_uses_the_last_five_gameweeks_and_missing_rows_are_zero(tmp_path):
+    # ClubMover: no row in GW2 and GW6; 7 gameweeks in the panel -> window GW3-7.
+    panel = _panel({300: [90, None, 90, 90, 30, None, 90], 301: [90] * 7})
+    table = _role_table(tmp_path, panel)
+    mover = table.loc["ClubMover"]
+    assert mover["expected_minutes"] == pytest.approx((90 + 90 + 30 + 0 + 90) / 5)
+    assert mover["minutes_season"] == 390
+    assert table.loc["Newcomer", "expected_minutes"] == 0.0   # no row at all = 0 minutes
+    assert table.loc["Newcomer", "minutes_season"] == 0
+
+
+def test_no_panel_rows_means_unknown_minutes_and_factor_one(tmp_path):
+    for season_panel in (None, _panel({})):
+        mover = _role_table(tmp_path, season_panel).loc["ClubMover"]
+        assert pd.isna(mover["expected_minutes"]) and pd.isna(mover["minutes_season"])
+        assert mover["role_factor"] == 1.0 and mover["ros_adj"] == 175.0
+
+
+def test_heuristic_per_gw_baseline_uses_the_role_adjusted_projection(tmp_path):
+    benched = _role_table(tmp_path, _panel({300: [0, 0, 0]})).loc["ClubMover"]
+    unknown = _role_table(tmp_path, None).loc["ClubMover"]
+    assert benched["xp_source"] == "heuristic"
+    assert benched["xp_next"] == pytest.approx(unknown["xp_next"] * wv.ROLE_FLOOR, abs=0.01)
+    assert benched["next3_xp"] < unknown["next3_xp"]
+
+
+def test_departed_player_has_zero_ros_adj_even_without_a_projection(tmp_path):
+    gone = [{"id": 33, "code": 303, "web_name": "GoneNoProj", "element_type": 2, "team": 1, "status": "u"},
+            {"id": 34, "code": 301, "web_name": "GoneStayer", "element_type": 2, "team": 1, "status": "u"}]
+    table = _role_table(tmp_path, None, extra_elements=gone)
+    assert table.loc["GoneNoProj", "ros_adj"] == 0.0 and pd.isna(table.loc["GoneNoProj", "ros_points"])
+    assert table.loc["GoneNoProj", "xp_source"] == "none"       # still not "valued"
+    assert table.loc["GoneStayer", "ros_adj"] == 0.0 and table.loc["GoneStayer", "ros_points"] == 100.0
+
+
+def test_seasons_table_without_codes_flags_nobody(tmp_path):
+    proj_path = tmp_path / "projections.json"
+    proj_path.write_text("[]")
+    bootstrap = {"teams": TEAMS, "fixtures": {}, "elements": [
+        {"id": 1, "code": 300, "web_name": "A", "element_type": 2, "team": 1, "status": "a"}]}
+    table = wv.build_player_table(bootstrap, SEASONS, proj_path)   # SEASONS has no code column
+    assert table.loc[0, "club_moved"] is None
+
+
 def _ruled_out_world(tmp_path, status, chance=None):
     """Streamer (ros 60 < MyWeakFWD's 80) valued by a cached model row at 6.5
     xP, now with ``status``/``chance`` in the CURRENT bootstrap."""

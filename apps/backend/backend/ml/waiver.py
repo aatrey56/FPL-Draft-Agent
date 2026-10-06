@@ -44,6 +44,27 @@ Design (v1, pre-GW1-honest):
   heuristic scorer) ``recommend`` keeps its original ranking (``rank_by=
   "legacy"``: labels from ``next3_gain``, ordered by the larger gain) so the
   heuristic output is unchanged.
+* **Role signals** — a season projection only knows last season's role at
+  last season's club, so a transfer silently breaks it. ``club_moved`` =
+  bootstrap club != the prior-season club in ``player_seasons`` (None when
+  there is no prior row: new to the league). ``expected_minutes`` = mean
+  minutes over the last ``ROLE_MINUTES_WINDOW`` finished gameweeks of the
+  season panel (a missing row is 0 minutes; None before any gameweek is
+  finished), ``minutes_season`` = their sum. For club-movers ONLY,
+  ``ros_adj = ros_points x role_factor`` with ``role_factor =
+  clip(expected_minutes / ROLE_MINUTES_FULL, ROLE_FLOOR, 1.0)``; everyone
+  else has factor 1.0. ``season_gain``, the drop pick and the heuristic
+  per-GW baseline (``ros_adj / 38``) use ``ros_adj``; ``ros_points`` stays in
+  the output. Known bias, accepted: an injured club-mover is under-valued
+  (conservative). A general "benched at his old club too" factor is Phase B.
+* **Departed squad players** (status ``u``) have ``ros_adj`` 0 and are
+  always the drop at their position — sort key ``(status != "u", ros_adj,
+  xp_next)`` — with or without a projection. ``drop_candidates`` lists the
+  top ``DROP_CANDIDATES_PER_POSITION`` per position so the pick is auditable.
+* **Role overrides** — ``data/derived/<season>/ml/role_overrides.json``
+  (hand-maintained team news, optional) is applied to the next GW only: see
+  ``apply_role_overrides``. ``overrides_applied`` / ``overrides_unmatched`` /
+  ``overrides_expired`` in the output say what happened to every entry.
 
 CLI: python -m backend.ml.waiver --league <id> --entry <id> [--scorer {heuristic,model}]
 (env fallback: LEAGUE_ID / ENTRY_ID; ``--data-root`` and ``--out`` override the
@@ -77,6 +98,16 @@ FIXTURE_MULT_MIN, FIXTURE_MULT_MAX = 0.85, 1.15
 HOME_NUDGE = 1.03
 # Valid draft formations: (DEF, MID, FWD) with exactly 1 GKP, 10 outfielders.
 FORMATIONS = [(3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2), (4, 5, 1), (5, 3, 2), (5, 4, 1)]
+# The season the projections and team strengths were measured on.
+PRIOR_SEASON = "2025-26"
+# Role signals for club-movers (see module docstring). A player averaging
+# ROLE_MINUTES_FULL minutes over the last ROLE_MINUTES_WINDOW finished GWs
+# keeps his full projection; below that it scales down linearly, never under
+# ROLE_FLOOR (a 0-minute signing still has some chance of winning the role).
+ROLE_MINUTES_WINDOW = 5
+ROLE_MINUTES_FULL = 60.0
+ROLE_FLOOR = 0.15
+DROP_CANDIDATES_PER_POSITION = 3
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +117,7 @@ FORMATIONS = [(3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2), (4, 5, 1), (5, 3, 2), 
 def team_strengths(seasons: pd.DataFrame, teams: list[dict]) -> dict[int, float]:
     """26/27 team id -> strength score (sum of that club's player points in
     25/26). Promoted/unseen clubs get a weak prior: 90% of the minimum."""
-    last = seasons[seasons["season"] == "2025-26"]
+    last = seasons[seasons["season"] == PRIOR_SEASON]
     by_name = last.groupby("team_name")["total_points"].sum().to_dict()
     floor = 0.9 * min(by_name.values()) if by_name else 0.0
     return {t["id"]: float(by_name.get(t["name"], floor)) for t in teams}
@@ -141,6 +172,56 @@ def availability_factor(element: dict) -> float:
     if chance is not None:
         return max(0.0, min(1.0, float(chance) / 100.0))
     return 0.75 if status == "d" else 0.0
+
+
+def club_moves(bootstrap: dict, seasons: pd.DataFrame,
+               prior_season: str = PRIOR_SEASON) -> dict[int, bool]:
+    """code -> True when the player's current club differs from his club in
+    ``prior_season`` (bootstrap team name vs ``player_seasons.team_name``).
+
+    Codes without a prior-season row are absent — callers read that as None
+    (new to the league, nothing to compare). A seasons table without a
+    ``code`` column yields no flags at all.
+    """
+    if "code" not in seasons.columns:
+        return {}
+    last = seasons[seasons["season"] == prior_season]
+    prior_club = dict(zip(last["code"].astype(int), last["team_name"]))
+    club_names = {t["id"]: t.get("name") for t in bootstrap.get("teams", [])}
+    return {int(el["code"]): prior_club[el["code"]] != club_names.get(el.get("team"))
+            for el in bootstrap.get("elements", []) if el.get("code") in prior_club}
+
+
+def minutes_profile(season_panel: pd.DataFrame | None,
+                    window: int = ROLE_MINUTES_WINDOW) -> dict[int, tuple[float, int]] | None:
+    """code -> ``(expected_minutes, minutes_season)`` from one season's panel.
+
+    ``expected_minutes`` is the mean over the last ``window`` gameweeks present
+    in the panel (fewer early in the season); a gameweek with no row for the
+    player counts as 0 minutes. Returns None when there is no panel or it has
+    no rows yet (pre-GW1) — "unknown", which is not the same as 0 minutes.
+    Players with no row at all are absent; callers treat them as ``(0.0, 0)``.
+    """
+    if season_panel is None or season_panel.empty:
+        return None
+    minutes = pd.to_numeric(season_panel["minutes"], errors="coerce").fillna(0.0)
+    recent_gws = sorted(int(gw) for gw in season_panel["gw"].unique())[-window:]
+    in_window = season_panel["gw"].isin(recent_gws)
+    season_total = minutes.groupby(season_panel["code"]).sum()
+    recent_total = minutes[in_window].groupby(season_panel.loc[in_window, "code"]).sum()
+    return {int(code): (float(recent_total.get(code, 0.0)) / len(recent_gws), int(total))
+            for code, total in season_total.items()}
+
+
+def role_factor(club_moved: bool | None, expected_minutes: float | None) -> float:
+    """Multiplier on a season projection for a player whose role is unproven.
+
+    1.0 unless the player changed clubs AND his minutes are known; then
+    ``clip(expected_minutes / ROLE_MINUTES_FULL, ROLE_FLOOR, 1.0)``.
+    """
+    if club_moved is not True or expected_minutes is None or pd.isna(expected_minutes):
+        return 1.0
+    return max(ROLE_FLOOR, min(1.0, float(expected_minutes) / ROLE_MINUTES_FULL))
 
 
 def next_event(bootstrap: dict, now: datetime | None = None) -> int | None:
@@ -279,7 +360,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
                        projections_path: Path, *,
                        fixtures_by_event: dict | None = None,
                        neutral_availability: bool = False,
-                       gw_xp: pd.DataFrame | None = None) -> pd.DataFrame:
+                       gw_xp: pd.DataFrame | None = None,
+                       season_panel: pd.DataFrame | None = None) -> pd.DataFrame:
     """One row per 26/27 element: identity, availability, xP, ROS value.
 
     ``fixtures_by_event`` overrides the bootstrap schedule (default:
@@ -303,6 +385,15 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     ``xp_next``, ``p_start``, ``xp_floor`` and ``xp_ceiling`` are set to 0
     and ``xp_reconciled`` is True (False on every other row). Partial
     availability changes (e.g. a new 50% doubt) are not reconciled.
+
+    ``season_panel`` is the current season's ``player_gameweeks`` panel
+    (finished gameweeks only). It feeds ``expected_minutes`` /
+    ``minutes_season`` and, for club-movers, ``role_factor`` and ``ros_adj``
+    (see the module docstring). Without it every factor is 1.0 and
+    ``ros_adj == ros_points``, except departed (status "u") players, whose
+    ``ros_adj`` is always 0. ``xp_started`` is the next-GW value if the player
+    starts every fixture: the model's Stage-2 conditional x fixture count
+    when the xP frame carries it, else the heuristic at full availability.
     """
     strengths = team_strengths(seasons, bootstrap.get("teams", []))
     if fixtures_by_event is None:
@@ -326,19 +417,32 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
 
     team_names = {t["id"]: t.get("short_name") or t.get("name")
                   for t in bootstrap.get("teams", [])}
+    moves = club_moves(bootstrap, seasons)
+    profile = minutes_profile(season_panel)
     rows = []
     for el in bootstrap.get("elements", []):
         projection = projections.get(el.get("code"), {})
         ros = projection.get("projected_points")
+        club_moved = moves.get(el.get("code"))
+        expected_minutes, minutes_season = (
+            (None, None) if profile is None else profile.get(el.get("code"), (0.0, 0)))
+        factor = role_factor(club_moved, expected_minutes)
+        ros_role = ros * factor if ros is not None else None
+        # A departed player scores nothing from here on, projection or not.
+        ros_adj = 0.0 if el.get("status") == "u" else ros_role
         if neutral_availability:
             # replay mode: everyone available except departed ("u") players
             avail = 0.0 if el.get("status") == "u" else 1.0
         else:
             avail = availability_factor(el)
-        per_gw = (ros / TOTAL_GWS) if ros is not None else None
+        per_gw = (ros_role / TOTAL_GWS) if ros_role is not None else None
         next3 = (per_gw * load.get(el.get("team"), 0.0) * avail) if per_gw is not None else None
+        full_load1 = per_gw * load1.get(el.get("team"), 0.0) if per_gw is not None else None
         model = model_by_code.get(el.get("code"))
         reconciled = False
+        xp_started = full_load1
+        if model is not None and pd.notna(model.get("xp_started")):
+            xp_started = float(model["xp_started"]) * int(model.get("num_fixtures") or 1)
         if model is not None:
             xp_next, xp_source = float(model["xp"]), "model"
             xp_extra = {"p_start": float(model["p_start"]), "xp_floor": float(model["xp_floor"]),
@@ -353,8 +457,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
         else:
             xp_extra = {"p_start": None, "xp_floor": None, "xp_ceiling": None,
                         "drivers": None, "opponents": None}
-            if per_gw is not None:
-                xp_next = per_gw * load1.get(el.get("team"), 0.0) * avail
+            if full_load1 is not None:
+                xp_next = full_load1 * avail
                 xp_source = "heuristic"
             else:
                 xp_next, xp_source = None, "none"
@@ -368,10 +472,17 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
             "next3_xp": round(next3, 1) if next3 is not None else None,
             "xp_next": round(xp_next, 2) if xp_next is not None else None,
             "xp_source": xp_source, "xp_reconciled": reconciled, **xp_extra,
+            "xp_started": round(xp_started, 2) if xp_started is not None else None,
             # ROS is deliberately NOT availability-gated: an injury gates the
             # next-3 horizon, not the season (status "u" = departed is the
-            # exception and is filtered out of recommendations entirely).
+            # exception: ros_adj 0, never recommended, always the drop).
             "ros_points": round(ros, 1) if ros is not None else None,
+            "ros_adj": round(ros_adj, 1) if ros_adj is not None else None,
+            "club_moved": club_moved,
+            "expected_minutes": (round(expected_minutes, 1)
+                                 if expected_minutes is not None else None),
+            "minutes_season": minutes_season,
+            "role_factor": round(factor, 3),
             "tier": projection.get("tier"), "confidence": projection.get("confidence"),
         })
     return pd.DataFrame(rows)
