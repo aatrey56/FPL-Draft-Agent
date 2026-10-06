@@ -155,3 +155,49 @@ def test_blank_gameweek_flags_players(tmp_path):
     row = players.iloc[0]
     assert row["gw_xp"] == 0.0
     assert "blank gameweek: no fixture" in mw.player_warnings(row)
+
+
+# ---- match xP wiring --------------------------------------------------------
+
+def _model_frame(rows, gw=4):
+    return pd.DataFrame([{
+        "code": code, "xp": xp, "p_start": 0.9, "xp_floor": 0.0, "xp_ceiling": xp + 3,
+        "drivers": "d", "opponents": "vWOL", "gw": gw} for code, xp in rows])
+
+
+def _xp_world(tmp_path, gw_xp):
+    bootstrap = {
+        "teams": TEAMS, "fixtures": {"4": [{"team_h": 1, "team_a": 2}]},
+        "elements": [
+            {"id": 1, "code": 10, "web_name": "Covered", "element_type": 3, "team": 1, "status": "a"},
+            {"id": 2, "code": 11, "web_name": "Heur", "element_type": 3, "team": 1, "status": "a"},
+            {"id": 3, "code": 12, "web_name": "Mystery", "element_type": 3, "team": 1, "status": "a"}]}
+    proj = tmp_path / "p.json"
+    proj.write_text(json.dumps([{"code": 10, "projected_points": 76.0},
+                                {"code": 11, "projected_points": 76.0}]))
+    return mw.gw_xp_table(bootstrap, SEASONS, proj, gw_xp=gw_xp)
+
+
+def test_model_xp_used_when_covered_else_heuristic_with_source(tmp_path):
+    players = _xp_world(tmp_path, _model_frame([(10, 7.0)]))
+    by_name = players.set_index("web_name")
+    assert by_name.loc["Covered", "gw_xp"] == 7.0 and by_name.loc["Covered", "xp_source"] == "model"
+    assert by_name.loc["Heur", "xp_source"] == "heuristic" and by_name.loc["Heur", "gw_xp"] > 0
+    assert by_name.loc["Mystery", "xp_source"] == "none" and pd.isna(by_name.loc["Mystery", "gw_xp"])
+
+
+def test_unprojected_squad_lists_only_xp_source_none_and_warnings_differ(tmp_path):
+    players = _xp_world(tmp_path, _model_frame([(10, 7.0)]))
+    status = {"element_status": [{"element": e, "owner": 42} for e in (1, 2, 3)]}
+    week = mw.build_my_week(players, status, 42)
+    assert [p["web_name"] for p in week["unprojected_squad"]] == ["Mystery"]
+    warnings = {p["web_name"]: p["warnings"] for p in week["attention"]}
+    assert warnings["Heur"] == ["no model xP — heuristic"]
+    assert warnings["Mystery"] == ["no value — judge manually (player_card)"]
+    assert all("xp_source" in row for row in week["xi"] + week["bench"])
+
+
+def test_heuristic_scorer_does_not_warn_on_every_player(tmp_path):
+    players = _xp_world(tmp_path, None)
+    status = {"element_status": [{"element": e, "owner": 42} for e in (1, 2)]}
+    assert mw.build_my_week(players, status, 42)["attention"] == []
