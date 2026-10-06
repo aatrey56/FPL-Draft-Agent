@@ -333,7 +333,11 @@ which is exactly when `scripts/matchday.sh` runs derive). Once GW N-1
 finishes, that file is stale until derive rebuilds it. A missing, unreadable or stale file falls back to the
 heuristic for everyone with a WARNING, and the JSON says so: `scorer` is the
 scorer actually used (`heuristic` after a fallback), beside
-`scorer_requested`, `xp_fallback` and `xp_fallback_reason`. Waiver recs rank
+`scorer_requested`, `xp_fallback` and `xp_fallback_reason`. A served model
+row is reconciled against the CURRENT bootstrap: a player now at availability
+0 (status u/i/s without a chance, or chance 0) gets `xp_next`/`p_start` 0 and
+`xp_reconciled: true` (count in the JSON's `xp_reconciled`), since the file's
+Stage-1 gate saw the bootstrap of its build time. Waiver recs rank
 by `next1_gain`; a free agent with no ROS projection but a model `xp_next`
 (promoted clubs) is ranked too, with `season_gain` null and `season_unknown`
 true (it counts as 0 for the label and ordering, so at most a `stream`);

@@ -16,6 +16,9 @@ Design (v1, pre-GW1-honest):
   event handles blanks (0 fixtures) and doubles (2) naturally.
 * **Availability gate** — live status/news from bootstrap: available=1.0,
   doubtful=chance/100, injured/suspended=chance if stated else 0, departed=0.
+  A cached model xP row is reconciled against it: a player whose CURRENT
+  availability is 0 gets ``xp_next``/``p_start`` 0 and ``xp_reconciled``
+  True, even if the file was built (or a stale file served) before the news.
 * **Next-GW xP** (``xp_next``) comes from the match model's
   ``xp_gw{N}.parquet`` when ``--scorer model`` and the file is fresh; players
   the model does not cover (blank GW, no row, or a position the panel was too
@@ -292,7 +295,14 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     without a prediction (``usable_gw_xp``) — gets the heuristic
     1-GW value (``ros/38 x next-event fixture load x availability``,
     source ``heuristic``), or ``none`` when there is no projection either.
-    ``next3_xp`` stays heuristic.
+    ``next3_xp`` stays heuristic (already availability-gated).
+
+    Availability reconciliation: the model row's Stage-1 gate used the
+    bootstrap from when the xP file was built. When the CURRENT availability
+    is 0 (status u/i/s without a chance, or chance 0) a model row's
+    ``xp_next``, ``p_start``, ``xp_floor`` and ``xp_ceiling`` are set to 0
+    and ``xp_reconciled`` is True (False on every other row). Partial
+    availability changes (e.g. a new 50% doubt) are not reconciled.
     """
     strengths = team_strengths(seasons, bootstrap.get("teams", []))
     if fixtures_by_event is None:
@@ -328,11 +338,18 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
         per_gw = (ros / TOTAL_GWS) if ros is not None else None
         next3 = (per_gw * load.get(el.get("team"), 0.0) * avail) if per_gw is not None else None
         model = model_by_code.get(el.get("code"))
+        reconciled = False
         if model is not None:
             xp_next, xp_source = float(model["xp"]), "model"
             xp_extra = {"p_start": float(model["p_start"]), "xp_floor": float(model["xp_floor"]),
                         "xp_ceiling": float(model["xp_ceiling"]),
                         "drivers": model["drivers"], "opponents": model["opponents"]}
+            if avail == 0.0 and (xp_next > 0.0 or xp_extra["p_start"] > 0.0):
+                # The xP file's Stage-1 gate saw the bootstrap of its build
+                # time; a player ruled out since (or served from an older
+                # file after a failed rebuild) must not keep a positive xP.
+                xp_next, reconciled = 0.0, True
+                xp_extra.update(p_start=0.0, xp_floor=0.0, xp_ceiling=0.0)
         else:
             xp_extra = {"p_start": None, "xp_floor": None, "xp_ceiling": None,
                         "drivers": None, "opponents": None}
@@ -350,7 +367,7 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
             "status": el.get("status"), "news": el.get("news") or "",
             "next3_xp": round(next3, 1) if next3 is not None else None,
             "xp_next": round(xp_next, 2) if xp_next is not None else None,
-            "xp_source": xp_source, **xp_extra,
+            "xp_source": xp_source, "xp_reconciled": reconciled, **xp_extra,
             # ROS is deliberately NOT availability-gated: an injury gates the
             # next-3 horizon, not the season (status "u" = departed is the
             # exception and is filtered out of recommendations entirely).
@@ -509,8 +526,10 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
     ``recommend`` keeps its pre-xP ranking (``rank_by="legacy"``).
 
     Free agents are the element-status rows with no owner. Returns
-    ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``recommendations``
-    and ``unprojected_squad``. No I/O beyond reading ``projections_path``.
+    ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``recommendations``,
+    ``unprojected_squad`` and ``xp_reconciled`` (how many model rows were
+    zeroed because the player is now ruled out; see ``build_player_table``).
+    No I/O beyond reading ``projections_path``.
     """
     players = build_player_table(
         bootstrap, seasons, projections_path,
@@ -526,6 +545,7 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
         "recommendations": recommend(players, squad, top_n,
                                      rank_by="next1" if gw_xp is not None else "legacy"),
         "unprojected_squad": unprojected_squad(squad),
+        "xp_reconciled": int(players["xp_reconciled"].sum()),
     }
 
 
@@ -611,7 +631,7 @@ def main(argv: list[str] | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(jsonutil.dumps_strict(
         {**scorer_meta, "xi_next3_xp": xi_total, "recommendations": recs,
-         "unprojected_squad": unknown}, indent=1))
+         "unprojected_squad": unknown, "xp_reconciled": result["xp_reconciled"]}, indent=1))
     logger.info("wrote %s", out)
     return 0
 

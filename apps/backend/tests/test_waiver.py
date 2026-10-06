@@ -582,3 +582,50 @@ def test_usable_gw_xp_keeps_a_predicted_blank_and_drops_no_opinion_rows():
     frame.loc[frame["code"] == 201, "xp"] = float("nan")        # no xP at all
     frame.loc[frame["code"] == 999, "p_start"] = float("nan")   # unfitted position
     assert list(wv.usable_gw_xp(frame)["code"]) == [200]        # xp 0 with a p_start stays
+
+
+def _ruled_out_world(tmp_path, status, chance=None):
+    """Streamer (ros 60 < MyWeakFWD's 80) valued by a cached model row at 6.5
+    xP, now with ``status``/``chance`` in the CURRENT bootstrap."""
+    projections = [{"code": 101, "projected_points": 80.0},
+                   {"code": 201, "projected_points": 60.0}]
+    proj_path = tmp_path / "projections.json"
+    proj_path.write_text(json.dumps(projections))
+    bootstrap = {
+        "teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]},
+        "elements": [
+            {"id": 11, "code": 101, "web_name": "MyWeakFWD", "element_type": 4, "team": 2,
+             "status": "a"},
+            {"id": 21, "code": 201, "web_name": "Streamer", "element_type": 4, "team": 1,
+             "status": status, "chance_of_playing_next_round": chance}]}
+    status_rows = {"element_status": [{"element": 11, "owner": 42},
+                                      {"element": 21, "owner": None}]}
+    return wv.plan(bootstrap, status_rows, SEASONS, proj_path, 42,
+                   gw_xp=_gw_xp([(101, 1.0), (201, 6.5)]))
+
+
+def test_model_xp_of_a_player_now_ruled_out_is_zeroed_and_never_recommended(tmp_path):
+    """Regression: a cached xP file built before an injury kept a positive
+    xp_next and recommended the injured player as a stream."""
+    result = _ruled_out_world(tmp_path, "i")
+    hurt = result["players"].set_index("web_name").loc["Streamer"]
+    assert hurt["xp_source"] == "model" and hurt["xp_reconciled"]
+    assert hurt["xp_next"] == 0.0 and hurt["p_start"] == 0.0
+    assert result["recommendations"] == []
+    assert result["xp_reconciled"] == 1
+    mine = result["players"].set_index("web_name").loc["MyWeakFWD"]
+    assert not mine["xp_reconciled"] and mine["xp_next"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("status,chance,reconciled", [
+    ("d", 0, True),       # doubtful with a stated 0% chance is ruled out
+    ("s", None, True),    # suspended, no chance stated
+    ("d", 50, False),     # partial doubt: model value kept as served
+    ("a", None, False),
+])
+def test_reconciliation_only_applies_at_zero_availability(tmp_path, status, chance, reconciled):
+    result = _ruled_out_world(tmp_path, status, chance)
+    row = result["players"].set_index("web_name").loc["Streamer"]
+    assert bool(row["xp_reconciled"]) is reconciled
+    assert bool(row["xp_next"] == 0.0) is reconciled
+    assert bool(result["recommendations"]) is not reconciled
