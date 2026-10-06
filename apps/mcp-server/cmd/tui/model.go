@@ -71,7 +71,11 @@ type railItem struct {
 	// SeasonUnknown: the add has no rest-of-season projection (promoted
 	// club, new signing), so SeasonGain/AddROS are not numbers to quote.
 	SeasonUnknown bool
-	Next3Gain     float64
+	// RankBy: waiver_plan.json's top-level rank_by (next1 / next3 / ros /
+	// legacy; "" in files written before it existed) — the horizon a
+	// season-unknown add was recommended on.
+	RankBy    string
+	Next3Gain float64
 	// Next3Unknown: the add has no 3-GW value (no match-model horizon and no
 	// projection to build one from), so Next3Gain/AddNext3 are not numbers
 	// to quote.
@@ -994,6 +998,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 	}
 	var plan struct {
+		RankBy          string `json:"rank_by"`
 		Recommendations []struct {
 			Add           string  `json:"add"`
 			AddTeam       string  `json:"add_team"`
@@ -1040,6 +1045,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			item := railItem{
 				Glyph: "↑", Name: r.Add, Team: r.AddTeam, Note: note,
 				Drop: r.Drop, SeasonGain: r.SeasonGain, SeasonUnknown: r.SeasonUnknown,
+				RankBy:       plan.RankBy,
 				Next3Unknown: r.Next3Gain == nil || r.AddNext3 == nil,
 				Next3Model:   r.AddNext3Source == "model",
 				AddROS:       addROS, DropROS: dropROS,

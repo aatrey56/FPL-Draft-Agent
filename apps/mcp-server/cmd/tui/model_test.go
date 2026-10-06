@@ -681,3 +681,43 @@ func TestSuggestionsHeaderMarksXPFallback(t *testing.T) {
 		}
 	}
 }
+
+// Regression: every season-unknown add was called a "next-GW stream", but
+// under the default 3-GW ranking one can be picked for N+1/N+2 while
+// blanking in N. The detail names the horizon rank_by says it was ranked
+// on; files without rank_by keep the next-GW wording.
+func TestSeasonUnknownWireRecNamesItsRankingHorizon(t *testing.T) {
+	cases := map[string]string{
+		"next3": "treat it as a stream over the next 3 GWs",
+		"ros":   "treat it as a stream over the next 3 GWs",
+		"next1": "treat it as a next-GW stream",
+		"":      "treat it as a next-GW stream",
+	}
+	for rankBy, want := range cases {
+		derived := t.TempDir()
+		plan := map[string]any{
+			"recommendations": []map[string]any{
+				{"add": "Promoted", "add_team": "HUL", "drop": "Weak", "label": "stream",
+					"season_gain": nil, "season_unknown": true, "add_ros": nil, "drop_ros": 40.0,
+					"next3_gain": 6.25, "add_next3_xp": 12.75, "add_next3_source": "model"},
+			},
+		}
+		if rankBy != "" {
+			plan["rank_by"] = rankBy
+		}
+		write(t, filepath.Join(derived, "ml/waiver_plan.json"), plan)
+		m := newModel(fixtureDir(t), derived, 5, 501, 0)
+		m.w = 160
+		if err := m.reload(); err != nil {
+			t.Fatal(err)
+		}
+		m.sugSel = 0
+		if m.snap.NeedsYou[len(m.snap.NeedsYou)-1].RankBy != rankBy {
+			t.Fatalf("rank_by %q not carried into the rail item", rankBy)
+		}
+		body := strings.Join(strings.Fields(m.sugDetailBody(120)), " ")
+		if !strings.Contains(body, want) {
+			t.Fatalf("rank_by %q: want %q in:\n%s", rankBy, want, body)
+		}
+	}
+}
