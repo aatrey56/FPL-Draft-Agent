@@ -63,11 +63,16 @@ def _season(season: str, gws: int, seed: int, team_offset: int = 0) -> pd.DataFr
 
 
 @pytest.fixture(scope="module")
-def frame() -> pd.DataFrame:
+def panel() -> pd.DataFrame:
     """A full archive season plus GW1-4 of the live season."""
-    panel = pd.concat([_season(ARCHIVE, 20, seed=7),
-                       _season(LIVE_SEASON, 4, seed=11, team_offset=100)],
-                      ignore_index=True)
+    return pd.concat([_season(ARCHIVE, 20, seed=7),
+                      _season(LIVE_SEASON, 4, seed=11, team_offset=100)],
+                     ignore_index=True)
+
+
+@pytest.fixture(scope="module")
+def frame(panel) -> pd.DataFrame:
+    """``panel`` with features and labels, for writing served forecasts."""
     return build_match_frame(panel)
 
 
@@ -82,14 +87,14 @@ def _write_live_xp(ml_dir, frame: pd.DataFrame, gw: int) -> None:
     served.to_parquet(ml_dir / f"xp_gw{gw}.parquet", index=False)
 
 
-def _run(frame, ml_dir, **kwargs) -> pd.DataFrame:
-    return tr.run(frame, LIVE_SEASON, ml_dir, min_train_rows=SMALL_FIT, **kwargs)
+def _run(panel, ml_dir, **kwargs) -> pd.DataFrame:
+    return tr.run(panel, LIVE_SEASON, ml_dir, min_train_rows=SMALL_FIT, **kwargs)
 
 
-def test_scores_every_finished_gameweek_with_the_right_key(frame, tmp_path):
+def test_scores_every_finished_gameweek_with_the_right_key(panel, frame, tmp_path):
     ml_dir = tmp_path / "ml"
     _write_live_xp(ml_dir, frame, 2)
-    table = _run(frame, ml_dir)
+    table = _run(panel, ml_dir)
 
     on_disk = pd.read_csv(ml_dir / "track_record.csv")
     assert list(on_disk.columns) == tr.COLUMNS
@@ -109,13 +114,13 @@ def test_scores_every_finished_gameweek_with_the_right_key(frame, tmp_path):
     assert "| 3 | replay | replay — not live evidence |" in md
 
 
-def test_live_file_wins_over_replay(frame, tmp_path):
+def test_live_file_wins_over_replay(panel, frame, tmp_path):
     ml_dir = tmp_path / "ml"
-    first = _run(frame, ml_dir)
+    first = _run(panel, ml_dir)
     assert set(first.loc[first["gw"] == 2, "source"]) == {"replay"}
 
     _write_live_xp(ml_dir, frame, 2)
-    second = _run(frame, ml_dir)
+    second = _run(panel, ml_dir)
     gw2 = second[second["gw"] == 2]
     # The replayed GW2 rows are replaced, not kept beside the live ones.
     assert set(gw2["source"]) == {"live"}
@@ -125,31 +130,31 @@ def test_live_file_wins_over_replay(frame, tmp_path):
     assert (model["spearman"].round(6) == 1.0).all()
 
 
-def test_rerun_is_byte_identical_and_never_duplicates(frame, tmp_path):
+def test_rerun_is_byte_identical_and_never_duplicates(panel, frame, tmp_path):
     ml_dir = tmp_path / "ml"
     _write_live_xp(ml_dir, frame, 2)
-    _run(frame, ml_dir)
+    _run(panel, ml_dir)
     csv_before = (ml_dir / "track_record.csv").read_bytes()
     md_before = (ml_dir / "track_record.md").read_bytes()
 
-    _run(frame, ml_dir)
+    _run(panel, ml_dir)
     assert (ml_dir / "track_record.csv").read_bytes() == csv_before
     assert (ml_dir / "track_record.md").read_bytes() == md_before
     assert not list(ml_dir.glob("*.tmp"))
 
 
-def test_recorded_live_rows_survive_a_deleted_xp_file(frame, tmp_path):
+def test_recorded_live_rows_survive_a_deleted_xp_file(panel, frame, tmp_path):
     ml_dir = tmp_path / "ml"
     _write_live_xp(ml_dir, frame, 2)
-    before = _run(frame, ml_dir)
+    before = _run(panel, ml_dir)
     (ml_dir / "xp_gw2.parquet").unlink()
 
-    after = _run(frame, ml_dir)
+    after = _run(panel, ml_dir)
     assert set(after.loc[after["gw"] == 2, "source"]) == {"live"}
     pd.testing.assert_frame_equal(after, before)
 
 
-def test_xp_file_written_after_the_deadline_is_not_live(frame, tmp_path, caplog):
+def test_xp_file_written_after_the_deadline_is_not_live(panel, frame, tmp_path, caplog):
     ml_dir = tmp_path / "ml"
     _write_live_xp(ml_dir, frame, 2)
     deadline = datetime(2026, 8, 28, 17, 30, tzinfo=timezone.utc)
@@ -159,18 +164,18 @@ def test_xp_file_written_after_the_deadline_is_not_live(frame, tmp_path, caplog)
         {"id": 2, "deadline_time": "2026-08-28T17:30:00Z", "finished": True}]}}
 
     with caplog.at_level(logging.WARNING):
-        table = _run(frame, ml_dir, bootstrap=bootstrap)
+        table = _run(panel, ml_dir, bootstrap=bootstrap)
     assert set(table.loc[table["gw"] == 2, "source"]) == {"replay"}
     assert "after the GW2 deadline" in caplog.text
 
     early = deadline.timestamp() - 86400
     os.utime(ml_dir / "xp_gw2.parquet", (early, early))
-    table = _run(frame, ml_dir, bootstrap=bootstrap)
+    table = _run(panel, ml_dir, bootstrap=bootstrap)
     assert set(table.loc[table["gw"] == 2, "source"]) == {"live"}
 
 
 def test_gameweek_without_xp_or_training_rows_errors_naming_it(tmp_path):
-    thin = build_match_frame(_season(LIVE_SEASON, 2, seed=3))
+    thin = _season(LIVE_SEASON, 2, seed=3)
     with pytest.raises(tr.TrackRecordError, match=r"^GW2: no xp_gw2\.parquet"):
         tr.run(thin, LIVE_SEASON, tmp_path / "ml")
     assert not (tmp_path / "ml" / "track_record.csv").exists()
@@ -190,14 +195,14 @@ def test_thin_position_scores_nan_not_crash(frame):
     assert scored.loc[scored["position"] == "MID", "spearman"].notna().any()
 
 
-def test_gws_filter_rescores_only_those_and_keeps_the_rest(frame, tmp_path):
+def test_gws_filter_rescores_only_those_and_keeps_the_rest(panel, tmp_path):
     ml_dir = tmp_path / "ml"
-    full = _run(frame, ml_dir)
-    partial = _run(frame, ml_dir, gws=[3])
+    full = _run(panel, ml_dir)
+    partial = _run(panel, ml_dir, gws=[3])
     pd.testing.assert_frame_equal(partial, full)
 
 
-def test_cli_reads_the_data_root(frame, tmp_path, capsys):
+def test_cli_reads_the_data_root(tmp_path, capsys):
     data = tmp_path / "data"
     archive_dir = data / "derived/ml"
     season_dir = data / f"derived/{LIVE_SEASON}/ml"
