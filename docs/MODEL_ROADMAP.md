@@ -337,8 +337,11 @@ adds until the horizons work removes most fallbacks.
 `archive panel UNION season panel[gw < N]` with the same neutral availability
 as the heuristic (a guard raises if any season gw >= N is present). Replay
 `waiver_plan` rank-1 `gw_gain` totals over GW2-5 (n=4, a reported number, not
-a gate): heuristic **-15.0**, model **+9.0**; `std_points` +7.0, `form3` +7.0
-and `me` +2.0 are identical between scorers. Outputs go to
+a gate): heuristic **-15.0**, model **+8.0**; `std_points` +7.0, `form3` +7.0
+and `me` +2.0 are identical between scorers. Model history: +9.0 as first
+wired, +10.0 after the carried team-form fix, +8.0 once model-valued free
+agents without a ROS projection are ranked (they become the rank-1 pick at
+GW3-5: Slater, McAtee, McAtee). Outputs go to
 `waiver_replay_<scorer>.json`.
 
 ## Working rules
