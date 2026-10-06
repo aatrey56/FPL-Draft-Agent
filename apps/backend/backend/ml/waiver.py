@@ -183,7 +183,11 @@ def read_gw_xp(path: Path, expected_gw: int | None,
     path = Path(path)
     if not path.exists():
         return None, f"match xP file {path.name} missing"
-    frame = pd.read_parquet(path)
+    try:
+        frame = pd.read_parquet(path)
+    except (OSError, ValueError) as exc:   # pyarrow's ArrowInvalid is a ValueError
+        return None, (f"match xP file {path.name} is unreadable "
+                      f"({type(exc).__name__}: {exc}); rebuild it")
     gws = sorted(int(g) for g in frame["gw"].unique()) if "gw" in frame else []
     if expected_gw is None or gws != [expected_gw]:
         return None, f"match xP file {path.name} is for gw {gws}, expected {expected_gw} (stale)"
@@ -204,7 +208,7 @@ def load_gw_xp(path: Path, expected_gw: int | None,
     """Read the match model's ``xp_gw{N}.parquet`` for the upcoming gameweek.
 
     Returns None (with a WARNING, so the caller falls back to the heuristic
-    loudly) when the file is missing, was built for a different
+    loudly) when the file is missing or unreadable, was built for a different
     gameweek than ``expected_gw``, or was trained on a panel whose last GW is
     not the last finished one (stale). See ``read_gw_xp`` for the rule and
     the reason string.
@@ -225,7 +229,7 @@ def resolve_scorer(scorer: str, bootstrap: dict,
 
     ``model`` reads ``<ml_dir>/xp_gw{N}.parquet`` for the bootstrap's next
     event and requires its panel to end at the bootstrap's last finished
-    gameweek (see ``read_gw_xp``); a missing or stale file falls
+    gameweek (see ``read_gw_xp``); a missing, unreadable or stale file falls
     back to the heuristic for everyone.
     The metadata (merged into the waiver_plan / my_week JSON) records what
     actually ran, never just what was asked for:

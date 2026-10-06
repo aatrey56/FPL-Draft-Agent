@@ -415,6 +415,26 @@ def test_resolve_scorer_rejects_a_mid_gameweek_file_once_the_gameweek_finishes(t
     assert frame is None and "last finished gw is 5" in meta["xp_fallback_reason"]
 
 
+@pytest.mark.parametrize("content", [b"not a parquet file", b""])
+def test_resolve_scorer_falls_back_on_an_unreadable_xp_file(tmp_path, content):
+    """Review regression: a corrupt or truncated parquet raised out of
+    read_gw_xp and crashed waiver_plan / my_week instead of falling back."""
+    (tmp_path / "xp_gw6.parquet").write_bytes(content)
+    frame, meta = wv.resolve_scorer("model", NEXT_GW6, tmp_path)
+    assert frame is None and meta["scorer"] == "heuristic" and meta["xp_fallback"]
+    assert meta["xp_fallback_reason"].startswith("match xP file xp_gw6.parquet is unreadable")
+    assert wv.load_gw_xp(tmp_path / "xp_gw6.parquet", 6) is None
+
+
+def test_cli_falls_back_on_an_unreadable_xp_file(weekly_cli_root, weekly_cli_argv, tmp_path):
+    (weekly_cli_root / "derived/2026-27/ml/xp_gw6.parquet").write_bytes(b"\x00garbage")
+    out = tmp_path / "out" / "waiver_plan.json"
+    assert wv.main(weekly_cli_argv(out, "model")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["scorer"] == "heuristic" and doc["xp_fallback"] is True
+    assert "unreadable" in doc["xp_fallback_reason"]
+
+
 def test_load_gw_xp_rejects_a_file_without_panel_max_gw(tmp_path):
     path = tmp_path / "xp_gw6.parquet"
     _gw_xp([(200, 6.5)], gw=6).drop(columns="panel_max_gw").to_parquet(path)

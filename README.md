@@ -55,7 +55,7 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   `waiver_plan` / `my_week` read it (`xp_gw<N>.parquet`) with
   `--scorer model` and fall back, with a WARNING and a per-player `xp_source`
   (`model` / `heuristic` / `none`), to the per-GW heuristic (projection/38 ×
-  fixture multiplier × availability) for uncovered players or a missing/stale
+  fixture multiplier × availability) for uncovered players or a missing/unreadable/stale
   file (the JSON's `scorer` then reads `heuristic`, with `xp_fallback: true`
   and an `xp_fallback_reason`). Waiver recommendations rank by `next1_gain` (next-GW xP of the add
   minus the drop); `hold` recs (no next-GW gain, better ROS) come last.

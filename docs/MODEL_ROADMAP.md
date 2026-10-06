@@ -326,7 +326,7 @@ Between gameweeks that is N-1. Mid-gameweek (GW N-1 in play, planning for N)
 it is N-2, and a file trained through N-2 is served from the deadline on (the
 earlier `== N-1` rule rejected every model file until the gameweek finished,
 which is exactly when `scripts/matchday.sh` runs derive). Once GW N-1
-finishes, that file is stale until derive rebuilds it. A missing or stale file falls back to the
+finishes, that file is stale until derive rebuilds it. A missing, unreadable or stale file falls back to the
 heuristic for everyone with a WARNING, and the JSON says so: `scorer` is the
 scorer actually used (`heuristic` after a fallback), beside
 `scorer_requested`, `xp_fallback` and `xp_fallback_reason`. Waiver recs rank

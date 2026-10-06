@@ -5,7 +5,7 @@ deadline?* Scored over the single next event. ``gw_xp`` is the match model's
 ``xp_gw{N}.parquet`` value when ``--scorer model`` and the player is covered,
 else the heuristic (season projection / 38, mild fixture multiplier, live
 availability gate); each row carries ``xp_source`` (model / heuristic / none).
-A missing or stale xP file falls back to the heuristic with a WARNING, and
+A missing, unreadable or stale xP file falls back to the heuristic with a WARNING, and
 the JSON records it: ``scorer`` is the scorer actually used, with
 ``scorer_requested``, ``xp_fallback`` and ``xp_fallback_reason`` beside it.
 

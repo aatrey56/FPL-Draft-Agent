@@ -257,6 +257,16 @@ def test_cli_writes_the_scorer_actually_used(weekly_cli_root, weekly_cli_argv, t
     assert doc["scorer"] == "heuristic" and doc["xp_fallback"] is False
 
 
+def test_cli_falls_back_on_an_unreadable_xp_file(weekly_cli_root, weekly_cli_argv, tmp_path):
+    """Review regression: a corrupt xP parquet crashed my_week."""
+    (weekly_cli_root / "derived/2026-27/ml/xp_gw6.parquet").write_bytes(b"\x00garbage")
+    out = tmp_path / "out" / "my_week.json"
+    assert mw.main(weekly_cli_argv(out, "model")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["scorer"] == "heuristic" and doc["xp_fallback"] is True
+    assert "unreadable" in doc["xp_fallback_reason"]
+
+
 def test_warning_codes_are_stable_and_aligned_with_text(tmp_path):
     """The TUI matches on warning_codes; each code sits at its text's index."""
     players = _xp_world(tmp_path, _model_frame([(10, 7.0)]))
