@@ -968,24 +968,15 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	// Needs-you suggestions: my_week attention + top waiver targets (best effort).
 	var week struct {
 		Attention []struct {
-			WebName  string   `json:"web_name"`
-			Warnings []string `json:"warnings"`
+			WebName      string   `json:"web_name"`
+			Warnings     []string `json:"warnings"`
+			WarningCodes []string `json:"warning_codes"`
 		} `json:"attention"`
 	}
 	if err := readJSON(filepath.Join(derived, "ml/my_week.json"), &week); err == nil {
 		for _, a := range week.Attention {
-			for _, w := range a.Warnings {
-				g, note := "⚠", w
-				switch {
-				case strings.Contains(w, "no projection"):
-					g, note = "?", "unprojected"
-				case strings.Contains(w, "blank"):
-					g, note = "◇", "blank GW"
-				case strings.Contains(w, "availability"):
-					note = strings.TrimPrefix(w, "availability ")
-				}
-				snap.NeedsYou = append(snap.NeedsYou, railItem{Glyph: g, Name: a.WebName, Note: note})
-				break
+			if item, ok := attentionItem(a.WebName, a.Warnings, a.WarningCodes); ok {
+				snap.NeedsYou = append(snap.NeedsYou, item)
 			}
 		}
 	}
@@ -1371,4 +1362,49 @@ func liveCount(s snapshot) int {
 		}
 	}
 	return n
+}
+
+// my_week warning codes (backend/ml/myweek.py WARNING_*): stable identifiers
+// index-aligned with the human-readable warnings text.
+const (
+	warnNoValue      = "no_value"
+	warnHeuristicXP  = "heuristic_xp"
+	warnBlankGW      = "blank_gw"
+	warnAvailability = "availability"
+)
+
+// attentionItem turns one my_week attention entry into a needs-you rail item,
+// using its first warning. It matches on the stable warning code when the file
+// carries index-aligned warning_codes, and falls back to the prose for files
+// written before codes existed ("no projection" was renamed "no value").
+func attentionItem(name string, warnings, codes []string) (railItem, bool) {
+	if len(warnings) == 0 {
+		return railItem{}, false
+	}
+	text := warnings[0]
+	code := ""
+	if len(codes) == len(warnings) {
+		code = codes[0]
+	} else {
+		switch {
+		case strings.Contains(text, "no value"), strings.Contains(text, "no projection"):
+			code = warnNoValue
+		case strings.Contains(text, "blank"):
+			code = warnBlankGW
+		case strings.HasPrefix(text, "availability"):
+			code = warnAvailability
+		}
+	}
+	item := railItem{Glyph: "⚠", Name: name, Note: text}
+	switch code {
+	case warnNoValue:
+		item.Glyph, item.Note = "?", "unprojected"
+	case warnHeuristicXP:
+		item.Note = "heuristic xP"
+	case warnBlankGW:
+		item.Glyph, item.Note = "◇", "blank GW"
+	case warnAvailability:
+		item.Note = strings.TrimPrefix(text, "availability ")
+	}
+	return item, true
 }

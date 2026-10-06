@@ -217,3 +217,17 @@ def test_cli_writes_the_scorer_actually_used(weekly_cli_root, weekly_cli_argv, t
     assert mw.main(weekly_cli_argv(out, "heuristic")) == 0
     doc = json.loads(out.read_text())
     assert doc["scorer"] == "heuristic" and doc["xp_fallback"] is False
+
+
+def test_warning_codes_are_stable_and_aligned_with_text(tmp_path):
+    """The TUI matches on warning_codes; each code sits at its text's index."""
+    players = _xp_world(tmp_path, _model_frame([(10, 7.0)]))
+    players.loc[players["web_name"] == "Mystery", ["status", "news"]] = ["d", "Knock"]
+    status = {"element_status": [{"element": e, "owner": 42} for e in (1, 2, 3)]}
+    week = mw.build_my_week(players, status, 42)
+    att = {p["web_name"]: p for p in week["attention"]}
+    assert att["Mystery"]["warning_codes"] == [mw.WARNING_NO_VALUE, mw.WARNING_AVAILABILITY]
+    assert att["Mystery"]["warnings"][1] == "availability [d] — Knock"
+    assert att["Heur"]["warning_codes"] == [mw.WARNING_HEURISTIC_XP]
+    for row in week["xi"] + week["bench"]:
+        assert len(row["warning_codes"]) == len(row["warnings"])

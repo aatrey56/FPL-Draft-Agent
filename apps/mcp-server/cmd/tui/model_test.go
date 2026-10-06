@@ -417,3 +417,32 @@ func TestBonusRaceBuilds(t *testing.T) {
 		t.Fatalf("bonus page wrong:\n%s", body)
 	}
 }
+
+func TestAttentionItemMatchesStableCodes(t *testing.T) {
+	cases := []struct {
+		name            string
+		warnings, codes []string
+		glyph, note     string
+	}{
+		// current my_week text, with codes
+		{"coded no value", []string{"no value — judge manually (player_card)"}, []string{"no_value"}, "?", "unprojected"},
+		{"coded blank", []string{"blank gameweek: no fixture"}, []string{"blank_gw"}, "◇", "blank GW"},
+		{"coded availability", []string{"availability [d] — Knock"}, []string{"availability"}, "⚠", "[d] — Knock"},
+		{"coded heuristic", []string{"no model xP — heuristic"}, []string{"heuristic_xp"}, "⚠", "heuristic xP"},
+		// the code wins even if the prose is reworded again
+		{"code beats prose", []string{"needs a human look"}, []string{"no_value"}, "?", "unprojected"},
+		// files written before warning_codes existed
+		{"legacy no projection", []string{"no projection — judge manually"}, nil, "?", "unprojected"},
+		{"legacy no value", []string{"no value — judge manually (player_card)"}, nil, "?", "unprojected"},
+		{"legacy other", []string{"something new"}, nil, "⚠", "something new"},
+	}
+	for _, c := range cases {
+		item, ok := attentionItem("P", c.warnings, c.codes)
+		if !ok || item.Glyph != c.glyph || item.Note != c.note {
+			t.Errorf("%s: got (%q, %q, %v), want (%q, %q)", c.name, item.Glyph, item.Note, ok, c.glyph, c.note)
+		}
+	}
+	if _, ok := attentionItem("P", nil, nil); ok {
+		t.Error("no warnings must yield no rail item")
+	}
+}

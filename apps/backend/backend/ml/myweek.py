@@ -59,19 +59,33 @@ def gw_xp_table(bootstrap: dict, seasons: pd.DataFrame,
     return players
 
 
-def player_warnings(row: pd.Series) -> list[str]:
-    """Deadline-relevant flags for one squad player."""
-    warnings = []
+# Stable machine-readable codes for each warning, index-aligned with the
+# human-readable ``warnings`` text (consumers such as the TUI match on these,
+# never on the prose, which is free to change).
+WARNING_NO_VALUE = "no_value"
+WARNING_HEURISTIC_XP = "heuristic_xp"
+WARNING_BLANK_GW = "blank_gw"
+WARNING_AVAILABILITY = "availability"
+
+
+def player_warning_items(row: pd.Series) -> list[tuple[str, str]]:
+    """Deadline-relevant flags for one squad player as (code, text) pairs."""
+    items = []
     if row["xp_source"] == "none":
-        warnings.append("no value — judge manually (player_card)")
+        items.append((WARNING_NO_VALUE, "no value — judge manually (player_card)"))
     elif row["xp_source"] == "heuristic" and row["expects_model"]:
-        warnings.append("no model xP — heuristic")
+        items.append((WARNING_HEURISTIC_XP, "no model xP — heuristic"))
     if row["gw_fixture_load"] == 0:
-        warnings.append("blank gameweek: no fixture")
+        items.append((WARNING_BLANK_GW, "blank gameweek: no fixture"))
     if row["status"] != "a":
         news = f" — {row['news']}" if row["news"] else ""
-        warnings.append(f"availability [{row['status']}]{news}")
-    return warnings
+        items.append((WARNING_AVAILABILITY, f"availability [{row['status']}]{news}"))
+    return items
+
+
+def player_warnings(row: pd.Series) -> list[str]:
+    """Deadline-relevant flags for one squad player (human-readable text)."""
+    return [text for _, text in player_warning_items(row)]
 
 
 def xi_selection_value(row: pd.Series) -> float:
@@ -117,12 +131,15 @@ def build_my_week(players: pd.DataFrame, element_status: dict,
                 "xp_source": p["xp_source"],
                 "p_start": None if pd.isna(p["p_start"]) else float(p["p_start"]),
                 "warnings": player_warnings(p),
+                "warning_codes": [code for code, _ in player_warning_items(p)],
             })
         return out
 
     attention = [
-        {"web_name": p["web_name"], "position": p["position"], "warnings": w}
-        for _, p in squad.iterrows() if (w := player_warnings(p))
+        {"web_name": p["web_name"], "position": p["position"],
+         "warnings": [text for _, text in items],
+         "warning_codes": [code for code, _ in items]}
+        for _, p in squad.iterrows() if (items := player_warning_items(p))
     ]
     return {
         "xi": rows(xi), "bench": rows(bench), "xi_gw_xp": xi_total,
