@@ -806,6 +806,165 @@ def test_heuristic_ranking_no_longer_leads_with_a_benched_club_mover(tmp_path):
     assert "FreeMover" not in [r["add"] for r in seen]   # 26.2 ROS: no gain on any horizon
 
 
+# ---------------------------------------------------------------------------
+# role_overrides.json
+# ---------------------------------------------------------------------------
+
+def _override_table(tmp_path):
+    """SeasonStar: model xp 6.5 (p_start 0.9, xp_started 7.0). Streamer: heuristic."""
+    gw_xp = _gw_xp([(200, 6.5)]).assign(xp_started=7.0, xp_cameo=1.5, num_fixtures=1)
+    return _xp_table(tmp_path, gw_xp)
+
+
+def _by_name(table):
+    return table.set_index("web_name")
+
+
+def test_override_replaces_xp_next_with_p_override_times_xp_started(tmp_path):
+    table = _override_table(tmp_path)
+    assert _by_name(table).loc["SeasonStar", "xp_started"] == 7.0
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.4, "fact": "rotation risk"}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
+    star = _by_name(out).loc["SeasonStar"]
+    assert star["xp_next"] == pytest.approx(0.4 * 7.0)        # cameo term dropped
+    assert star["p_start"] == 0.4 and star["role_override_p_start"] == 0.4
+    assert star["role_override"] == "rotation risk"
+    assert pd.isna(star["xp_floor"]) and pd.isna(star["xp_ceiling"])   # stale band cleared
+    assert report == {"overrides_applied": ["SeasonStar"], "overrides_unmatched": [],
+                      "overrides_expired": []}
+    # the input table is not mutated, and nobody else moves
+    assert _by_name(table).loc["SeasonStar", "xp_next"] == pytest.approx(6.5)
+    untouched = _by_name(out).loc["Streamer"]
+    assert untouched["role_override"] is None
+    assert untouched["xp_next"] == _by_name(table).loc["Streamer", "xp_next"]
+
+
+def test_override_in_a_double_gameweek_scales_by_the_fixture_count(tmp_path):
+    gw_xp = _gw_xp([(200, 12.0)]).assign(xp_started=7.0, xp_cameo=1.5, num_fixtures=2)
+    table = _xp_table(tmp_path, gw_xp)
+    assert _by_name(table).loc["SeasonStar", "xp_started"] == 14.0
+    out, _ = wv.apply_role_overrides(
+        table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.5}], target_gw=1)
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(7.0)
+
+
+def test_override_on_a_heuristic_player_uses_the_full_availability_heuristic(tmp_path):
+    table = _override_table(tmp_path)
+    streamer = _by_name(table).loc["Streamer"]
+    assert streamer["xp_source"] == "heuristic"
+    assert streamer["xp_started"] == pytest.approx(streamer["xp_next"])   # status "a"
+    out, _ = wv.apply_role_overrides(
+        table, [{"player": "Streamer", "team": "ARS", "p_start": 0.5}], target_gw=1)
+    assert _by_name(out).loc["Streamer", "xp_next"] == pytest.approx(
+        0.5 * streamer["xp_started"], abs=0.006)
+
+
+def test_unmatched_override_is_reported_without_raising(tmp_path):
+    table = _override_table(tmp_path)
+    overrides = [{"player": "Nobody", "team": "ARS", "p_start": 0.1},
+                 {"player": "SeasonStar", "team": "WOL", "p_start": 0.1},   # wrong team
+                 {"player": "Streamer", "team": "ARS", "p_start": "soon"}]  # not a number
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
+    assert report["overrides_unmatched"] == ["Nobody", "SeasonStar", "Streamer"]
+    assert report["overrides_applied"] == []
+    assert out["role_override"].isna().all()
+    assert out["xp_next"].equals(table["xp_next"])
+
+
+def test_return_gw_in_the_future_zeroes_xp_next(tmp_path):
+    table = _override_table(tmp_path)
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.8, "return_gw": 9,
+                  "fact": "out until GW9"}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=6)
+    star = _by_name(out).loc["SeasonStar"]
+    assert star["xp_next"] == 0.0 and star["p_start"] == 0.0
+    assert report["overrides_applied"] == ["SeasonStar"]
+
+
+@pytest.mark.parametrize("return_gw", [6, 4])
+def test_override_expires_once_the_return_gameweek_arrives(tmp_path, return_gw):
+    """The Maddison case: ``p_start 0, return_gw 4`` must not zero him in GW6."""
+    table = _override_table(tmp_path)
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.0, "return_gw": return_gw}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=6)
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(6.5)
+    assert report == {"overrides_applied": [], "overrides_unmatched": [],
+                      "overrides_expired": ["SeasonStar"]}
+
+
+def test_override_prefers_code_over_name_when_names_collide(tmp_path):
+    table = _override_table(tmp_path)
+    table.loc[table["web_name"] == "Streamer", "web_name"] = "SeasonStar"   # same name + team
+    by_name = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.2}]
+    _, report = wv.apply_role_overrides(table, by_name, target_gw=1)
+    assert report["overrides_unmatched"] == ["SeasonStar"]                  # ambiguous: skipped
+    by_code = [{**by_name[0], "code": 200}]
+    out, report = wv.apply_role_overrides(table, by_code, target_gw=1)
+    assert report["overrides_applied"] == ["SeasonStar"]
+    assert out.loc[out["code"] == 200, "xp_next"].iloc[0] == pytest.approx(0.2 * 7.0)
+    assert out.loc[out["code"] == 201, "role_override"].iloc[0] is None
+
+
+def test_fact_only_override_and_unvalued_player_keep_their_xp(tmp_path):
+    table = _override_table(tmp_path)
+    overrides = [{"player": "SeasonStar", "team": "ARS", "fact": "new manager"},
+                 {"player": "NoProj", "team": "ARS", "p_start": 0.0}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
+    rows = _by_name(out)
+    assert rows.loc["SeasonStar", "xp_next"] == pytest.approx(6.5)
+    assert rows.loc["SeasonStar", "role_override"] == "new manager"
+    assert pd.isna(rows.loc["NoProj", "xp_next"])            # no value to scale
+    assert rows.loc["NoProj", "role_override_p_start"] == 0.0
+    assert report["overrides_applied"] == ["SeasonStar", "NoProj"]
+
+
+def test_load_role_overrides_tolerates_missing_and_malformed_files(tmp_path, caplog):
+    assert wv.load_role_overrides(tmp_path / "absent.json") == []
+    good = tmp_path / "role_overrides.json"
+    good.write_text(json.dumps({"updated": "x", "overrides": [{"player": "A", "team": "ARS"}, "junk"]}))
+    assert wv.load_role_overrides(good) == [{"player": "A", "team": "ARS"}]
+    for content in ("{not json", "[1, 2]", '{"overrides": {"player": "A"}}'):
+        bad = tmp_path / "bad.json"
+        bad.write_text(content)
+        with caplog.at_level("WARNING"):
+            assert wv.load_role_overrides(bad) == []
+    assert "ignored" in caplog.text
+
+
+def test_cli_prints_the_three_sections_and_writes_role_fields(weekly_cli_root, weekly_cli_argv,
+                                                              tmp_path, capsys):
+    ml_dir = weekly_cli_root / "derived/2026-27/ml"
+    ml_dir.mkdir(parents=True, exist_ok=True)
+    (ml_dir / "role_overrides.json").write_text(json.dumps({"overrides": [
+        {"player": "FreeFWD", "team": "ARS", "p_start": 0.0, "return_gw": 9, "fact": "out"},
+        {"player": "Ghost", "team": "ARS", "p_start": 0.5},
+        {"player": "MyFWD", "team": "WOL", "p_start": 0.0, "return_gw": 3}]}))
+    pd.DataFrame([{"season": "2026-27", "code": 101, "gw": gw, "minutes": 90}
+                  for gw in (4, 5)]).to_parquet(ml_dir / "player_gameweeks.parquet")
+    out = tmp_path / "waiver_plan.json"
+    assert wv.main(weekly_cli_argv(out, "heuristic")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["overrides_applied"] == ["FreeFWD"]
+    assert doc["overrides_unmatched"] == ["Ghost"] and doc["overrides_expired"] == ["MyFWD"]
+    assert doc["minutes_through_gw"] == 5
+    assert [c["web_name"] for c in doc["drop_candidates"]] == ["MyFWD"]
+    assert doc["drop_candidates"][0]["expected_minutes"] == 90.0
+    printed = capsys.readouterr().out
+    assert printed.index("overrides_applied: FreeFWD") < printed.index("== DROP CANDIDATES") \
+        < printed.index("== WAIVER RECOMMENDATIONS")
+
+
+def test_cli_runs_without_a_season_panel_or_overrides_file(weekly_cli_root, weekly_cli_argv,
+                                                           tmp_path, caplog):
+    out = tmp_path / "waiver_plan.json"
+    with caplog.at_level("WARNING"):
+        assert wv.main(weekly_cli_argv(out, "heuristic")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["minutes_through_gw"] is None and doc["overrides_applied"] == []
+    assert doc["drop_candidates"][0]["expected_minutes"] is None
+    assert "club-move role signals off" in caplog.text
+
+
 def _ruled_out_world(tmp_path, status, chance=None):
     """Streamer (ros 60 < MyWeakFWD's 80) valued by a cached model row at 6.5
     xP, now with ``status``/``chance`` in the CURRENT bootstrap."""

@@ -489,6 +489,129 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
 
 
 # ---------------------------------------------------------------------------
+# Role overrides (hand-maintained team news)
+# ---------------------------------------------------------------------------
+
+def load_season_panel(path: Path, season: str) -> pd.DataFrame | None:
+    """The season's ``player_gameweeks`` panel for the role signals, or None
+    (with a WARNING — club-move factors are then off) when it is missing or
+    unreadable. Rows of other seasons are dropped."""
+    path = Path(path)
+    if not path.exists():
+        logger.warning("season panel %s missing — club-move role signals off", path.name)
+        return None
+    try:
+        panel = pd.read_parquet(path)
+    except (OSError, ValueError) as exc:   # pyarrow's ArrowInvalid is a ValueError
+        logger.warning("season panel %s unreadable (%s) — club-move role signals off",
+                       path.name, type(exc).__name__)
+        return None
+    return panel[panel["season"] == season] if "season" in panel.columns else panel
+
+
+def load_role_overrides(path: Path) -> list[dict]:
+    """Entries of ``role_overrides.json`` (``{"overrides": [...]}``).
+
+    The file is optional: absent -> ``[]`` silently; unparseable or the wrong
+    shape -> ``[]`` with a WARNING, so a typo never blocks the weekly run.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8")).get("overrides", [])
+    except (OSError, ValueError, AttributeError) as exc:
+        logger.warning("role overrides %s unreadable (%s) — ignored", path.name, exc)
+        return []
+    if not isinstance(entries, list):
+        logger.warning("role overrides %s: 'overrides' is not a list — ignored", path.name)
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _override_p_start(entry: dict, target_gw: int | None) -> float | None:
+    """The start probability an override entry asserts for ``target_gw``.
+
+    A ``return_gw`` after the target means "out until then": 0.0 whatever
+    ``p_start`` says. Otherwise ``p_start`` clipped to [0, 1], or None for a
+    fact-only entry. Raises ValueError/TypeError on a non-numeric value.
+    """
+    return_gw = entry.get("return_gw")
+    if return_gw is not None and target_gw is not None and int(return_gw) > target_gw:
+        return 0.0
+    if entry.get("p_start") is None:
+        return None
+    return max(0.0, min(1.0, float(entry["p_start"])))
+
+
+def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
+                         target_gw: int | None) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+    """Apply ``role_overrides.json`` entries to the next gameweek's values.
+
+    Entry: ``{"player": web_name, "team": short name, "fact": str,
+    "p_start": 0..1, "return_gw": int, "code": int}`` — only ``player`` +
+    ``team`` (or ``code``, which wins when present, for the rare same-name
+    team-mates) are needed to match; an entry must match exactly one player.
+
+    * ``p_start`` replaces the model's: ``xp_next = p_start x xp_started``
+      (``xp_started`` = value if he starts every fixture; the substitute-cameo
+      term is dropped, a deliberate simplification — an override says "this
+      is his start chance", not how often he comes off the bench). ``p_start``
+      is set to the override and the now-stale ``xp_floor``/``xp_ceiling`` are
+      cleared. A player with no value at all (``xp_started`` null) keeps a
+      null ``xp_next``. ``next3_xp`` and ROS are not touched.
+    * ``return_gw`` after ``target_gw`` forces ``p_start`` 0 (out until then).
+      Once ``return_gw <= target_gw`` the entry has EXPIRED and is ignored —
+      its ``p_start`` described the absence, not the player after it.
+
+    Returns ``(players copy, report)``. The copy gains ``role_override`` (the
+    entry's ``fact``, None when not overridden) and ``role_override_p_start``.
+    The report lists entry names under ``overrides_applied``,
+    ``overrides_unmatched`` (no single match, or an invalid ``p_start``) and
+    ``overrides_expired``; nothing raises on a bad entry.
+    """
+    out = players.copy()
+    out["role_override"] = None
+    out["role_override_p_start"] = float("nan")
+    report: dict[str, list[str]] = {"overrides_applied": [], "overrides_unmatched": [],
+                                    "overrides_expired": []}
+    for entry in overrides:
+        name = str(entry.get("player") or entry.get("code") or "?")
+        return_gw = entry.get("return_gw")
+        try:
+            expired = (return_gw is not None and target_gw is not None
+                       and int(return_gw) <= target_gw)
+            p_override = None if expired else _override_p_start(entry, target_gw)
+        except (TypeError, ValueError):
+            logger.warning("role override for %s has a non-numeric p_start/return_gw — skipped", name)
+            report["overrides_unmatched"].append(name)
+            continue
+        if expired:
+            report["overrides_expired"].append(name)
+            continue
+        if entry.get("code") is not None:
+            matched = out.index[out["code"] == entry["code"]]
+        else:
+            matched = out.index[(out["web_name"] == entry.get("player"))
+                                & (out["team"] == entry.get("team"))]
+        if len(matched) != 1:
+            logger.warning("role override for %s (%s) matches %d players — skipped",
+                           name, entry.get("team"), len(matched))
+            report["overrides_unmatched"].append(name)
+            continue
+        row = matched[0]
+        out.at[row, "role_override"] = str(entry.get("fact") or "")
+        if p_override is not None:
+            out.at[row, "role_override_p_start"] = p_override
+            out.at[row, "p_start"] = p_override
+            out.at[row, "xp_floor"] = out.at[row, "xp_ceiling"] = float("nan")
+            if pd.notna(out.at[row, "xp_started"]):
+                out.at[row, "xp_next"] = round(p_override * float(out.at[row, "xp_started"]), 2)
+        report["overrides_applied"].append(name)
+    return out, report
+
+
+# ---------------------------------------------------------------------------
 # Squad evaluation
 # ---------------------------------------------------------------------------
 
@@ -656,6 +779,7 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             "add_expected_minutes": _none_if_nan(fa["expected_minutes"]),
             "add_minutes_season": _none_if_nan(fa["minutes_season"]),
             "add_role_factor": float(fa["role_factor"]),
+            "add_role_override": fa.get("role_override"),
             "availability": fa["status"], "news": fa["news"],
             "confidence": fa["confidence"],
         })
@@ -687,24 +811,30 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
          fixtures_by_event: dict | None = None,
          neutral_availability: bool = False,
          gw_xp: pd.DataFrame | None = None,
-         season_panel: pd.DataFrame | None = None) -> dict[str, Any]:
+         season_panel: pd.DataFrame | None = None,
+         role_overrides: list[dict] | None = None) -> dict[str, Any]:
     """Pure waiver plan: players table, my squad, best-XI xP, ranked recs.
 
     ``gw_xp`` (optional) is the match model's next-GW frame; see
     ``build_player_table``. Without it the heuristic scorer applies and
     ``recommend`` keeps its pre-xP ranking (``rank_by="legacy"``).
     ``season_panel`` (optional) switches on the club-move role signals.
+    ``role_overrides`` (optional, entries of ``role_overrides.json``) are
+    applied for the bootstrap's next event; see ``apply_role_overrides``.
 
     Free agents are the element-status rows with no owner. Returns
     ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``recommendations``,
-    ``drop_candidates``, ``unprojected_squad`` and ``xp_reconciled`` (how many
-    model rows were zeroed because the player is now ruled out; see
-    ``build_player_table``). No I/O beyond reading ``projections_path``.
+    ``drop_candidates``, ``unprojected_squad``, the three ``overrides_*``
+    name lists and ``xp_reconciled`` (how many model rows were zeroed because
+    the player is now ruled out; see ``build_player_table``). No I/O beyond
+    reading ``projections_path``.
     """
     players = build_player_table(
         bootstrap, seasons, projections_path,
         fixtures_by_event=fixtures_by_event, neutral_availability=neutral_availability,
         gw_xp=gw_xp, season_panel=season_panel)
+    players, override_report = apply_role_overrides(
+        players, role_overrides or [], next_event(bootstrap))
     free = {row["element"] for row in element_status.get("element_status", [])
             if row.get("owner") is None}
     players["is_free_agent"] = players["element"].isin(free)
@@ -716,6 +846,7 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
         "recommendations": recommend(players, squad, top_n, rank_by=rank_by),
         "drop_candidates": drop_candidates(squad, _drop_tiebreak(rank_by)),
         "unprojected_squad": unprojected_squad(squad),
+        **override_report,
         "xp_reconciled": int(players["xp_reconciled"].sum()),
     }
 
@@ -756,9 +887,13 @@ def main(argv: list[str] | None = None) -> int:
     ml_dir = args.data_root / "derived" / args.season / "ml"
 
     gw_xp, scorer_meta = resolve_scorer(args.scorer, bootstrap, ml_dir)
+    season_panel = load_season_panel(ml_dir / "player_gameweeks.parquet", args.season)
+    minutes_through_gw = (int(season_panel["gw"].max())
+                          if season_panel is not None and not season_panel.empty else None)
     result = plan(bootstrap, element_status, seasons,
                   args.data_root / "derived/ml/projections_2627.json",
-                  entry, args.top, gw_xp=gw_xp)
+                  entry, args.top, gw_xp=gw_xp, season_panel=season_panel,
+                  role_overrides=load_role_overrides(ml_dir / "role_overrides.json"))
     squad = result["squad"]
     xi, xi_total = best_xi(squad)
     bench = squad[~squad["element"].isin(xi["element"])]
@@ -785,23 +920,49 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {p['position']:<4} {p['web_name']:<20} {p['team']:<4}"
                   f" use player_card for their history{flag}")
 
+    overrides = {key: result[key] for key in
+                 ("overrides_applied", "overrides_unmatched", "overrides_expired")}
+    print("\n== ROLE OVERRIDES (role_overrides.json, next GW only) ==")
+    for key, names in overrides.items():
+        print(f"  {key}: {', '.join(names) or '-'}")
+
+    def _num(x, width=6):
+        return f"{'?':>{width}}" if x is None else f"{x:>{width}}"
+
+    def _moved(x):
+        return "?" if x is None else ("yes" if x else "no")
+
+    print(f"\n== DROP CANDIDATES (top {DROP_CANDIDATES_PER_POSITION} per position; "
+          f"minutes through GW{minutes_through_gw}) ==")
+    print("   pos  player               team st  ros_adj    ROS xp_next moved exp_min")
+    for c in result["drop_candidates"]:
+        print(f"  {c['position']:<4} {c['web_name']:<20} {c['team']:<4} {c['status']:<2} "
+              f"{_num(c['ros_adj'], 8)} {_num(c['ros_points'])} {_num(c['xp_next'], 7)} "
+              f"{_moved(c['club_moved']):<5} {_num(c['expected_minutes'], 7)}")
+
     recs = result["recommendations"]
     fallback = (f" — FALLBACK: {scorer_meta['xp_fallback_reason']}"
                 if scorer_meta["xp_fallback"] else "")
     print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}, scorer {scorer_meta['scorer']}{fallback}) ==")
-    print("   label    add                    ->  drop                next1  next3   season  src")
+    print("   label    add                    ->  drop                next1  next3   season"
+          "  src        exp_min moved")
     for r in recs:
         flag = f"  [{r['availability']}] {r['news']}" if r["availability"] != "a" else ""
+        if r["add_role_override"] is not None:
+            flag += f"  (override: {r['add_role_override']})"
         season = "?" if r["season_unknown"] else f"{r['season_gain']:+.1f}"
         next3 = "?" if r["next3_gain"] is None else f"{r['next3_gain']:+.1f}"
         print(f"  {r['label']:<8} {r['add']:<18}({r['position']}) -> {r['drop']:<18} "
               f"{r['next1_gain']:>+6.2f} {next3:>6} {season:>7}"
-              f"  {r['add_xp_source']}{flag}")
+              f"  {r['add_xp_source']:<9} {_num(r['add_expected_minutes'], 8)} "
+              f"{_moved(r['club_moved'])}{flag}")
 
     out = args.out or ml_dir / "waiver_plan.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(jsonutil.dumps_strict(
         {**scorer_meta, "xi_next3_xp": xi_total, "recommendations": recs,
+         "drop_candidates": result["drop_candidates"],
+         "minutes_through_gw": minutes_through_gw, **overrides,
          "unprojected_squad": unknown, "xp_reconciled": result["xp_reconciled"]}, indent=1))
     logger.info("wrote %s", out)
     return 0
