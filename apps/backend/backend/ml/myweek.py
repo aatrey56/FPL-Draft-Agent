@@ -145,7 +145,7 @@ def build_my_week(players: pd.DataFrame, element_status: dict,
     return {
         "xi": rows(xi), "bench": rows(bench), "xi_gw_xp": xi_total,
         "attention": attention,
-        "unprojected_squad": wv.unprojected_squad(squad[squad["xp_source"] == "none"]),
+        "unprojected_squad": wv.unprojected_squad(squad),
     }
 
 

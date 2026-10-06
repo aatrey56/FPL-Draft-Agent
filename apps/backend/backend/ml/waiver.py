@@ -434,9 +434,14 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
 
 
 def unprojected_squad(squad: pd.DataFrame) -> list[dict[str, Any]]:
-    """Squad players the model cannot value (no projection) — surfaced for
-    human judgment instead of being silently treated as droppable zeros."""
-    rows = squad[squad["ros_points"].isna()]
+    """Squad players with no value at all — no ROS projection AND no match
+    xP (``xp_source == "none"``) — surfaced for human judgment instead of
+    being silently treated as droppable zeros. Same definition as my_week's.
+
+    A player with model xP but no ROS projection is valued for the next GW
+    and so is not listed here; he is still never the drop candidate
+    (``recommend`` only drops players with a ROS projection)."""
+    rows = squad[squad["xp_source"] == "none"]
     return [{
         "web_name": p["web_name"], "position": p["position"], "team": p["team"],
         "availability": p["status"], "news": p["news"],

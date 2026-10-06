@@ -408,3 +408,19 @@ def test_upcoming_fixtures_drops_the_in_play_gameweek():
         "fixtures": {"6": ["a"], "7": ["b"], "8": ["c"]}}
     assert wv.upcoming_fixtures(bootstrap) == {"7": ["b"], "8": ["c"]}
     assert wv.upcoming_fixtures({"fixtures": {"6": ["a"]}}) == {"6": ["a"]}
+
+
+def test_unprojected_squad_means_no_projection_and_no_model_xp(tmp_path):
+    """waiver_plan and my_week share one definition of "no value". A squad
+    player the model covers is not listed, but is still never the drop."""
+    table = _xp_table(tmp_path, _gw_xp([(999, 4.0)]))       # NoProj: model only
+    status = {"element_status": [{"element": 11, "owner": 42}, {"element": 99, "owner": 42},
+                                 {"element": 20, "owner": None}]}
+    table["is_free_agent"] = table["element"].isin({20})
+    squad = wv.my_squad(table, status, entry_id=42)
+    assert wv.unprojected_squad(squad) == []
+    assert all(r["drop"] == "MyWeakFWD" for r in wv.recommend(table, squad))
+
+    table = _xp_table(tmp_path, _gw_xp([(200, 4.0)]))       # NoProj: no value at all
+    squad = wv.my_squad(table, status, entry_id=42)
+    assert [p["web_name"] for p in wv.unprojected_squad(squad)] == ["NoProj"]
