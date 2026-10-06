@@ -91,7 +91,7 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   (`{"overrides": [{"player": "<web_name>", "team": "<short name>",
   "p_start": 0.4, "fact": "...", "return_gw": 9, "valid_through_gw": 7,
   "as_of": "2026-10-06", "code": 123}]}` — all but `player`/`team`
-  optional) is hand-maintained team news for the next
+  optional; `code` wins when present and may be quoted) is hand-maintained team news for the next
   GW: `xp_next = p_start × xP-if-he-starts` (cameo term dropped), `return_gw`
   still ahead forces 0 (and keeps him off the my_week XI), and an entry whose
   `return_gw` has arrived is expired and ignored. An override never lifts

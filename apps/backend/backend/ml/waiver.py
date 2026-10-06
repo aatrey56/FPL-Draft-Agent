@@ -645,7 +645,7 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
     "p_start": 0..1, "return_gw": int, "valid_through_gw": int,
     "as_of": ISO date/datetime, "code": int}`` — only ``player`` +
     ``team`` (or ``code``, which wins when present, for the rare same-name
-    team-mates) are needed to match; an entry must match exactly one player.
+    team-mates; an int or a numeric string) are needed to match; an entry must match exactly one player.
 
     * ``p_start`` replaces the model's: ``xp_next = p_start x xp_started``
       (``xp_started`` = value if he starts every fixture; the substitute-cameo
@@ -686,16 +686,18 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
         try:
             lifetime = _override_lifetime(entry, target_gw, deadlines)
             p_override = _override_p_start(entry, target_gw) if lifetime == "live" else None
+            # A hand-edited JSON may quote the code ("123"): match on the integer.
+            code = int(entry["code"]) if entry.get("code") is not None else None
         except (TypeError, ValueError):
             logger.warning("role override for %s has a non-numeric p_start/return_gw/"
-                           "valid_through_gw — skipped", name)
+                           "valid_through_gw/code — skipped", name)
             report["overrides_unmatched"].append(name)
             continue
         if lifetime != "live":
             report[f"overrides_{lifetime}"].append(name)
             continue
-        if entry.get("code") is not None:
-            matched = out.index[out["code"] == entry["code"]]
+        if code is not None:
+            matched = out.index[pd.to_numeric(out["code"], errors="coerce") == code]
         else:
             matched = out.index[(out["web_name"] == entry.get("player"))
                                 & (out["team"] == entry.get("team"))]

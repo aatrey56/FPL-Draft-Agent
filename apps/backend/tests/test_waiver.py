@@ -1000,6 +1000,23 @@ def test_override_prefers_code_over_name_when_names_collide(tmp_path):
     assert out.loc[out["code"] == 201, "role_override"].iloc[0] is None
 
 
+@pytest.mark.parametrize("code", ["200", " 200 ", 200.0])
+def test_override_code_given_as_a_string_still_matches(tmp_path, code):
+    table = _override_table(tmp_path)
+    entry = {"player": "Renamed", "team": "XXX", "code": code, "p_start": 0.2, **FRESH}
+    out, report = wv.apply_role_overrides(table, [entry], target_gw=1)
+    assert report == _report(applied=["Renamed"])
+    assert out.loc[out["code"] == 200, "xp_next"].iloc[0] == pytest.approx(0.2 * 7.0)
+
+
+def test_override_with_a_non_numeric_code_is_unmatched(tmp_path):
+    table = _override_table(tmp_path)
+    entry = {"player": "SeasonStar", "team": "ARS", "code": "abc", "p_start": 0.2, **FRESH}
+    out, report = wv.apply_role_overrides(table, [entry], target_gw=1)
+    assert report == _report(unmatched=["SeasonStar"])
+    assert out["role_override"].isna().all()
+
+
 def test_fact_only_override_and_unvalued_player_keep_their_xp(tmp_path):
     table = _override_table(tmp_path)
     overrides = [{"player": "SeasonStar", "team": "ARS", "fact": "new manager", **FRESH},
