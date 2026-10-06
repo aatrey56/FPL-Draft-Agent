@@ -28,22 +28,36 @@ Design (v1, pre-GW1-honest):
   and the heuristic fallback share one ranking; the heuristic is on a lower
   scale (``ros/38`` averages below the model's per-start expectation), so a
   heuristic-valued drop makes model-valued adds look better than they are.
-* **The short-vs-long balance is explicit**: every candidate shows
-  ``next1_gain`` (next-GW xP vs the drop candidate), ``next3_gain`` (heuristic
-  3-GW points) AND ``season_gain`` (rest-of-season vs the same drop). Ranking
-  is by ``next1_gain``. Labels: ``upgrade`` (next1 and season positive — add
-  and hold), ``stream`` (helps next GW only — plan to re-drop), ``hold``
-  (no next-GW gain, better over the season — patience play); holds are listed
-  after every positive-next1 recommendation. A free agent with no ROS
-  projection but a model ``xp_next`` (e.g. a promoted club's starter) is still
-  ranked, with ``season_gain`` and ``add_ros`` null and ``season_unknown``
-  true; his season gain counts as 0 for the label and ordering, so he is at
-  most a ``stream``. His heuristic 3-GW value does not exist either, so
-  ``add_next3_xp`` and ``next3_gain`` are null too (unknown, never "0 minus
-  the drop"). With no match xP supplied (the
-  heuristic scorer) ``recommend`` keeps its original ranking (``rank_by=
-  "legacy"``: labels from ``next3_gain``, ordered by the larger gain) so the
-  heuristic output is unchanged.
+* **Three horizons, always shown together**: every candidate carries
+  ``gains = {gw1, gw3, ros}`` — next-GW xP, 3-GW xP and rest-of-season
+  (``ros_adj``), each the add minus the drop candidate — and the same values
+  as the flat ``next1_gain`` / ``next3_gain`` / ``season_gain``. With the
+  model scorer the 3-GW value is the match model's
+  ``xp_horizon_gw{N}.parquet`` sum (``matchmodel.build_horizon_xp``: GW
+  N..N+2, features frozen at N — a schedule view) for every player it covers
+  and the heuristic ``ros/38 x 3-event fixture load x availability`` for the
+  rest; ``add_next3_source`` (model / heuristic / none) says which.
+* **``--horizon {1,3,ros}`` picks the ranking key** (default ``3``) under
+  the model scorer. Labels read the short horizon against the season:
+  ``upgrade`` (short and season gain positive — add and hold), ``stream``
+  (short only — plan to re-drop), ``hold`` (season only — patience play).
+  ``1`` ranks by ``gw1`` with ``gw1`` as the short horizon; ``3`` ranks by
+  ``gw3`` with ``gw3`` as the short horizon; in both, holds come after every
+  positive-short rec. ``ros`` ranks by the season gain (labels as ``3``,
+  holds not demoted). ``rank_by`` in the output records the ranking used
+  (``next1`` / ``next3`` / ``ros`` / ``legacy``). If the horizon file is
+  missing, unreadable, stale or disagrees with ``xp_gw{N}``
+  (``horizon_fallback`` + ``horizon_fallback_reason``), 3-GW values are
+  heuristic and ``--horizon 3`` ranks on the next GW instead (``rank_key``).
+  A free agent with no ROS projection but a model value (e.g. a promoted
+  club's starter) is still ranked, with ``season_gain`` and ``add_ros`` null
+  and ``season_unknown`` true; his season gain counts as 0 for the label and
+  ordering, so he is at most a ``stream``. A gain whose add has no value at
+  that horizon is null (unknown, never "0 minus the drop"). With no match xP
+  supplied (the heuristic scorer, requested or after a fallback)
+  ``recommend`` keeps its original ranking whatever ``--horizon`` says
+  (``rank_by="legacy"``: every value heuristic, labels from ``next3_gain``,
+  ordered by the larger gain) so the heuristic output is unchanged.
 * **Role signals** — a season projection only knows last season's role at
   last season's club, so a transfer silently breaks it. ``club_moved`` =
   bootstrap club != the prior-season club in ``player_seasons`` (None when
@@ -62,8 +76,10 @@ Design (v1, pre-GW1-honest):
   xp_next)`` — with or without a projection. ``drop_candidates`` lists the
   top ``DROP_CANDIDATES_PER_POSITION`` per position so the pick is auditable.
 * **Role overrides** — ``data/derived/<season>/ml/role_overrides.json``
-  (hand-maintained team news, optional) is applied to the next GW only: see
-  ``apply_role_overrides``. An entry with neither ``return_gw`` nor
+  (hand-maintained team news, optional) is applied to the next GW, and to
+  the model's 3-GW value event by event: an undated entry touches GW N only,
+  ``valid_through_gw`` / ``return_gw`` extend it over the later events they
+  cover (see ``apply_role_overrides``). An entry with neither ``return_gw`` nor
   ``valid_through_gw`` goes stale after the first deadline following its
   ``as_of`` (file ``updated`` / mtime fallback). An override never lifts the availability gate: a
   player the live feed rules out (availability 0) is ``overrides_blocked``.
@@ -71,6 +87,7 @@ Design (v1, pre-GW1-honest):
   ``overrides_stale`` / ``overrides_blocked`` in the output say what happened to every entry.
 
 CLI: python -m backend.ml.waiver --league <id> --entry <id> [--scorer {heuristic,model}]
+         [--horizon {1,3,ros}]
 (env fallback: LEAGUE_ID / ENTRY_ID; ``--data-root`` and ``--out`` override the
 default data dir / output path)
 """
@@ -335,6 +352,14 @@ def usable_gw_xp(gw_xp: pd.DataFrame) -> pd.DataFrame:
 
 SCORERS = ("heuristic", "model")
 DEFAULT_SCORER = "model"
+# ``--horizon``: which gain the model scorer ranks on (see ``rank_key``).
+HORIZONS = ("1", "3", "ros")
+DEFAULT_HORIZON = "3"
+_RANK_BY_HORIZON = {"1": "next1", "3": "next3", "ros": "ros"}
+# Largest |xp_h1 - xp_gw.xp| tolerated between the two model files. They are
+# equal bit for bit when built from the same inputs; anything visible means
+# one of them is from an older bootstrap or panel.
+HORIZON_XP_TOLERANCE = 1e-6
 
 
 def resolve_scorer(scorer: str, bootstrap: dict,
@@ -370,12 +395,103 @@ def resolve_scorer(scorer: str, bootstrap: dict,
     return frame, meta
 
 
+def read_horizon_xp(path: Path, expected_gw: int | None, last_finished: int | None,
+                    gw_xp: pd.DataFrame) -> tuple[pd.DataFrame | None, str | None]:
+    """Read ``xp_horizon_gw{N}.parquet``: ``(frame, None)`` or ``(None, reason)``.
+
+    The file passes the same freshness rule as ``xp_gw{N}`` (``read_gw_xp``:
+    built for ``expected_gw`` on a panel through ``last_finished``) and must
+    also agree with ``gw_xp``: its first event is the same forecast, so a
+    visible difference (> ``HORIZON_XP_TOLERANCE``) means the two files were
+    built from different inputs and the 3-GW values cannot be trusted next to
+    the next-GW ones.
+    """
+    frame, reason = read_gw_xp(path, expected_gw, last_finished)
+    if reason:
+        return None, reason.replace("match xP file", "horizon xP file")
+    required = {"code", "event", "xp", "xp_started", "xp_h1", "xp_h3", "fitted"}
+    if not required <= set(frame.columns):
+        return None, (f"horizon xP file {Path(path).name} lacks "
+                      f"{sorted(required - set(frame.columns))}; rebuild it")
+    first = frame.drop_duplicates("code").set_index("code")["xp_h1"]
+    paired = gw_xp.drop_duplicates("code").set_index("code")["xp"].to_frame().join(
+        first, how="inner").dropna()
+    if not paired.empty and (paired["xp"] - paired["xp_h1"]).abs().max() > HORIZON_XP_TOLERANCE:
+        return None, (f"horizon xP file {Path(path).name} disagrees with xp_gw{expected_gw} "
+                      "on the next gameweek (built from different inputs; rebuild both)")
+    return frame, None
+
+
+def resolve_horizon(horizon: str, gw_xp: pd.DataFrame | None, bootstrap: dict,
+                    ml_dir: Path) -> tuple[pd.DataFrame | None, dict[str, Any]]:
+    """The 3-GW horizon frame for the model scorer, plus run metadata.
+
+    Read only when the match xP is in use (``gw_xp`` not None): the heuristic
+    scorer never mixes model values in. The metadata is merged into the
+    waiver_plan JSON:
+
+    * ``horizon_requested`` — the ``--horizon`` value
+    * ``horizon_fallback`` — True when the model scorer ran without a usable
+      ``xp_horizon_gw{N}.parquet``: every 3-GW value is then heuristic, and a
+      requested 3-GW ranking is replaced by the next-GW one (``rank_key``)
+    * ``horizon_fallback_reason`` — why (None when there was no fallback)
+    * ``horizon_events`` — the events summed into the model's 3-GW value
+      (None without the file); fewer than 3 means the bootstrap did not hold
+      the whole horizon
+    """
+    meta: dict[str, Any] = {"horizon_requested": horizon, "horizon_fallback": False,
+                            "horizon_fallback_reason": None, "horizon_events": None}
+    if gw_xp is None:
+        return None, meta
+    event = next_event(bootstrap)
+    last_finished = max(finished_gameweeks(bootstrap), default=0)
+    frame, reason = read_horizon_xp(Path(ml_dir) / f"xp_horizon_gw{event}.parquet", event,
+                                    last_finished, gw_xp)
+    if reason:
+        logger.warning("%s — 3-GW values fall back to the heuristic", reason)
+        meta.update(horizon_fallback=True, horizon_fallback_reason=reason)
+        return None, meta
+    meta["horizon_events"] = sorted(int(e) for e in frame["event"].unique())
+    return frame, meta
+
+
+def rank_key(horizon: str, gw_xp: pd.DataFrame | None,
+             horizon_xp: pd.DataFrame | None) -> str:
+    """``recommend``'s ``rank_by`` for a requested ``--horizon``.
+
+    * no match xP (heuristic scorer, or a fallback to it) -> ``legacy``,
+      whatever was asked: the heuristic ranking is the frozen pre-xP baseline.
+    * ``"1"`` -> ``next1``; ``"ros"`` -> ``ros``.
+    * ``"3"`` -> ``next3`` when the horizon frame is there, else ``next1``:
+      without it the 3-GW values are heuristic and a free agent the model
+      values but the projection does not (a promoted club's starter) would
+      drop out of the ranking.
+    """
+    if horizon not in HORIZONS:
+        raise ValueError(f"unknown horizon {horizon!r}; expected one of {HORIZONS}")
+    if gw_xp is None:
+        return "legacy"
+    if horizon == "3" and horizon_xp is None:
+        return "next1"
+    return _RANK_BY_HORIZON[horizon]
+
+
+def usable_horizon_xp(horizon_xp: pd.DataFrame | None) -> pd.DataFrame:
+    """The rows of a horizon frame that carry a real prediction: positions the
+    model fitted. (A blank — ``num_fixtures`` 0, ``xp`` 0.0 — is a prediction;
+    an unfitted position's 0.0 is not.) Empty for None."""
+    if horizon_xp is None:
+        return pd.DataFrame(columns=["code", "event", "xp", "xp_started", "xp_h3"])
+    return horizon_xp[horizon_xp["fitted"].astype(bool)]
+
+
 def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
                        projections_path: Path, *,
                        fixtures_by_event: dict | None = None,
                        neutral_availability: bool = False,
                        gw_xp: pd.DataFrame | None = None,
-                       season_panel: pd.DataFrame | None = None) -> pd.DataFrame:
+                       season_panel: pd.DataFrame | None = None,
+                       horizon_xp: pd.DataFrame | None = None) -> pd.DataFrame:
     """One row per 26/27 element: identity, availability, xP, ROS value.
 
     ``fixtures_by_event`` overrides the bootstrap schedule (default:
@@ -391,14 +507,21 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     without a prediction (``usable_gw_xp``) — gets the heuristic
     1-GW value (``ros/38 x next-event fixture load x availability``,
     source ``heuristic``), or ``none`` when there is no projection either.
-    ``next3_xp`` stays heuristic (already availability-gated).
 
-    Availability reconciliation: the model row's Stage-1 gate used the
-    bootstrap from when the xP file was built. When the CURRENT availability
+    ``horizon_xp`` is the match model's (code, event) frame for the next 3
+    events (``matchmodel.build_horizon_xp``). A player it covers
+    (``usable_horizon_xp``) takes ``next3_xp = xp_h3`` (2 decimals) with
+    ``next3_source == "model"``; everyone else, and everyone when it is not
+    supplied, keeps the heuristic ``ros/38 x 3-event fixture load x
+    availability`` (1 decimal, ``heuristic``; ``none`` without a projection).
+
+    Availability reconciliation: the model rows' Stage-1 gate used the
+    bootstrap from when the xP files were built. When the CURRENT availability
     is 0 (status u/i/s without a chance, or chance 0) a model row's
-    ``xp_next``, ``p_start``, ``xp_floor`` and ``xp_ceiling`` are set to 0
-    and ``xp_reconciled`` is True (False on every other row). Partial
-    availability changes (e.g. a new 50% doubt) are not reconciled.
+    ``xp_next``, ``p_start``, ``xp_floor`` and ``xp_ceiling`` — and a
+    model-based ``next3_xp`` — are set to 0 and ``xp_reconciled`` is True
+    (False on every other row). Partial availability changes (e.g. a new 50%
+    doubt) are not reconciled.
 
     ``season_panel`` is the current season's ``player_gameweeks`` panel
     (finished gameweeks only). It feeds ``expected_minutes`` /
@@ -423,6 +546,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
             logger.warning("match xP has no prediction for %d of %d players (position not "
                            "fitted) — heuristic for those", len(gw_xp) - len(usable), len(gw_xp))
         model_by_code = usable.drop_duplicates("code").set_index("code").to_dict("index")
+    horizon_by_code = (usable_horizon_xp(horizon_xp).drop_duplicates("code")
+                       .set_index("code")["xp_h3"].to_dict())
     projections = {}
     if Path(projections_path).exists():
         projections = {int(r["code"]): r for r in
@@ -484,6 +609,15 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
                 xp_source = "heuristic"
             else:
                 xp_next, xp_source = None, "none"
+        if el.get("code") in horizon_by_code:
+            next3_xp, next3_source = round(float(horizon_by_code[el["code"]]), 2), "model"
+            if avail == 0.0 and next3_xp > 0.0:
+                # same reconciliation as xp_next: the horizon file's gate is stale
+                next3_xp, reconciled = 0.0, True
+        elif next3 is not None:
+            next3_xp, next3_source = round(next3, 1), "heuristic"
+        else:
+            next3_xp, next3_source = None, "none"
         rows.append({
             "element": el["id"], "code": el.get("code"),
             "web_name": el.get("web_name"),
@@ -491,7 +625,7 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
             "team": team_names.get(el.get("team")),
             "availability": avail,
             "status": el.get("status"), "news": el.get("news") or "",
-            "next3_xp": round(next3, 1) if next3 is not None else None,
+            "next3_xp": next3_xp, "next3_source": next3_source,
             "xp_next": round(xp_next, 2) if xp_next is not None else None,
             "xp_source": xp_source, "xp_reconciled": reconciled, **xp_extra,
             "xp_started": round(xp_started, 2) if xp_started is not None else None,
@@ -667,9 +801,27 @@ def _overridden_xp_next(p_override: float, xp_started, xp_next, model_p_start,
     return xp_next
 
 
+def _override_horizon_xp(entry: dict, events: pd.DataFrame,
+                         deadlines: dict[int, datetime] | None) -> float:
+    """A player's horizon xP with ``entry`` applied to each event it covers.
+
+    ``events`` are his ``usable_horizon_xp`` rows. For every event the entry
+    is live at (``_override_lifetime``) and asserts a start probability for
+    (``_override_p_start``), the event is worth ``p_start x xp_started``;
+    every other event keeps the model's ``xp``.
+    """
+    total = 0.0
+    for event, xp, xp_started in zip(events["event"], events["xp"], events["xp_started"]):
+        live = _override_lifetime(entry, int(event), deadlines) == "live"
+        p_start = _override_p_start(entry, int(event)) if live else None
+        total += float(xp) if p_start is None else p_start * float(xp_started)
+    return total
+
+
 def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
                          target_gw: int | None,
                          deadlines: dict[int, datetime] | None = None,
+                         horizon_xp: pd.DataFrame | None = None,
                          ) -> tuple[pd.DataFrame, dict[str, list[str]]]:
     """Apply ``role_overrides.json`` entries to the next gameweek's values.
 
@@ -685,7 +837,16 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
       is his start chance", not how often he comes off the bench). ``p_start``
       is set to the override and the now-stale ``xp_floor``/``xp_ceiling`` are
       cleared. A player with no value at all (``xp_started`` null) keeps a
-      null ``xp_next``. ``next3_xp`` and ROS are not touched.
+      null ``xp_next``. ROS is not touched.
+    * The 3-GW value follows the same per-event rule when ``horizon_xp`` (the
+      model's (code, event) frame) is supplied and values the player
+      (``next3_source == "model"``): ``next3_xp`` is re-summed with the
+      override applied to exactly the events it is live for. An undated entry
+      therefore changes event ``target_gw`` only (it is stale for the next
+      one); ``valid_through_gw`` extends a ``p_start`` through that gameweek;
+      ``return_gw`` zeroes every event before it and leaves the ones from it
+      on at the model's value. A heuristic ``next3_xp`` (no horizon frame, or
+      a player it does not cover) is NOT touched: it has no per-event parts.
     * ``return_gw`` after ``target_gw`` forces ``p_start`` 0 (out until then).
       Once ``return_gw <= target_gw`` the entry has EXPIRED and is ignored —
       its ``p_start`` described the absence, not the player after it.
@@ -713,6 +874,7 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
     out["role_override"] = None
     out["role_override_p_start"] = float("nan")
     report: dict[str, list[str]] = {key: [] for key in OVERRIDE_REPORT_KEYS}
+    horizon_rows = usable_horizon_xp(horizon_xp).sort_values("event")
     for entry in overrides:
         name = str(entry.get("player") or entry.get("code") or "?")
         try:
@@ -751,6 +913,10 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
             out.at[row, "xp_next"] = _overridden_xp_next(
                 p_override, out.at[row, "xp_started"], out.at[row, "xp_next"],
                 model_p_start, name)
+            events = horizon_rows[horizon_rows["code"] == out.at[row, "code"]]
+            if not events.empty and out.at[row, "next3_source"] == "model":
+                out.at[row, "next3_xp"] = round(
+                    _override_horizon_xp(entry, events, deadlines), 2)
         report["overrides_applied"].append(name)
     if report["overrides_stale"]:
         logger.warning("role overrides: %d stale entr%s ignored for GW%s (no return_gw/"
@@ -808,8 +974,9 @@ def _flag_or_none(value: Any) -> bool | None:
 
 
 def _drop_tiebreak(rank_by: str) -> str:
-    """Third drop-order key: the short-horizon value the ranking is built on."""
-    return "next3_xp" if rank_by == "legacy" else "xp_next"
+    """Third drop-order key: the short-horizon value the ranking is built on
+    (the 3-GW value for every ranking except ``next1``)."""
+    return "xp_next" if rank_by == "next1" else "next3_xp"
 
 
 def drop_order(squad: pd.DataFrame, tiebreak: str = "xp_next") -> pd.DataFrame:
@@ -839,6 +1006,7 @@ def drop_candidates(squad: pd.DataFrame, tiebreak: str = "xp_next",
                 "status": p["status"],
                 "ros_points": _none_if_nan(p["ros_points"]), "ros_adj": _none_if_nan(p["ros_adj"]),
                 "xp_next": _none_if_nan(p["xp_next"]),
+                "next3_xp": _none_if_nan(p["next3_xp"]),
                 "club_moved": _flag_or_none(p["club_moved"]),
                 "expected_minutes": _none_if_nan(p["expected_minutes"]),
             })
@@ -851,23 +1019,37 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
 
     For each free agent, pair with the first same-position player of
     ``drop_order`` (a departed squad player, else the lowest ``ros_adj``).
-    ``next1_gain`` = next-GW xP of the add minus the drop, ``season_gain`` =
-    ``ros_adj`` difference (role-adjusted ROS; a departed drop counts as 0).
-    Each rec carries the add's role signals (``club_moved``,
-    ``add_expected_minutes``, ``add_role_factor``, ``add_ros_adj``) next to
-    the raw ``add_ros``. Ranking is by ``next1_gain`` descending;
-    ``hold`` recs (no next-GW gain, better over the season) come after every
-    positive-next1 rec, ordered by ``season_gain``. The label encodes the
-    balance so a streamer is never confused with a season upgrade. A free
-    agent without a ROS projection is ranked only when the match model
-    values him (``xp_source == "model"``); his ``season_gain`` is emitted as
-    None with ``season_unknown`` True (every other rec carries False) and
-    counts as 0 for the label and the ordering; his ``next3_gain`` is None
-    as well, because the 3-GW value is built from the missing projection.
+    Three gains, each the add minus the drop, are carried on every rec as
+    ``gains = {"gw1", "gw3", "ros"}`` and as the flat ``next1_gain`` /
+    ``next3_gain`` / ``season_gain`` (same values, kept for older readers):
 
-    ``rank_by="legacy"`` keeps the pre-xP behaviour for the heuristic scorer
-    (labels from ``next3_gain``, ranked by the larger of ``next3_gain`` and
-    ``season_gain``); ``plan`` selects it whenever no match xP is supplied.
+    * ``gw1`` — next-GW xP (``xp_next``).
+    * ``gw3`` — 3-GW xP (``next3_xp``: the match model's horizon sum when
+      ``add_next3_source`` is ``model``, else the heuristic). None when the
+      add has no 3-GW value at all — unknown, never "0 minus the drop".
+    * ``ros`` — ``ros_adj`` difference (role-adjusted rest-of-season; a
+      departed drop counts as 0). None, with ``season_unknown`` True, for a
+      free agent without a ROS projection; such a player is ranked only when
+      the match model values him (next GW or horizon) and his season gain
+      counts as 0 for the label and the ordering.
+
+    Each rec also carries the add's role signals (``club_moved``,
+    ``add_expected_minutes``, ``add_role_factor``, ``add_ros_adj``) next to
+    the raw ``add_ros``.
+
+    ``rank_by`` picks the gain that orders the list and the short horizon the
+    label is read from (``upgrade`` = short and season gain both positive,
+    ``stream`` = short only, ``hold`` = season only):
+
+    * ``next1`` — short = ``gw1``; by ``gw1`` descending, holds after every
+      positive-``gw1`` rec, ties by ``ros``.
+    * ``next3`` — short = ``gw3``; by ``gw3`` descending, holds last, ties by
+      ``ros``.
+    * ``ros`` — short = ``gw3`` (labels as ``next3``); by ``ros`` descending,
+      ties by ``gw3``. Holds are not demoted: on this key they are the point.
+    * ``legacy`` — the pre-xP behaviour of the heuristic scorer (labels from
+      ``gw3``, ordered by the larger of ``gw3`` and ``ros``); ``plan`` selects
+      it whenever no match xP is supplied.
     """
     # Free agents by definition have no owner, so my squad is already excluded.
     pool = players[players["is_free_agent"] & (players["status"] != "u")]
@@ -890,7 +1072,7 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
         # emitted as null with season_unknown so no consumer reads it as 0.
         # The legacy ranking has no next-GW model value and still skips him.
         model_only = (rank_by != "legacy" and pd.isna(fa["ros_points"])
-                      and fa["xp_source"] == "model")
+                      and "model" in (fa["xp_source"], fa["next3_source"]))
         if mine.empty or (pd.isna(fa["ros_points"]) and not model_only):
             continue  # cannot recommend a player we cannot value
         drop = mine.iloc[0]
@@ -899,11 +1081,12 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             return 0.0 if pd.isna(x) else float(x)
 
         next1_gain = _v(fa["xp_next"]) - _v(drop["xp_next"])
-        # next3_xp is heuristic (ros/38 based), so a model-only add has none:
-        # the gain is unknown, not "0 minus the drop".
-        next3_gain = None if model_only else _v(fa["next3_xp"]) - _v(drop["next3_xp"])
+        # An add with no 3-GW value (no projection and no model horizon) has
+        # an unknown gain, not "0 minus the drop".
+        next3_gain = (None if pd.isna(fa["next3_xp"])
+                      else _v(fa["next3_xp"]) - _v(drop["next3_xp"]))
         season_gain = 0.0 if model_only else _v(fa["ros_adj"]) - _v(drop["ros_adj"])
-        short_gain = next3_gain if rank_by == "legacy" else next1_gain
+        short_gain = next1_gain if rank_by == "next1" else (next3_gain or 0.0)
         if short_gain <= 0 and season_gain <= 0:
             continue
         if short_gain > 0 and season_gain > 0:
@@ -918,14 +1101,18 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             "add_team": fa["team"], "position": fa["position"],
             "drop": drop["web_name"],
             "next1_gain": round(next1_gain, 2),
-            "next3_gain": None if next3_gain is None else round(next3_gain, 1),
+            # 1 decimal under the legacy ranking (its order is built on the
+            # rounded value and must not move), 2 once model values are in.
+            "next3_gain": (None if next3_gain is None
+                           else round(next3_gain, 1 if rank_by == "legacy" else 2)),
             "season_gain": None if model_only else round(season_gain, 1),
             "season_unknown": model_only,
             "label": label,
             "add_xp_next": fa["xp_next"], "drop_xp_next": drop["xp_next"],
             "add_p_start": fa["p_start"], "add_xp_source": fa["xp_source"],
             "drivers": fa["drivers"], "opponents": fa["opponents"],
-            "add_next3_xp": fa["next3_xp"], "add_ros": fa["ros_points"],
+            "add_next3_xp": fa["next3_xp"], "add_next3_source": fa["next3_source"],
+            "add_ros": fa["ros_points"],
             "drop_next3_xp": drop["next3_xp"], "drop_ros": drop["ros_points"],
             "add_ros_adj": _none_if_nan(fa["ros_adj"]),
             "drop_ros_adj": _none_if_nan(drop["ros_adj"]),
@@ -939,11 +1126,21 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             "availability": fa["status"], "news": fa["news"],
             "confidence": fa["confidence"],
         })
+    for rec in recs:
+        rec["gains"] = {"gw1": rec["next1_gain"], "gw3": rec["next3_gain"],
+                        "ros": rec["season_gain"]}
     if rank_by == "legacy":
         recs.sort(key=lambda r: -max(r["next3_gain"], r["season_gain"]))
-    else:
+    elif rank_by == "next1":
         recs.sort(key=lambda r: (r["label"] == "hold", -r["next1_gain"],
                                  -(r["season_gain"] or 0.0)))
+    elif rank_by == "next3":
+        recs.sort(key=lambda r: (r["label"] == "hold", -(r["next3_gain"] or 0.0),
+                                 -(r["season_gain"] or 0.0)))
+    elif rank_by == "ros":
+        recs.sort(key=lambda r: (-(r["season_gain"] or 0.0), -(r["next3_gain"] or 0.0)))
+    else:
+        raise ValueError(f"unknown rank_by {rank_by!r}")
     return recs[:top_n]
 
 
@@ -968,37 +1165,47 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
          neutral_availability: bool = False,
          gw_xp: pd.DataFrame | None = None,
          season_panel: pd.DataFrame | None = None,
-         role_overrides: list[dict] | None = None) -> dict[str, Any]:
+         role_overrides: list[dict] | None = None,
+         horizon_xp: pd.DataFrame | None = None,
+         horizon: str = DEFAULT_HORIZON) -> dict[str, Any]:
     """Pure waiver plan: players table, my squad, best-XI xP, ranked recs.
 
     ``gw_xp`` (optional) is the match model's next-GW frame; see
     ``build_player_table``. Without it the heuristic scorer applies and
     ``recommend`` keeps its pre-xP ranking (``rank_by="legacy"``).
+    ``horizon_xp`` (optional) is the model's 3-GW frame and ``horizon`` the
+    requested ranking key (``HORIZONS``); ``rank_key`` turns the three into
+    the ``rank_by`` actually used, returned under that name. Without
+    ``gw_xp`` the horizon frame is ignored: the heuristic scorer never mixes
+    model values in.
     ``season_panel`` (optional) switches on the club-move role signals.
     ``role_overrides`` (optional, entries of ``role_overrides.json``) are
     applied for the bootstrap's next event; see ``apply_role_overrides``.
 
     Free agents are the element-status rows with no owner. Returns
-    ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``recommendations``,
-    ``drop_candidates``, ``unprojected_squad``, the ``OVERRIDE_REPORT_KEYS``
-    name lists and ``xp_reconciled`` (how many model rows were zeroed because
-    the player is now ruled out; see ``build_player_table``). No I/O beyond
-    reading ``projections_path``.
+    ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``rank_by``,
+    ``recommendations``, ``drop_candidates``, ``unprojected_squad``, the
+    ``OVERRIDE_REPORT_KEYS`` name lists and ``xp_reconciled`` (how many model
+    rows were zeroed because the player is now ruled out; see
+    ``build_player_table``). No I/O beyond reading ``projections_path``.
     """
+    if gw_xp is None:
+        horizon_xp = None
     players = build_player_table(
         bootstrap, seasons, projections_path,
         fixtures_by_event=fixtures_by_event, neutral_availability=neutral_availability,
-        gw_xp=gw_xp, season_panel=season_panel)
+        gw_xp=gw_xp, season_panel=season_panel, horizon_xp=horizon_xp)
     players, override_report = apply_role_overrides(
-        players, role_overrides or [], next_event(bootstrap), event_deadlines(bootstrap))
+        players, role_overrides or [], next_event(bootstrap), event_deadlines(bootstrap),
+        horizon_xp)
     free = {row["element"] for row in element_status.get("element_status", [])
             if row.get("owner") is None}
     players["is_free_agent"] = players["element"].isin(free)
     squad = my_squad(players, element_status, entry_id)
     _, xi_total = best_xi(squad)
-    rank_by = "next1" if gw_xp is not None else "legacy"
+    rank_by = rank_key(horizon, gw_xp, horizon_xp)
     return {
-        "players": players, "squad": squad, "xi_next3_xp": xi_total,
+        "players": players, "squad": squad, "xi_next3_xp": xi_total, "rank_by": rank_by,
         "recommendations": recommend(players, squad, top_n, rank_by=rank_by),
         "drop_candidates": drop_candidates(squad, _drop_tiebreak(rank_by)),
         "unprojected_squad": unprojected_squad(squad),
@@ -1025,6 +1232,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--scorer", choices=SCORERS, default=DEFAULT_SCORER,
                         help="next-GW xP source: match model parquet or the ros/38 heuristic")
+    parser.add_argument("--horizon", choices=HORIZONS, default=DEFAULT_HORIZON,
+                        help="gain the model scorer ranks on: next GW (1), next 3 GWs (3) "
+                             "or rest of season (ros); ignored by the heuristic scorer")
     parser.add_argument("--data-root", type=Path, default=_repo_root() / "data")
     parser.add_argument("--out", type=Path, default=None,
                         help="output JSON (default <data-root>/derived/<season>/ml/waiver_plan.json)")
@@ -1043,13 +1253,15 @@ def main(argv: list[str] | None = None) -> int:
     ml_dir = args.data_root / "derived" / args.season / "ml"
 
     gw_xp, scorer_meta = resolve_scorer(args.scorer, bootstrap, ml_dir)
+    horizon_xp, horizon_meta = resolve_horizon(args.horizon, gw_xp, bootstrap, ml_dir)
     season_panel = load_season_panel(ml_dir / "player_gameweeks.parquet", args.season)
     minutes_through_gw = (int(season_panel["gw"].max())
                           if season_panel is not None and not season_panel.empty else None)
     result = plan(bootstrap, element_status, seasons,
                   args.data_root / "derived/ml/projections_2627.json",
                   entry, args.top, gw_xp=gw_xp, season_panel=season_panel,
-                  role_overrides=load_role_overrides(ml_dir / "role_overrides.json"))
+                  role_overrides=load_role_overrides(ml_dir / "role_overrides.json"),
+                  horizon_xp=horizon_xp, horizon=args.horizon)
     squad = result["squad"]
     xi, xi_total = best_xi(squad)
     bench = squad[~squad["element"].isin(xi["element"])]
@@ -1077,7 +1289,8 @@ def main(argv: list[str] | None = None) -> int:
                   f" use player_card for their history{flag}")
 
     overrides = {key: result[key] for key in OVERRIDE_REPORT_KEYS}
-    print("\n== ROLE OVERRIDES (role_overrides.json, next GW only) ==")
+    print("\n== ROLE OVERRIDES (role_overrides.json; next GW, and the model's 3-GW "
+          "value for the events an entry covers) ==")
     for key, names in overrides.items():
         print(f"  {key}: {', '.join(names) or '-'}")
 
@@ -1098,24 +1311,29 @@ def main(argv: list[str] | None = None) -> int:
     recs = result["recommendations"]
     fallback = (f" — FALLBACK: {scorer_meta['xp_fallback_reason']}"
                 if scorer_meta["xp_fallback"] else "")
-    print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}, scorer {scorer_meta['scorer']}{fallback}) ==")
-    print("   label    add                    ->  drop                next1  next3   season"
-          "  src        exp_min moved")
+    if horizon_meta["horizon_fallback"]:
+        fallback += f" — HORIZON FALLBACK: {horizon_meta['horizon_fallback_reason']}"
+    print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}, scorer {scorer_meta['scorer']}, "
+          f"ranked by {result['rank_by']}{fallback}) ==")
+    print("   label    add                    ->  drop                  gw1    gw3      ros"
+          "  src1/src3            exp_min moved")
     for r in recs:
         flag = f"  [{r['availability']}] {r['news']}" if r["availability"] != "a" else ""
         if r["add_role_override"] is not None:
             flag += f"  (override: {r['add_role_override']})"
         season = "?" if r["season_unknown"] else f"{r['season_gain']:+.1f}"
-        next3 = "?" if r["next3_gain"] is None else f"{r['next3_gain']:+.1f}"
+        next3 = "?" if r["next3_gain"] is None else f"{r['next3_gain']:+.2f}"
+        sources = f"{r['add_xp_source']}/{r['add_next3_source']}"
         print(f"  {r['label']:<8} {r['add']:<18}({r['position']}) -> {r['drop']:<18} "
-              f"{r['next1_gain']:>+6.2f} {next3:>6} {season:>7}"
-              f"  {r['add_xp_source']:<9} {_num(r['add_expected_minutes'], 8)} "
+              f"{r['next1_gain']:>+6.2f} {next3:>6} {season:>8}"
+              f"  {sources:<19} {_num(r['add_expected_minutes'], 8)} "
               f"{_moved(r['club_moved'])}{flag}")
 
     out = args.out or ml_dir / "waiver_plan.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(jsonutil.dumps_strict(
-        {**scorer_meta, "xi_next3_xp": xi_total, "recommendations": recs,
+        {**scorer_meta, **horizon_meta, "rank_by": result["rank_by"],
+         "xi_next3_xp": xi_total, "recommendations": recs,
          "drop_candidates": result["drop_candidates"],
          "minutes_through_gw": minutes_through_gw, **overrides,
          "unprojected_squad": unknown, "xp_reconciled": result["xp_reconciled"]}, indent=1))
