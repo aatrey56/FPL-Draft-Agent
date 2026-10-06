@@ -30,7 +30,10 @@ Design (v1, pre-GW1-honest):
   is by ``next1_gain``. Labels: ``upgrade`` (next1 and season positive — add
   and hold), ``stream`` (helps next GW only — plan to re-drop), ``hold``
   (no next-GW gain, better over the season — patience play); holds are listed
-  after every positive-next1 recommendation. With no match xP supplied (the
+  after every positive-next1 recommendation. A free agent with no ROS
+  projection but a model ``xp_next`` (e.g. a promoted club's starter) is still
+  ranked, with ``season_gain`` 0 and ``add_ros`` null, so he is at most a
+  ``stream``. With no match xP supplied (the
   heuristic scorer) ``recommend`` keeps its original ranking (``rank_by=
   "legacy"``: labels from ``next3_gain``, ordered by the larger gain) so the
   heuristic output is unchanged.
@@ -302,7 +305,9 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
     ``season_gain`` = ROS difference. Ranking is by ``next1_gain`` descending;
     ``hold`` recs (no next-GW gain, better over the season) come after every
     positive-next1 rec, ordered by ``season_gain``. The label encodes the
-    balance so a streamer is never confused with a season upgrade.
+    balance so a streamer is never confused with a season upgrade. A free
+    agent without a ROS projection is ranked only when the match model
+    values him (``xp_source == "model"``); his ``season_gain`` is 0.
 
     ``rank_by="legacy"`` keeps the pre-xP behaviour for the heuristic scorer
     (labels from ``next3_gain``, ranked by the larger of ``next3_gain`` and
@@ -319,7 +324,14 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
         # Those players go in the plan's unprojected_squad section instead.
         mine = squad[(squad["position"] == fa["position"])
                      & squad["ros_points"].notna()]
-        if mine.empty or pd.isna(fa["ros_points"]):
+        # A free agent with no ROS projection (promoted club, new signing,
+        # under last season's minutes floor) is still rankable on the next GW
+        # when the match model values him: his season_gain is taken as 0, so
+        # he can only ever label as a "stream". The legacy ranking has no
+        # next-GW model value and still skips him.
+        model_only = (rank_by != "legacy" and pd.isna(fa["ros_points"])
+                      and fa["xp_source"] == "model")
+        if mine.empty or (pd.isna(fa["ros_points"]) and not model_only):
             continue  # cannot recommend a player we cannot value
         drop = mine.sort_values(["ros_points", "next3_xp"]).iloc[0]
 
@@ -328,7 +340,7 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
 
         next1_gain = _v(fa["xp_next"]) - _v(drop["xp_next"])
         next3_gain = _v(fa["next3_xp"]) - _v(drop["next3_xp"])
-        season_gain = _v(fa["ros_points"]) - _v(drop["ros_points"])
+        season_gain = 0.0 if model_only else _v(fa["ros_points"]) - _v(drop["ros_points"])
         short_gain = next3_gain if rank_by == "legacy" else next1_gain
         if short_gain <= 0 and season_gain <= 0:
             continue

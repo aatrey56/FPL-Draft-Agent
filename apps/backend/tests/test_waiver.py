@@ -295,3 +295,38 @@ def test_legacy_ranking_orders_by_larger_of_next3_and_season_gain(tmp_path):
 
 def test_default_scorer_is_model_and_heuristic_stays_available():
     assert wv.DEFAULT_SCORER == "model" and "heuristic" in wv.SCORERS
+
+
+def _model_only_world(tmp_path, xp_rows):
+    """MyWeakFWD (projected, heuristic) in my squad; NoProj and Streamer free."""
+    table = _xp_table(tmp_path, _gw_xp(xp_rows))
+    status = {"element_status": [{"element": 11, "owner": 42},
+                                 {"element": 21, "owner": None},
+                                 {"element": 99, "owner": None}]}
+    table["is_free_agent"] = table["element"].isin({21, 99})
+    return table, wv.my_squad(table, status, entry_id=42)
+
+
+def test_model_valued_free_agent_without_ros_is_ranked_as_stream(tmp_path):
+    """Review regression: promoted-club players (no ROS projection) were
+    skipped even when the match model rated them highly."""
+    table, squad = _model_only_world(tmp_path, [(999, 6.0)])
+    recs = wv.recommend(table, squad)
+    noproj = next(r for r in recs if r["add"] == "NoProj")
+    assert noproj["add_xp_source"] == "model" and pd.isna(noproj["add_ros"])
+    assert noproj["season_gain"] == 0.0 and noproj["label"] == "stream"
+    assert noproj["next1_gain"] > 0 and noproj["drop"] == "MyWeakFWD"
+    assert recs[0]["add"] == "NoProj"          # ranked on next1_gain like anyone else
+
+
+def test_model_only_free_agent_with_no_next1_gain_is_not_recommended(tmp_path):
+    table, squad = _model_only_world(tmp_path, [(999, 0.1)])
+    assert all(r["add"] != "NoProj" for r in wv.recommend(table, squad))
+
+
+def test_unprojected_free_agent_stays_skipped_without_model_value(tmp_path):
+    table, squad = _model_only_world(tmp_path, [(200, 6.0)])   # NoProj not covered
+    assert all(r["add"] != "NoProj" for r in wv.recommend(table, squad))
+    table, squad = _model_only_world(tmp_path, [(999, 6.0)])
+    legacy = wv.recommend(table, squad, rank_by="legacy")      # heuristic scorer
+    assert all(r["add"] != "NoProj" for r in legacy)
