@@ -156,7 +156,7 @@ make autopilot-off
 ```
 
 Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
-derive: ownership, waiver, my_week first, then season panel and next-GW xP (a panel/xP failure fails `make derive` but never blocks the decision artifacts); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
+derive: ownership, waiver, my_week first, then season panel, next-GW xP and the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`) (a panel/xP failure fails `make derive` but never blocks the decision artifacts); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
 Non-Mac or cron fans: schedule `scripts/autorefresh.sh` (crontab example inline).
 
 Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):
@@ -183,7 +183,8 @@ apps/
     backend/ml/          ingestion → parquet, projection model, waiver_plan,
                          my_week, drop-radar, matchfeatures (leakage-safe per-GW
                          training table), matchmodel (two-stage match xP model),
-                         matcheval (walk-forward benchmark),
+                         matcheval (walk-forward benchmark), trackrecord
+                         (weekly xP-vs-realized log),
                          specs (treat *_SPEC.md as contracts)
     tests/               pytest suite (311 tests, no network)
 data/                    Raw + derived FPL data (gitignored; flat = 25/26 archive)
