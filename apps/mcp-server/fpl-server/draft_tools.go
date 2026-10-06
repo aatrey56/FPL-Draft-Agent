@@ -268,7 +268,7 @@ func waiverPlanHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 		if err := readJSONFile(path, &plan); err != nil {
 			return toolError(err), nil, nil
 		}
-		plan["note"] = "labels: upgrade = better now and all season; stream = next-3-GW help only (plan to re-drop); hold = tough fixtures now but better rest-of-season. unprojected_squad = players the model cannot value (never auto-dropped — check their player_card). Regenerate with: python -m backend.ml.waiver"
+		plan["note"] = "next1_gain = next-GW xP of the add minus the drop (xp_source on each rec says model or heuristic; the scorer field gives the run mode). labels: upgrade = better next GW and all season; stream = next-GW help only (plan to re-drop); hold = no next-GW gain but better rest-of-season (listed after the others). unprojected_squad = players the model cannot value (never auto-dropped — check their player_card). Regenerate with: python -m backend.ml.waiver"
 		return toolMarshal(plan)
 	}
 }
@@ -288,7 +288,7 @@ func myWeekHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest,
 		if err := readJSONFile(path, &week); err != nil {
 			return toolError(err), nil, nil
 		}
-		week["note"] = "gw_xp = projection/38 × fixture multiplier × availability (heuristic until the match xP model lands). attention = players needing a human call before the deadline; unprojected players are never scored as zero-value certainty. Regenerate with: python -m backend.ml.myweek"
+		week["note"] = "gw_xp = next-GW expected points; each player's xp_source says whether it came from the match model or the projection/38 × fixture × availability heuristic (the scorer field gives the run mode). attention = players needing a human call before the deadline; unprojected players are never scored as zero-value certainty. Regenerate with: python -m backend.ml.myweek"
 		return toolMarshal(week)
 	}
 }
