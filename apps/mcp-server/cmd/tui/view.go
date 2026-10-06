@@ -434,7 +434,14 @@ func (m *model) railBody(width int, focused bool) string {
 		}
 	}
 	if len(m.snap.NeedsYou) > 0 {
-		b.WriteString("\n" + styDim.Render("─ Suggestions "+strings.Repeat("─", clamp(width-16, 0, 30))) + "\n")
+		// xp_fallback: the model was asked for but its xP file was missing, unreadable or
+		// stale, so every suggestion below rests on the heuristic.
+		title, tag := "─ Suggestions ", ""
+		if m.snap.XPFallback {
+			tag = "heuristic xP "
+		}
+		rule := strings.Repeat("─", clamp(width-2-len([]rune(title+tag)), 0, 30))
+		b.WriteString("\n" + styDim.Render(title) + styWarn.Render(tag) + styDim.Render(rule) + "\n")
 		for i, r := range m.snap.NeedsYou {
 			sty := styDim
 			switch r.Glyph {

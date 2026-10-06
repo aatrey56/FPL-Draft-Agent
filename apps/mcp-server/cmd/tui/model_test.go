@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func write(t *testing.T, path string, v any) {
@@ -501,5 +503,33 @@ func TestWarningCodesMatchSharedFixture(t *testing.T) {
 	got := []string{warnNoValue, warnHeuristicXP, warnBlankGW, warnAvailability}
 	if want := sharedWarningCodes(t); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("TUI warning codes %v, shared fixture %v", got, want)
+	}
+}
+
+func TestSuggestionsHeaderMarksXPFallback(t *testing.T) {
+	for _, fallback := range []bool{true, false} {
+		derived := t.TempDir()
+		write(t, filepath.Join(derived, "ml/my_week.json"), map[string]any{
+			"xp_fallback": fallback,
+			"attention": []map[string]any{{"web_name": "Striker",
+				"warnings": []string{"blank gameweek: no fixture"}, "warning_codes": []string{"blank_gw"}}},
+		})
+		m := newModel(fixtureDir(t), derived, 5, 501, 0)
+		m.w = 160
+		if err := m.reload(); err != nil {
+			t.Fatal(err)
+		}
+		if m.snap.XPFallback != fallback {
+			t.Fatalf("XPFallback = %v, want %v", m.snap.XPFallback, fallback)
+		}
+		body := m.railBody(40, false)
+		if got := strings.Contains(body, "Suggestions heuristic xP"); got != fallback {
+			t.Fatalf("fallback=%v: marker shown=%v:\n%s", fallback, got, body)
+		}
+		for _, line := range strings.Split(body, "\n") {
+			if lipgloss.Width(line) > 40 {
+				t.Fatalf("rail line wider than the panel (%d): %q", lipgloss.Width(line), line)
+			}
+		}
 	}
 }

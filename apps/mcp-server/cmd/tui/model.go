@@ -181,6 +181,7 @@ type snapshot struct {
 	Transactions []txRow
 	TxByManager  []managerTx
 	NeedsYou     []railItem
+	XPFallback   bool          // my_week asked for model xP but fell back to the heuristic
 	Matches      []matchDetail // one per in-play fixture, liveSel-aligned
 	Events       []eventRow    // today's official match events (goals/assists/cards)
 	PlayerStats  map[int]tickerStat
@@ -970,13 +971,15 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 
 	// Needs-you suggestions: my_week attention + top waiver targets (best effort).
 	var week struct {
-		Attention []struct {
+		XPFallback bool `json:"xp_fallback"`
+		Attention  []struct {
 			WebName      string   `json:"web_name"`
 			Warnings     []string `json:"warnings"`
 			WarningCodes []string `json:"warning_codes"`
 		} `json:"attention"`
 	}
 	if err := readJSON(filepath.Join(derived, "ml/my_week.json"), &week); err == nil {
+		snap.XPFallback = week.XPFallback
 		for _, a := range week.Attention {
 			if item, ok := attentionItem(a.WebName, a.Warnings, a.WarningCodes); ok {
 				snap.NeedsYou = append(snap.NeedsYou, item)

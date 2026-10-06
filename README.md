@@ -28,7 +28,8 @@ start/sit) → Go MCP server (:8080, 14 tools) → Claude Desktop / Claude Code
 
 **Game day:** `make tui` opens a live terminal dashboard — your H2H matchup
 (any matchup, ←/→) with per-player in-play points, manager names, and a
-countdown to the next deadline. The autopilot keeps it fresh and sends macOS
+countdown to the next deadline (its Suggestions rail is headed `heuristic xP`
+when my_week fell back from the match model). The autopilot keeps it fresh and sends macOS
 notifications when a gameweek finalizes and at 24h/3h/2h before every
 deadline — each derived from that GW's own kickoff-anchored clock, so
 midweek and festive schedules follow automatically.
