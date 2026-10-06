@@ -1017,7 +1017,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			if i >= 3 {
 				break
 			}
-			note := fmt.Sprintf("wire · %s +%.0f", r.Label, r.SeasonGain)
+			note := fmt.Sprintf("wire · %s %+.0f", r.Label, r.SeasonGain)
 			if r.SeasonUnknown {
 				note = fmt.Sprintf("wire · %s · ROS ?", r.Label)
 			}

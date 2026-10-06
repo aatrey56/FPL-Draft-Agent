@@ -362,7 +362,7 @@ func (m *model) sugDetailBody(width int) string {
 			para(fmt.Sprintf("No rest-of-season projection for %s (promoted club, new signing or under last season's minutes floor), so there is no season gain to quote — treat it as a next-GW stream.",
 				r.Name))
 		} else {
-			para(fmt.Sprintf("Projected rest-of-season: %s %.0f pts vs %s %.0f pts — the +%.0f is that gap, the season points you gain by making the swap.",
+			para(fmt.Sprintf("Projected rest-of-season: %s %.0f pts vs %s %.0f pts — the %+.0f is that gap, the season points you gain by making the swap.",
 				r.Name, r.AddROS, r.Drop, r.DropROS, r.SeasonGain))
 		}
 		b.WriteString("\n")
@@ -370,7 +370,7 @@ func (m *model) sugDetailBody(width int) string {
 			para(fmt.Sprintf("Next 3 GWs: unavailable — %s has no projection to build a 3-GW value from.",
 				r.Name))
 		} else {
-			para(fmt.Sprintf("Next 3 GWs: %s projects %.1f xP, +%.1f over %s.",
+			para(fmt.Sprintf("Next 3 GWs: %s projects %.1f xP, %+.1f over %s.",
 				r.Name, r.AddNext3, r.Next3Gain, r.Drop))
 		}
 		if r.Confidence != "" {

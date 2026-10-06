@@ -528,6 +528,43 @@ func TestWireRecWithUnknownNext3Gain(t *testing.T) {
 	}
 }
 
+// A stream can lose ground over 3 GWs and the season: negative gains carry
+// one sign ("-1.8"), never "+-1.8".
+func TestWireRecNegativeGainsAreSignedOnce(t *testing.T) {
+	derived := t.TempDir()
+	write(t, filepath.Join(derived, "ml/waiver_plan.json"), map[string]any{
+		"recommendations": []map[string]any{
+			{"add": "Streamer", "add_team": "ARS", "drop": "Weak", "label": "stream",
+				"season_gain": -3.2, "add_ros": 36.8, "drop_ros": 40.0,
+				"next3_gain": -1.8, "add_next3_xp": 2.2},
+		},
+	})
+	m := newModel(fixtureDir(t), derived, 5, 501, 0)
+	m.w = 160
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	for _, it := range m.snap.NeedsYou {
+		if strings.HasPrefix(it.Note, "wire") {
+			notes = append(notes, it.Note)
+		}
+	}
+	if got := strings.Join(notes, "|"); got != "wire · stream -3" {
+		t.Fatalf("rail note %q", got)
+	}
+	m.sugSel = 0
+	body := m.sugDetailBody(120)
+	for _, want := range []string{"Streamer projects 2.2 xP, -1.8 over Weak", "the -3 is that gap"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "+-") {
+		t.Errorf("double sign in:\n%s", body)
+	}
+}
+
 // A club-mover's season gain is the gap between role-adjusted projections, so
 // the detail view must quote those, not the raw ROS pair.
 func TestWireRecDetailQuotesRoleAdjustedROS(t *testing.T) {
