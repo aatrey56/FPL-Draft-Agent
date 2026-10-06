@@ -548,6 +548,24 @@ def stub_frame(history: pd.DataFrame, stubs: pd.DataFrame, season: str,
     return frame[frame["label_points"].notna()], target
 
 
+def completed_before(panel: pd.DataFrame, season: str, gw: int) -> pd.DataFrame:
+    """``panel`` without ``season`` rows at or after ``gw``: the as-of cutoff.
+
+    A builder serving gameweek ``gw`` must not see that gameweek's own outcomes
+    (or any later one's): they would be trained on, and a completed ``gw`` row
+    would sit among the targets. Callers normally pass a panel that already
+    stops before ``gw``; when one does not (a refreshed panel, a hand-run CLI),
+    the offending rows are dropped with a WARNING rather than silently leaked.
+    """
+    late = (panel["season"] == season) & (panel["gw"] >= int(gw))
+    if late.any():
+        logger.warning("panel holds %d %s row(s) at gw >= %d (gw %s); dropped so the "
+                       "gw %d forecast uses only earlier gameweeks", int(late.sum()), season,
+                       gw, ", ".join(str(g) for g in sorted(panel.loc[late, "gw"].unique())), gw)
+        return panel[~late]
+    return panel
+
+
 def _fit_for_gw(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
                 alpha: float | dict[int, float] | None,
                 min_train_rows: int) -> tuple[MatchModel, pd.DataFrame]:
@@ -576,8 +594,10 @@ def build_gw_xp(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
     """Fit on everything completed and score the upcoming gameweek.
 
     Features come from ``stub_frame``, the path ``served_walk_forward`` also
-    evaluates through.
+    evaluates through. Rows of ``season`` at or after ``gw`` are dropped first
+    (``completed_before``), as ``build_horizon_xp`` does, so the two stay equal.
     """
+    panel = completed_before(panel, season, gw)
     model, target = _fit_for_gw(panel, bootstrap, gw, season, alpha, min_train_rows)
     availability = availability_series(bootstrap, target["code"])
     scored = score_fixtures(model, target, availability)
@@ -638,12 +658,17 @@ def build_horizon_xp(panel: pd.DataFrame, bootstrap: dict, season: str,
     the freshness stamp, so ``waiver.read_gw_xp`` validates the file like an
     ``xp_gw{N}`` one.
 
+    Rows of ``season`` at or after ``N`` are dropped first (with a WARNING,
+    see ``completed_before``): a panel refreshed past the deadline must not
+    train on, or featurise from, outcomes the forecast is meant to predict.
+
     Raises ValueError when the first event has no fixtures or nothing fits.
     """
     gws = horizon_gameweeks(next_gameweek(bootstrap)) if gws is None else [int(g) for g in gws]
     if not gws:
         raise ValueError("no gameweeks to score")
     first = gws[0]
+    panel = completed_before(panel, season, first)
     model, first_target = _fit_for_gw(panel, bootstrap, first, season, alpha, min_train_rows)
     players = _horizon_players(bootstrap)
     # Every feature is computed within a season (matchfeatures groups by it),

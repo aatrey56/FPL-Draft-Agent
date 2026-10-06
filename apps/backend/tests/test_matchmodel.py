@@ -1170,3 +1170,33 @@ def test_cli_horizon_writes_the_horizon_file_and_not_the_gameweek_one(tmp_path):
     assert list(written.columns) == mm.HORIZON_COLUMNS and len(written) == 3 * panel["code"].nunique()
     stamp = pq.read_schema(out).metadata[mm.GENERATED_AT_KEY].decode()
     assert datetime.fromisoformat(stamp).tzinfo is not None
+
+
+def test_horizon_ignores_post_deadline_rows_for_its_own_events(caplog):
+    """Regression: the builder had no cutoff of its own, so a panel already
+    holding GW N's outcomes trained on them and scored completed GW N rows as
+    targets. Adding post-deadline labels for N (and N+1) must change nothing."""
+    panel = _panel()
+    bootstrap = _horizon_bootstrap(panel)
+    clean = mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    later = (_panel(seed=99).assign(gw=lambda f: f["gw"] + N_GWS)
+             .query(f"gw in [{FIRST}, {FIRST + 1}]"))
+    leaky = pd.concat([panel, later], ignore_index=True)
+    with caplog.at_level("WARNING"):
+        dirty = mm.build_horizon_xp(leaky, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    pd.testing.assert_frame_equal(clean, dirty)
+    assert f"at gw >= {FIRST}" in caplog.text
+    served = mm.build_gw_xp(leaky, bootstrap, FIRST, SEASON, min_train_rows=SMALL_FIT)
+    first = dirty[dirty["event"] == FIRST].set_index("code")
+    assert (first.loc[served["code"], "xp"].to_numpy() == served["xp"].to_numpy()).all()
+    assert (served["panel_max_gw"] == N_GWS).all()
+
+
+def test_completed_before_keeps_other_seasons_and_earlier_gameweeks():
+    panel = pd.DataFrame({"season": ["2025-26", "2025-26", "2026-27", "2026-27"],
+                          "gw": [30, 6, 5, 6]})
+    kept = mm.completed_before(panel, "2026-27", 6)
+    assert kept.to_dict("records") == [{"season": "2025-26", "gw": 30},
+                                       {"season": "2025-26", "gw": 6},
+                                       {"season": "2026-27", "gw": 5}]
+    assert mm.completed_before(kept, "2026-27", 6) is kept      # nothing to drop: untouched
