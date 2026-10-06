@@ -59,9 +59,11 @@ PREDICTORS = ["model_xp", *me.BASELINES]
 KEY = ["gw", "pool", "position", "predictor", "source"]
 METRICS = ["spearman", "top_frac", "mae", "n", "brier", "p_start_mean", "start_rate"]
 COLUMNS = KEY + METRICS
-# Six decimals: plenty for a rank correlation, and a fixed text format is what
-# makes a re-run byte-identical.
-FLOAT_FORMAT = "%.6f"
+# Six decimals: plenty for a rank correlation. Scores are rounded when computed
+# and written in a fixed text format, so a re-run is byte-identical and the
+# in-memory table equals the one read back from disk.
+DECIMALS = 6
+FLOAT_FORMAT = f"%.{DECIMALS}f"
 
 
 class TrackRecordError(RuntimeError):
@@ -192,7 +194,10 @@ def score_gameweek(predicted: pd.DataFrame, gw: int, source: str,
                 for metric in ("brier", "p_start_mean", "start_rate"):
                     row[metric] = brier.get(metric, math.nan) if model_row else math.nan
                 rows.append(row)
-    return pd.DataFrame(rows, columns=COLUMNS)
+    table = pd.DataFrame(rows, columns=COLUMNS)
+    floats = ["spearman", "top_frac", "mae", "brier", "p_start_mean", "start_rate"]
+    table[floats] = table[floats].astype("float64").round(DECIMALS)
+    return table
 
 
 def _sorted(table: pd.DataFrame) -> pd.DataFrame:
