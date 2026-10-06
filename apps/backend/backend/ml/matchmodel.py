@@ -387,20 +387,40 @@ def score_fixtures(model: MatchModel, rows: pd.DataFrame,
 
 def walk_forward(frame: pd.DataFrame, min_gw: int = MIN_TRAIN_GW,
                  alpha: float | dict[int, float] | None = None,
-                 min_train_rows: int = MIN_TRAIN_ROWS) -> pd.DataFrame:
+                 min_train_rows: int = MIN_TRAIN_ROWS,
+                 eval_season: str | None = None,
+                 eval_gws: list[int] | None = None,
+                 prior_seasons: bool = False) -> pd.DataFrame:
     """Refit on gameweeks 1..t, predict t+1, for every t — within each season.
 
     Returns ``frame``'s predicted rows with the model's columns attached. The
     features were already built to see only prior gameweeks; this loop adds the
     matching guarantee for the *labels*, so nothing the model learned from was
     unknown at the deadline it is being scored on.
+
+    ``eval_season`` / ``eval_gws`` restrict which targets are scored (``eval_gws``
+    replaces the ``gw > min_gw`` rule). ``prior_seasons=True`` trains on every
+    labelled row of the *other* seasons plus the target season's rows before the
+    target gameweek — the training set ``build_gw_xp`` fits when serving, so a
+    live season can be scored the way it is served. Team form is built per
+    season, so team ids from different seasons never meet in a join.
     """
     alpha = dict(SELECTED_ALPHAS) if alpha is None else alpha
     predictions = []
     for season, season_frame in frame.groupby("season", sort=True):
+        if eval_season is not None and season != eval_season:
+            continue
         gameweeks = sorted(int(gw) for gw in season_frame["gw"].dropna().unique())
-        for target_gw in [gw for gw in gameweeks if gw > min_gw]:
-            train = season_frame[season_frame["gw"] < target_gw]
+        if eval_gws is not None:
+            targets = [gw for gw in gameweeks if gw in set(eval_gws)]
+        else:
+            targets = [gw for gw in gameweeks if gw > min_gw]
+        for target_gw in targets:
+            if prior_seasons:
+                train = frame[(frame["season"] != season)
+                              | ((frame["season"] == season) & (frame["gw"] < target_gw))]
+            else:
+                train = season_frame[season_frame["gw"] < target_gw]
             target = season_frame[season_frame["gw"] == target_gw]
             if target.empty:
                 continue
@@ -410,7 +430,7 @@ def walk_forward(frame: pd.DataFrame, min_gw: int = MIN_TRAIN_GW,
             scored = score_panel(model, target)
             predictions.append(pd.concat([target, scored], axis=1))
         logger.info("walk-forward: season %s, %d gameweeks predicted",
-                    season, max(0, len([g for g in gameweeks if g > min_gw])))
+                    season, len(targets))
     if not predictions:
         return pd.DataFrame(columns=list(frame.columns) + ["xp"])
     return pd.concat(predictions, ignore_index=True)
@@ -655,7 +675,11 @@ def backtest(frame: pd.DataFrame, min_gw: int = MIN_TRAIN_GW,
 
 def summarise(scored: pd.DataFrame, fraction: float = me.TOP_FRACTION) -> pd.DataFrame:
     """Model against the best naive baseline, per position, on one row each."""
-    report = compare(scored, "startable", fraction)
+    return best_baseline(compare(scored, "startable", fraction))
+
+
+def best_baseline(report: pd.DataFrame) -> pd.DataFrame:
+    """Model against the best naive baseline per position, from a ``compare`` report."""
     model = report[report["predictor"] == "model_xp"].set_index("position")
     others = report[report["predictor"] != "model_xp"]
     best = others.loc[others.groupby("position")["spearman"].idxmax()].set_index("position")
@@ -703,6 +727,65 @@ def _print_backtest(frame: pd.DataFrame, min_gw: int, fraction: float,
     return result
 
 
+def live_eval(frame: pd.DataFrame, season: str, eval_gws: list[int],
+              fraction: float = me.TOP_FRACTION,
+              min_train_rows: int = MIN_TRAIN_ROWS) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Score a live season the way it is served: archive + earlier GWs of ``season``.
+
+    Returns ``(report, calibration)``: one report row per (pool, position,
+    predictor) for the startable and full pools, and the Stage-1 calibration on
+    the startable pool. Alphas are the shipped ``SELECTED_ALPHAS`` — nothing is
+    tuned on these gameweeks. ``matcheval.MIN_EVAL_GW`` (a 2025-26 default) is
+    replaced by the first evaluated gameweek.
+    """
+    scored = walk_forward(frame, alpha=dict(SELECTED_ALPHAS),
+                          min_train_rows=min_train_rows, eval_season=season,
+                          eval_gws=eval_gws, prior_seasons=True)
+    if scored.empty:
+        raise ValueError(f"no gameweeks of {season} among {eval_gws} could be scored")
+    first = min(eval_gws)
+    startable = me.eligible(scored, startable_only=True, min_gw=first)
+    everyone = me.eligible(scored, startable_only=False, min_gw=first)
+    report = pd.concat([compare(startable, "startable", fraction),
+                        compare(everyone, "all", fraction)], ignore_index=True)
+    report["window"] = f"{season}_gw{first}-{max(eval_gws)}"
+    return report, start_calibration(startable)
+
+
+def _gw_range(value: str) -> list[int]:
+    """argparse type for --eval-gws: ``2-5``, ``3`` or ``2,4,5``."""
+    try:
+        if "-" in value:
+            low, high = value.split("-", 1)
+            gws = list(range(int(low), int(high) + 1))
+        else:
+            gws = [int(part) for part in value.split(",")]
+    except ValueError:
+        gws = []
+    if not gws or min(gws) < 1:
+        raise argparse.ArgumentTypeError(
+            f"--eval-gws must look like 2-5, 3 or 2,4,5; got {value!r}")
+    return gws
+
+
+def _print_live_eval(report: pd.DataFrame, calibration: pd.DataFrame,
+                     season: str, eval_gws: list[int]) -> None:
+    print(f"\n== LIVE CHECK {season} GW{min(eval_gws)}-{max(eval_gws)}: as-of "
+          "walk-forward, trained on archive + earlier GWs of the season ==")
+    print("caveat: GW2 form = 1 gameweek; Spearman is the mean over "
+          f"{len(eval_gws)} gameweeks, so noise is large")
+    for pool, title in (("startable", "startable pool"), ("all", "full pool")):
+        view = report[report["pool"] == pool]
+        print(f"\n-- {title}: mean per-gameweek Spearman --")
+        print(view.pivot(index="predictor", columns="position", values="spearman")
+              .round(3).to_string())
+        print(f"gws per row: {sorted(view['gws'].unique().tolist())}")
+        print(f"-- {title}: model vs best baseline --")
+        print(best_baseline(view).round(3).to_string())
+    print("\n-- stage 1 P(start) (startable pool): Brier, predicted vs actual rate --")
+    print(calibration.round(3).to_string(index=False))
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     root = _repo_root()
@@ -721,6 +804,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="run the walk-forward evaluation and print the report")
     parser.add_argument("--selection-max-gw", type=int, default=SELECTION_MAX_GW,
                         help="last gameweek used to select alpha; later ones are held out")
+    parser.add_argument("--eval-season", type=str, default=None,
+                        help="score this live season as-of (trained on the other "
+                             "panels + its own earlier GWs); needs --eval-gws")
+    parser.add_argument("--eval-gws", type=_gw_range, default=None,
+                        help="gameweeks to score with --eval-season, e.g. 2-5")
     parser.add_argument("--gw", type=_gw_arg, default=None,
                         help="build xp_gw{N}.parquet for this upcoming gameweek; "
                              "'next' picks the first unfinished one from the bootstrap")
@@ -753,8 +841,26 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("wrote %s", out)
         return 0
 
+    if args.eval_season is not None:
+        if args.eval_gws is None:
+            parser.error("--eval-season requires --eval-gws")
+        frame = build_match_frame(panel)
+        if args.eval_season not in set(frame["season"]):
+            parser.error(f"season {args.eval_season} not in the supplied panels")
+        report, calibration = live_eval(
+            frame, args.eval_season, args.eval_gws, args.top_fraction)
+        _print_live_eval(report, calibration, args.eval_season, args.eval_gws)
+        span = f"gw{min(args.eval_gws)}-{max(args.eval_gws)}"
+        out = args.out or (root / f"data/derived/{args.eval_season}/ml"
+                           / f"match_model_eval_{span}.csv")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        report[["pool", "position", "predictor", "spearman", "top_frac", "mae",
+                "gws", "window"]].to_csv(out, index=False)
+        logger.info("wrote %s", out)
+        return 0
+
     if args.gw is None:
-        parser.error("choose one of --backtest or --gw")
+        parser.error("choose one of --backtest, --eval-season or --gw")
 
     season = args.season
     if season is None:

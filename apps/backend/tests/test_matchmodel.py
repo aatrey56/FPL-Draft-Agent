@@ -193,6 +193,89 @@ def test_features_for_a_gameweek_use_only_earlier_rows(frame):
     assert row["pts_std"] == pytest.approx(earlier.mean())
 
 
+# --- live-season evaluation: prior seasons in the training set --------------
+
+LIVE_SEASON = "2026-27"
+LIVE_GWS = 5
+
+
+def _two_season_frame() -> pd.DataFrame:
+    """A full archive season plus the first gameweeks of a live one."""
+    live = _panel(seed=11)
+    live = live[live["gw"] <= LIVE_GWS].assign(season=LIVE_SEASON)
+    # Different team ids from the archive: nothing may join across seasons.
+    live["team_id"] = live["team_id"] + 100
+    live["opponent_team"] = live["opponent_team"] + 100
+    return build_match_frame(pd.concat([_panel(), live], ignore_index=True))
+
+
+def test_prior_seasons_training_set_matches_serving(monkeypatch):
+    """GW2 of the live season is fitted on archive rows + live GW1, never GW>=2."""
+    frame = _two_season_frame()
+    captured = []
+    real_fit = mm.MatchModel.fit
+
+    def recording_fit(self, train):
+        captured.append(train)
+        return real_fit(self, train)
+
+    monkeypatch.setattr(mm.MatchModel, "fit", recording_fit)
+    predicted = mm.walk_forward(frame, alpha=100.0, min_train_rows=SMALL_FIT,
+                                eval_season=LIVE_SEASON, eval_gws=[2],
+                                prior_seasons=True)
+
+    assert len(captured) == 1
+    train = captured[0]
+    assert (train["season"] == SEASON).sum() == (frame["season"] == SEASON).sum()
+    live_train = train[train["season"] == LIVE_SEASON]
+    assert not live_train.empty and live_train["gw"].max() == 1
+    assert set(predicted["season"]) == {LIVE_SEASON}
+    assert set(predicted["gw"]) == {2}
+
+
+def test_prior_seasons_lets_a_thin_season_fit():
+    """Within the live season alone GW2 has no labelled history; the archive fixes that."""
+    frame = _two_season_frame()
+    alone = mm.walk_forward(frame, alpha=100.0, min_train_rows=SMALL_FIT,
+                            eval_season=LIVE_SEASON, eval_gws=[2])
+    assert alone.empty
+
+    pooled = mm.walk_forward(frame, alpha=100.0, min_train_rows=SMALL_FIT,
+                             eval_season=LIVE_SEASON, eval_gws=[2],
+                             prior_seasons=True)
+    assert set(pooled["element_type"]) == {1, 2, 3, 4}
+    assert pooled["xp"].notna().all()
+
+
+def test_live_eval_scores_every_requested_gameweek():
+    frame = _two_season_frame()
+    report, calibration = mm.live_eval(frame, LIVE_SEASON, [2, 3, 4, 5],
+                                       min_train_rows=SMALL_FIT)
+    assert set(report["pool"]) == {"startable", "all"}
+    assert set(report["predictor"]) == {"model_xp", *mm.me.BASELINES}
+    # A baseline can be constant (NaN Spearman) in a tiny synthetic GW; the
+    # model itself is scored on all four.
+    assert (report[report["predictor"] == "model_xp"]["gws"] == 4).all()
+    assert (report["gws"] <= 4).all()
+    assert set(calibration["position"]) == {"GKP", "DEF", "MID", "FWD"}
+
+
+def test_gw_range_parses_ranges_lists_and_rejects_garbage():
+    assert mm._gw_range("2-5") == [2, 3, 4, 5]
+    assert mm._gw_range("3") == [3]
+    assert mm._gw_range("2,4") == [2, 4]
+    with pytest.raises(Exception):
+        mm._gw_range("five")
+
+
+def test_walk_forward_default_is_unchanged_by_the_eval_options(frame):
+    """Regression: no eval arguments reproduces the pre-change output exactly."""
+    predicted = mm.walk_forward(frame, min_gw=6, alpha=100.0,
+                                min_train_rows=SMALL_FIT)
+    assert len(predicted) == 1680
+    assert predicted["xp"].sum() == pytest.approx(4470.087216015732)
+
+
 # --- acceptance criterion 3: double gameweeks -------------------------------
 
 def test_double_gameweek_sums_both_fixtures():
