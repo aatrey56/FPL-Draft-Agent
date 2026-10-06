@@ -11,11 +11,12 @@ real data are recorded in ``docs/MODEL_ROADMAP.md`` and reproduced by
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import pytest
 
 from backend.ml import matchmodel as mm
@@ -701,6 +702,20 @@ def test_cli_gw_next_resolves_end_to_end(tmp_path):
     assert code == 0
     assert out.exists()
     assert len(pd.read_parquet(out)) > 0
+    # The build time is stamped into the parquet metadata for the track record.
+    stamp = pq.read_schema(out).metadata[mm.GENERATED_AT_KEY].decode()
+    assert datetime.fromisoformat(stamp).tzinfo is not None
+
+
+def test_write_xp_stamps_utc_and_keeps_columns(tmp_path):
+    scored = pd.DataFrame({"code": [1, 2], "gw": [3, 3], "xp": [4.5, 2.0]})
+    out = tmp_path / "xp_gw3.parquet"
+    built = datetime(2026, 9, 12, 9, 30, tzinfo=timezone(timedelta(hours=1)))
+    mm.write_xp(scored, out, generated_at=built)
+
+    pd.testing.assert_frame_equal(pd.read_parquet(out), scored)
+    stamp = pq.read_schema(out).metadata[mm.GENERATED_AT_KEY].decode()
+    assert stamp == "2026-09-12T08:30:00+00:00"
 
 
 def _events(current, nxt, current_finished, deadline):

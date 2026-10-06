@@ -48,6 +48,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from backend.ml import matcheval as me
 from backend.ml.matchfeatures import build_match_frame
@@ -970,12 +972,30 @@ def main(argv: list[str] | None = None) -> int:
                          alpha=args.alpha or dict(SELECTED_ALPHAS))
     out = _out_path(args.out, root / f"data/derived/{season}/ml/xp_gw{gw}.parquet")
     out.parent.mkdir(parents=True, exist_ok=True)
-    scored.to_parquet(out, index=False)
+    write_xp(scored, out)
     logger.info("wrote %s (%d players)", out, len(scored))
     print(scored.head(20)[
         ["code", "element_type", "opponents", "p_start", "xp", "xp_floor",
          "xp_ceiling", "drivers"]].round(2).to_string(index=False))
     return 0
+
+
+GENERATED_AT_KEY = b"generated_at"
+
+
+def write_xp(scored: pd.DataFrame, out: Path, generated_at: datetime | None = None) -> None:
+    """Write an xP parquet stamped with its UTC build time in the schema metadata.
+
+    ``generated_at`` (default: now) is stored as an ISO-8601 string under
+    ``GENERATED_AT_KEY`` so the track record can tell a pre-deadline forecast
+    from a later rebuild without trusting the file's mtime (copies and syncs
+    reset it). Columns are unchanged.
+    """
+    stamp = (generated_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    table = pa.Table.from_pandas(scored, preserve_index=False)
+    metadata = dict(table.schema.metadata or {})
+    metadata[GENERATED_AT_KEY] = stamp.isoformat().encode("utf-8")
+    pq.write_table(table.replace_schema_metadata(metadata), out)
 
 
 if __name__ == "__main__":

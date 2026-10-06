@@ -216,10 +216,10 @@ predictors = 192 rows at GW5) and rewrites `track_record.md`.
 
 - **`live`** — `xp_gw{N}.parquet` exists and predates the GW-N deadline: the
   forecast actually served. Derive only writes the *next* GW, so a past file is
-  a pre-deadline forecast. A file modified after the deadline (a manual
-  `make xp GW=n`), or one whose `gw` column is not N, is ignored with a
-  warning; live rows already in the CSV are
-  kept even if the file later disappears.
+  a pre-deadline forecast. A file built after the deadline (by its
+  `generated_at` parquet stamp, else its mtime; e.g. a manual `make xp GW=n`),
+  or one whose `gw` column is not N, is ignored with a warning; live rows
+  already in the CSV are kept even if the file later disappears.
 - **`replay`** — otherwise: rebuilt as it would have been served, through
   `matchmodel.served_walk_forward` (the live-season check's path: earlier
   seasons + earlier GWs of this one, features from outcome-free stubs via

@@ -11,9 +11,10 @@ Where a gameweek's prediction comes from — the ``source`` column:
 * ``live`` — ``xp_gw{N}.parquet`` exists: the forecast actually served before
   that deadline. ``make derive`` only ever writes the *next* gameweek's file,
   so a past file is a pre-deadline forecast and is never overwritten after
-  the fact. A file whose modification time is later than the gameweek's
-  deadline (e.g. a manual ``make xp GW=3`` run in October) is not a forecast
-  and is ignored with a warning, as is a file whose ``gw`` column is not N.
+  the fact. A file built later than the gameweek's deadline (its
+  ``generated_at`` stamp, else its modification time; e.g. a manual ``make xp
+  GW=3`` run in October) is not a forecast and is ignored with a warning, as
+  is a file whose ``gw`` column is not N.
 * ``replay`` — no usable file: the gameweek is rebuilt as it would have been
   served (``matchmodel.served_walk_forward``): trained on the seasons that
   started earlier plus this season's gameweeks before it, and featurised from
@@ -112,6 +113,28 @@ def _forecast_gws(path: Path) -> set[int]:
     return {int(gw) for gw in pd.read_parquet(path, columns=["gw"])["gw"].dropna().unique()}
 
 
+def written_at(path: Path) -> datetime:
+    """When an xP file was built: its ``generated_at`` stamp, else its mtime.
+
+    ``matchmodel.write_xp`` stamps the build time into the parquet metadata;
+    files written before that (or with an unreadable stamp) fall back to the
+    file's modification time.
+    """
+    metadata = pq.read_schema(path).metadata or {}
+    stamp = metadata.get(mm.GENERATED_AT_KEY)
+    if stamp is not None:
+        try:
+            parsed = datetime.fromisoformat(stamp.decode("utf-8"))
+        except ValueError:
+            logger.warning("%s has an unreadable generated_at %r; using its mtime",
+                           path.name, stamp)
+        else:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+
+
 def live_xp_path(ml_dir: Path, gw: int, bootstrap: dict | None) -> Path | None:
     """``xp_gw{N}.parquet`` when it forecasts GW N and was written before the deadline.
 
@@ -128,7 +151,7 @@ def live_xp_path(ml_dir: Path, gw: int, bootstrap: dict | None) -> Path | None:
         return None
     deadline = _deadline(bootstrap, gw)
     if deadline is not None:
-        written = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        written = written_at(path)
         if written > deadline:
             logger.warning("%s was written %s, after the GW%d deadline %s; "
                            "not a live forecast, replaying instead",

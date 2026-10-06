@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from backend.ml import trackrecord as tr
@@ -317,3 +319,45 @@ def test_xp_file_without_a_gw_column_is_not_live(frame, tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         assert tr.live_xp_path(ml_dir, 2, None) is None
     assert "no gw column" in caplog.text
+
+
+def _stamp(path, generated_at: datetime) -> None:
+    """Rewrite an xP file through ``matchmodel.write_xp`` with a fixed build time."""
+    tr.mm.write_xp(pd.read_parquet(path), path, generated_at=generated_at)
+
+
+def test_generated_at_stamp_wins_over_mtime(frame, tmp_path, caplog):
+    ml_dir = tmp_path / "ml"
+    _write_live_xp(ml_dir, frame, 2)
+    path = ml_dir / "xp_gw2.parquet"
+    deadline = datetime(2026, 8, 28, 17, 30, tzinfo=timezone.utc)
+    bootstrap = {"events": [{"id": 2, "deadline_time": "2026-08-28T17:30:00Z"}]}
+
+    # Built four days early, then copied (mtime reset to after the deadline): live.
+    _stamp(path, datetime(2026, 8, 24, 9, 0, tzinfo=timezone.utc))
+    late = deadline.timestamp() + 86400
+    os.utime(path, (late, late))
+    assert tr.live_xp_path(ml_dir, 2, bootstrap) == path
+
+    # Rebuilt in October with an old mtime: the stamp still exposes it.
+    _stamp(path, datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc))
+    early = deadline.timestamp() - 86400
+    os.utime(path, (early, early))
+    with caplog.at_level(logging.WARNING):
+        assert tr.live_xp_path(ml_dir, 2, bootstrap) is None
+    assert "2026-10-06T12:00:00+00:00" in caplog.text
+
+
+def test_unstamped_or_unreadable_stamp_falls_back_to_mtime(frame, tmp_path):
+    ml_dir = tmp_path / "ml"
+    _write_live_xp(ml_dir, frame, 2)
+    path = ml_dir / "xp_gw2.parquet"
+    mtime = datetime(2026, 8, 20, tzinfo=timezone.utc).timestamp()
+    os.utime(path, (mtime, mtime))
+    assert tr.written_at(path).timestamp() == mtime
+
+    table = pa.Table.from_pandas(pd.read_parquet(path), preserve_index=False)
+    table = table.replace_schema_metadata({tr.mm.GENERATED_AT_KEY: b"yesterday"})
+    pq.write_table(table, path)
+    os.utime(path, (mtime, mtime))
+    assert tr.written_at(path).timestamp() == mtime
