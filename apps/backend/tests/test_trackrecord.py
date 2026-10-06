@@ -291,3 +291,29 @@ def test_cli_rescore_flag_reaches_run(tmp_path, monkeypatch):
     monkeypatch.setattr(tr, "run", fake_run)
     tr.main(["--season", LIVE_SEASON, "--data-root", str(tmp_path), "--rescore"])
     assert seen == {"rescore": True}
+
+
+def test_xp_file_for_another_gameweek_is_not_live(panel, frame, tmp_path, caplog):
+    ml_dir = tmp_path / "ml"
+    _write_live_xp(ml_dir, frame, 3)
+    (ml_dir / "xp_gw3.parquet").rename(ml_dir / "xp_gw2.parquet")
+
+    with caplog.at_level(logging.WARNING):
+        assert tr.live_xp_path(ml_dir, 2, None) is None
+    assert "forecasts GW [3], not GW2" in caplog.text
+    table = _run(panel, ml_dir, gws=[2])
+    assert set(table["source"]) == {"replay"}
+
+    _write_live_xp(ml_dir, frame, 2)
+    assert tr.live_xp_path(ml_dir, 2, None) == ml_dir / "xp_gw2.parquet"
+
+
+def test_xp_file_without_a_gw_column_is_not_live(frame, tmp_path, caplog):
+    ml_dir = tmp_path / "ml"
+    _write_live_xp(ml_dir, frame, 2)
+    path = ml_dir / "xp_gw2.parquet"
+    pd.read_parquet(path).drop(columns="gw").to_parquet(path, index=False)
+
+    with caplog.at_level(logging.WARNING):
+        assert tr.live_xp_path(ml_dir, 2, None) is None
+    assert "no gw column" in caplog.text

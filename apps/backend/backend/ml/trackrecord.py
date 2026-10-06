@@ -13,7 +13,7 @@ Where a gameweek's prediction comes from — the ``source`` column:
   so a past file is the last pre-deadline write and is never overwritten after
   the fact. A file whose modification time is later than the gameweek's
   deadline (e.g. a manual ``make xp GW=3`` run in October) is not a forecast
-  and is ignored with a warning.
+  and is ignored with a warning, as is a file whose ``gw`` column is not N.
 * ``replay`` — no usable file: the gameweek is rebuilt as it would have been
   served (``matchmodel.served_walk_forward``): trained on the seasons that
   started earlier plus this season's gameweeks before it, and featurised from
@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from backend.ml import matcheval as me
 from backend.ml import matchmodel as mm
@@ -104,10 +105,26 @@ def _deadline(bootstrap: dict | None, gw: int) -> datetime | None:
     return None
 
 
+def _forecast_gws(path: Path) -> set[int]:
+    """The distinct ``gw`` values in an xP file; empty when it has no ``gw`` column."""
+    if "gw" not in pq.read_schema(path).names:
+        return set()
+    return {int(gw) for gw in pd.read_parquet(path, columns=["gw"])["gw"].dropna().unique()}
+
+
 def live_xp_path(ml_dir: Path, gw: int, bootstrap: dict | None) -> Path | None:
-    """``xp_gw{N}.parquet`` when it exists and was written before the deadline."""
+    """``xp_gw{N}.parquet`` when it forecasts GW N and was written before the deadline.
+
+    A file whose ``gw`` column is not exactly ``{N}`` (renamed or mis-written)
+    is not GW N's forecast and is ignored with a warning.
+    """
     path = ml_dir / f"xp_gw{gw}.parquet"
     if not path.exists():
+        return None
+    forecast = _forecast_gws(path)
+    if forecast != {gw}:
+        logger.warning("%s forecasts GW %s, not GW%d; not a live forecast, replaying instead",
+                       path.name, sorted(forecast) or "unknown (no gw column)", gw)
         return None
     deadline = _deadline(bootstrap, gw)
     if deadline is not None:
