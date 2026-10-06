@@ -181,11 +181,11 @@ def club_moves(bootstrap: dict, seasons: pd.DataFrame,
 
     Codes without a prior-season row are absent — callers read that as None
     (new to the league, nothing to compare). A seasons table without a
-    ``code`` column yields no flags at all.
+    ``code`` column yields no flags at all; rows with a null code are skipped.
     """
     if "code" not in seasons.columns:
         return {}
-    last = seasons[seasons["season"] == prior_season]
+    last = seasons[(seasons["season"] == prior_season) & seasons["code"].notna()]
     prior_club = dict(zip(last["code"].astype(int), last["team_name"]))
     club_names = {t["id"]: t.get("name") for t in bootstrap.get("teams", [])}
     return {int(el["code"]): prior_club[el["code"]] != club_names.get(el.get("team"))

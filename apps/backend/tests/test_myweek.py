@@ -275,8 +275,8 @@ def test_warning_codes_match_the_fixture_shared_with_go():
     """The Go TUI and tool note read the same file, so a renamed or added
     code fails both suites instead of drifting silently."""
     shared = json.loads(SHARED_WARNING_CODES.read_text())["warning_codes"]
-    assert [mw.WARNING_NO_VALUE, mw.WARNING_BLANK_GW,
-            mw.WARNING_AVAILABILITY, mw.WARNING_HEURISTIC_XP] == shared
+    assert [mw.WARNING_DEPARTED, mw.WARNING_ROLE_OVERRIDE, mw.WARNING_NO_VALUE,
+            mw.WARNING_BLANK_GW, mw.WARNING_AVAILABILITY, mw.WARNING_HEURISTIC_XP] == shared
     declared = {value for name, value in vars(mw).items() if name.startswith("WARNING_")}
     assert declared == set(shared)
 
@@ -323,3 +323,106 @@ def test_scoring_source_note_alone_is_still_reported(tmp_path):
     players = _xp_world(tmp_path, _model_frame([(10, 7.0)]))
     heur = players[players["web_name"] == "Heur"].iloc[0]
     assert [code for code, _ in mw.player_warning_items(heur)] == [mw.WARNING_HEURISTIC_XP]
+
+
+# ---- role signals: departed players and role_overrides.json -----------------
+
+def _role_squad(tmp_path, gw_xp=None):
+    """Three MIDs I own: Covered, Heur and Mystery (see ``_xp_world``)."""
+    players = _xp_world(tmp_path, gw_xp)
+    status = {"element_status": [{"element": e, "owner": 42} for e in (1, 2, 3)]}
+    return players, status
+
+
+def test_departed_squad_player_always_needs_attention(tmp_path):
+    players, status = _role_squad(tmp_path)
+    players.loc[players["web_name"] == "Heur", ["status", "news", "availability"]] = [
+        "u", "Has joined Elsewhere FC", 0.0]
+    week = mw.build_my_week(players, status, 42)
+    att = {p["web_name"]: p for p in week["attention"]}
+    assert att["Heur"]["warning_codes"] == [mw.WARNING_DEPARTED]     # not doubled as availability
+    assert att["Heur"]["warnings"] == [
+        "departed — no longer in the league, drop him — Has joined Elsewhere FC"]
+
+
+def test_role_override_fact_is_listed_and_drives_gw_xp(tmp_path):
+    frame = _model_frame([(10, 7.0)]).assign(xp_started=8.0, xp_cameo=1.0, num_fixtures=1)
+    players, status = _role_squad(tmp_path, frame)
+    overrides = [{"player": "Covered", "team": "ARS", "p_start": 0.25, "fact": "4th-choice now"}]
+    players, report = mw.apply_role_overrides(players, overrides, target_gw=4)
+    assert report["overrides_applied"] == ["Covered"]
+    week = mw.build_my_week(players, status, 42)
+    covered = next(p for p in week["xi"] + week["bench"] if p["web_name"] == "Covered")
+    assert covered["gw_xp"] == 2.0 and covered["p_start"] == 0.25      # 0.25 x 8.0
+    assert covered["role_override"] == "4th-choice now"
+    assert covered["warning_codes"] == [mw.WARNING_ROLE_OVERRIDE]
+    assert covered["warnings"] == ["role override: p_start 0.25 — 4th-choice now"]
+    att = {p["web_name"]: p for p in week["attention"]}
+    assert att["Covered"]["warnings"] == covered["warnings"]
+    others = [p for p in week["xi"] + week["bench"] if p["web_name"] != "Covered"]
+    assert all(p["role_override"] is None for p in others)
+
+
+def test_override_ruling_a_player_out_keeps_him_off_the_xi(tmp_path):
+    """Regression (the Maddison case): flagged out in role_overrides.json but
+    status "a" in the bootstrap, he took an XI slot from a fit player."""
+    elements, projections = [], []
+    for code, pos_type in enumerate([1, 1] + [2] * 5 + [3] * 5 + [4] * 3, start=100):
+        elements.append({"id": code, "code": code, "web_name": f"P{code}",
+                         "element_type": pos_type, "team": 1, "status": "a"})
+        projections.append({"code": code, "projected_points": 190.0 - code % 100})
+    _, players = _world(tmp_path, elements, projections)
+    status = {"element_status": [{"element": e["id"], "owner": 42} for e in elements]}
+    best_mid = "P107"                                   # highest-projected MID
+    assert best_mid in {p["web_name"] for p in mw.build_my_week(players, status, 42)["xi"]}
+
+    overrides = [{"player": best_mid, "team": "ARS", "p_start": 0.0, "return_gw": 9,
+                  "fact": "shoulder fracture"}]
+    players, _ = mw.apply_role_overrides(players, overrides, target_gw=4)
+    week = mw.build_my_week(players, status, 42)
+    assert best_mid not in {p["web_name"] for p in week["xi"]}
+    benched = next(p for p in week["bench"] if p["web_name"] == best_mid)
+    assert benched["gw_xp"] == 0.0
+    assert benched["warnings"] == ["role override: p_start 0 — shoulder fracture"]
+
+
+def test_xi_selection_value_treats_a_zero_override_as_unavailable():
+    fit = pd.Series({"availability": 1.0, "gw_xp": 0.0, "role_override_p_start": 0.0})
+    doubt = pd.Series({"availability": 1.0, "gw_xp": 1.5, "role_override_p_start": 0.3})
+    plain = pd.Series({"availability": 1.0, "gw_xp": 1.5, "role_override_p_start": float("nan")})
+    assert mw.xi_selection_value(fit) == -1.0
+    assert mw.xi_selection_value(doubt) == 1.5 and mw.xi_selection_value(plain) == 1.5
+
+
+def test_rows_carry_minutes_and_club_move_and_tolerate_no_overrides(tmp_path):
+    bootstrap = {
+        "teams": TEAMS, "fixtures": {"4": [{"team_h": 1, "team_a": 2}]},
+        "elements": [{"id": 1, "code": 10, "web_name": "Mover", "element_type": 3,
+                      "team": 1, "status": "a"}]}
+    proj = tmp_path / "p.json"
+    proj.write_text(json.dumps([{"code": 10, "projected_points": 76.0}]))
+    seasons = pd.concat([SEASONS, pd.DataFrame([
+        {"season": "2025-26", "code": 10, "team_name": "Wolves", "total_points": 0}])])
+    panel = pd.DataFrame([{"season": "2026-27", "code": 10, "gw": gw, "minutes": 30}
+                          for gw in (1, 2, 3)])
+    players = mw.gw_xp_table(bootstrap, seasons, proj, season_panel=panel)
+    week = mw.build_my_week(players, {"element_status": [{"element": 1, "owner": 42}]}, 42)
+    row = (week["xi"] + week["bench"])[0]
+    assert row["club_moved"] is True and row["expected_minutes"] == 30.0
+    assert row["role_override"] is None and row["warnings"] == []
+    json.dumps(week)                                    # plain JSON types only
+
+
+def test_cli_writes_override_report_and_attention(weekly_cli_root, weekly_cli_argv, tmp_path, capsys):
+    ml_dir = weekly_cli_root / "derived/2026-27/ml"
+    ml_dir.mkdir(parents=True, exist_ok=True)
+    (ml_dir / "role_overrides.json").write_text(json.dumps({"overrides": [
+        {"player": "MyFWD", "team": "WOL", "p_start": 0.0, "return_gw": 9, "fact": "out"},
+        {"player": "Ghost", "team": "ARS", "p_start": 0.5}]}))
+    out = tmp_path / "my_week.json"
+    assert mw.main(weekly_cli_argv(out, "heuristic")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["overrides_applied"] == ["MyFWD"] and doc["overrides_unmatched"] == ["Ghost"]
+    assert doc["overrides_expired"] == []
+    assert doc["attention"][0]["warning_codes"] == [mw.WARNING_ROLE_OVERRIDE]
+    assert "role overrides: applied MyFWD; unmatched Ghost; expired -" in capsys.readouterr().out

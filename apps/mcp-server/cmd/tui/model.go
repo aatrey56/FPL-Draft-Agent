@@ -1388,6 +1388,8 @@ func liveCount(s snapshot) int {
 // index-aligned with the human-readable warnings text. Pinned, with the Python
 // constants, to testdata/my_week_warning_codes.json at the repo root.
 const (
+	warnDeparted     = "departed"
+	warnRoleOverride = "role_override"
 	warnNoValue      = "no_value"
 	warnBlankGW      = "blank_gw"
 	warnAvailability = "availability"
@@ -1433,6 +1435,10 @@ func attentionItem(name string, warnings, codes []string) (railItem, bool) {
 	}
 	item := railItem{Glyph: "⚠", Name: name, Note: text}
 	switch code {
+	case warnDeparted:
+		item.Glyph, item.Note = "✗", "departed — drop"
+	case warnRoleOverride:
+		item.Note = strings.TrimPrefix(text, "role override: ")
 	case warnNoValue:
 		item.Glyph, item.Note = "?", "unprojected"
 	case warnHeuristicXP:

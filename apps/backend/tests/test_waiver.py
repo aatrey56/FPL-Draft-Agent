@@ -702,6 +702,9 @@ def test_seasons_table_without_codes_flags_nobody(tmp_path):
         {"id": 1, "code": 300, "web_name": "A", "element_type": 2, "team": 1, "status": "a"}]}
     table = wv.build_player_table(bootstrap, SEASONS, proj_path)   # SEASONS has no code column
     assert table.loc[0, "club_moved"] is None
+    # a table mixing coded and code-less rows flags only the coded player
+    mixed = pd.concat([SEASONS, ROLE_SEASONS], ignore_index=True)
+    assert wv.club_moves(bootstrap, mixed) == {300: True}
 
 
 # ---------------------------------------------------------------------------
