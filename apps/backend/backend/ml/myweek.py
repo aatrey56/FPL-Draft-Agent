@@ -64,24 +64,29 @@ def gw_xp_table(bootstrap: dict, seasons: pd.DataFrame,
 # human-readable ``warnings`` text (consumers such as the TUI match on these,
 # never on the prose, which is free to change). The full set is pinned in
 # testdata/my_week_warning_codes.json, which the Go tests read too.
+# Declared, and emitted, most actionable first: a consumer that shows one
+# warning per player (the TUI rail) must lead with "he cannot play", not with
+# a note about where his number came from.
 WARNING_NO_VALUE = "no_value"
-WARNING_HEURISTIC_XP = "heuristic_xp"
 WARNING_BLANK_GW = "blank_gw"
 WARNING_AVAILABILITY = "availability"
+WARNING_HEURISTIC_XP = "heuristic_xp"
 
 
 def player_warning_items(row: pd.Series) -> list[tuple[str, str]]:
-    """Deadline-relevant flags for one squad player as (code, text) pairs."""
+    """Deadline-relevant flags for one squad player as (code, text) pairs,
+    most actionable first; the scoring-source note (``heuristic_xp``) is
+    always last."""
     items = []
     if row["xp_source"] == "none":
         items.append((WARNING_NO_VALUE, "no value — judge manually (player_card)"))
-    elif row["xp_source"] == "heuristic" and row["expects_model"]:
-        items.append((WARNING_HEURISTIC_XP, "no model xP — heuristic"))
     if row["gw_fixture_load"] == 0:
         items.append((WARNING_BLANK_GW, "blank gameweek: no fixture"))
     if row["status"] != "a":
         news = f" — {row['news']}" if row["news"] else ""
         items.append((WARNING_AVAILABILITY, f"availability [{row['status']}]{news}"))
+    if row["xp_source"] == "heuristic" and row["expects_model"]:
+        items.append((WARNING_HEURISTIC_XP, "no model xP — heuristic"))
     return items
 
 

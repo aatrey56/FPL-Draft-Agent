@@ -275,8 +275,8 @@ def test_warning_codes_match_the_fixture_shared_with_go():
     """The Go TUI and tool note read the same file, so a renamed or added
     code fails both suites instead of drifting silently."""
     shared = json.loads(SHARED_WARNING_CODES.read_text())["warning_codes"]
-    assert [mw.WARNING_NO_VALUE, mw.WARNING_HEURISTIC_XP,
-            mw.WARNING_BLANK_GW, mw.WARNING_AVAILABILITY] == shared
+    assert [mw.WARNING_NO_VALUE, mw.WARNING_BLANK_GW,
+            mw.WARNING_AVAILABILITY, mw.WARNING_HEURISTIC_XP] == shared
     declared = {value for name, value in vars(mw).items() if name.startswith("WARNING_")}
     assert declared == set(shared)
 
@@ -293,3 +293,33 @@ def test_warning_codes_are_stable_and_aligned_with_text(tmp_path):
     assert att["Heur"]["warning_codes"] == [mw.WARNING_HEURISTIC_XP]
     for row in week["xi"] + week["bench"]:
         assert len(row["warning_codes"]) == len(row["warnings"])
+
+
+def test_actionable_warnings_come_before_the_scoring_source_note(tmp_path):
+    """Review regression: for a projected player in a blank gameweek the
+    heuristic_xp note came first, and the TUI rail shows only the first
+    warning — so "no fixture" was hidden behind "heuristic xP"."""
+    elements = [
+        {"id": 1, "code": 10, "web_name": "Covered", "element_type": 3, "team": 1, "status": "a"},
+        {"id": 2, "code": 11, "web_name": "Blanked", "element_type": 3, "team": 2, "status": "a"},
+        {"id": 3, "code": 12, "web_name": "BlankedHurt", "element_type": 3, "team": 2,
+         "status": "i", "news": "Knee"}]
+    bootstrap = {"teams": TEAMS, "fixtures": {"4": [{"team_h": 1, "team_a": 1}]},  # team 2 blanks
+                 "elements": elements}
+    proj = tmp_path / "p.json"
+    proj.write_text(json.dumps([{"code": code, "projected_points": 76.0} for code in (10, 11, 12)]))
+    players = mw.gw_xp_table(bootstrap, SEASONS, proj, gw_xp=_model_frame([(10, 7.0)]))
+    status = {"element_status": [{"element": e, "owner": 42} for e in (1, 2, 3)]}
+    att = {p["web_name"]: p for p in mw.build_my_week(players, status, 42)["attention"]}
+    assert "Covered" not in att
+    assert att["Blanked"]["warning_codes"] == [mw.WARNING_BLANK_GW, mw.WARNING_HEURISTIC_XP]
+    assert att["Blanked"]["warnings"][0] == "blank gameweek: no fixture"
+    assert att["BlankedHurt"]["warning_codes"] == [
+        mw.WARNING_BLANK_GW, mw.WARNING_AVAILABILITY, mw.WARNING_HEURISTIC_XP]
+
+
+def test_scoring_source_note_alone_is_still_reported(tmp_path):
+    """Edge case: with nothing more actionable, heuristic_xp is the only warning."""
+    players = _xp_world(tmp_path, _model_frame([(10, 7.0)]))
+    heur = players[players["web_name"] == "Heur"].iloc[0]
+    assert [code for code, _ in mw.player_warning_items(heur)] == [mw.WARNING_HEURISTIC_XP]

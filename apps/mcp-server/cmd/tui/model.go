@@ -1389,15 +1389,29 @@ func liveCount(s snapshot) int {
 // constants, to testdata/my_week_warning_codes.json at the repo root.
 const (
 	warnNoValue      = "no_value"
-	warnHeuristicXP  = "heuristic_xp"
 	warnBlankGW      = "blank_gw"
 	warnAvailability = "availability"
+	warnHeuristicXP  = "heuristic_xp"
 )
 
+// attentionIndex picks which of a player's warnings the rail shows: the first
+// that is not the scoring-source note (heuristic_xp), which only says where
+// the number came from and must not hide a blank GW or an injury. my_week
+// emits that note last; files written before that ordering have it first.
+func attentionIndex(codes []string) int {
+	for i, code := range codes {
+		if code != warnHeuristicXP {
+			return i
+		}
+	}
+	return 0
+}
+
 // attentionItem turns one my_week attention entry into a needs-you rail item,
-// using its first warning. It matches on the stable warning code when the file
-// carries index-aligned warning_codes, and falls back to the prose for files
-// written before codes existed ("no projection" was renamed "no value").
+// using its most actionable warning (attentionIndex). It matches on the stable
+// warning code when the file carries index-aligned warning_codes, and falls
+// back to the first warning's prose for files written before codes existed
+// ("no projection" was renamed "no value").
 func attentionItem(name string, warnings, codes []string) (railItem, bool) {
 	if len(warnings) == 0 {
 		return railItem{}, false
@@ -1405,7 +1419,8 @@ func attentionItem(name string, warnings, codes []string) (railItem, bool) {
 	text := warnings[0]
 	code := ""
 	if len(codes) == len(warnings) {
-		code = codes[0]
+		shown := attentionIndex(codes)
+		text, code = warnings[shown], codes[shown]
 	} else {
 		switch {
 		case strings.Contains(text, "no value"), strings.Contains(text, "no projection"):

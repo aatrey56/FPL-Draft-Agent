@@ -431,6 +431,10 @@ func TestAttentionItemMatchesStableCodes(t *testing.T) {
 		{"coded blank", []string{"blank gameweek: no fixture"}, []string{"blank_gw"}, "◇", "blank GW"},
 		{"coded availability", []string{"availability [d] — Knock"}, []string{"availability"}, "⚠", "[d] — Knock"},
 		{"coded heuristic", []string{"no model xP — heuristic"}, []string{"heuristic_xp"}, "⚠", "heuristic xP"},
+		// one rail line per player: the scoring-source note never hides a blank GW or an injury
+		{"blank beats heuristic", []string{"blank gameweek: no fixture", "no model xP — heuristic"}, []string{"blank_gw", "heuristic_xp"}, "◇", "blank GW"},
+		{"old order: heuristic first", []string{"no model xP — heuristic", "blank gameweek: no fixture"}, []string{"heuristic_xp", "blank_gw"}, "◇", "blank GW"},
+		{"old order: heuristic then availability", []string{"no model xP — heuristic", "availability [i] — Knee"}, []string{"heuristic_xp", "availability"}, "⚠", "[i] — Knee"},
 		// the code wins even if the prose is reworded again
 		{"code beats prose", []string{"needs a human look"}, []string{"no_value"}, "?", "unprojected"},
 		// files written before warning_codes existed
@@ -538,7 +542,7 @@ func sharedWarningCodes(t *testing.T) []string {
 }
 
 func TestWarningCodesMatchSharedFixture(t *testing.T) {
-	got := []string{warnNoValue, warnHeuristicXP, warnBlankGW, warnAvailability}
+	got := []string{warnNoValue, warnBlankGW, warnAvailability, warnHeuristicXP}
 	if want := sharedWarningCodes(t); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("TUI warning codes %v, shared fixture %v", got, want)
 	}
