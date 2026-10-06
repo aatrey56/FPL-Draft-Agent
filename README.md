@@ -74,6 +74,29 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   whichever ranking the served file used (keyed on its `scorer`). Mid-gameweek (GW N in play) both scorers now plan for
   N+1: the heuristic's fixture loads and my_week's `gw` used to start at the
   locked GW N.
+- **Role signals** (`waiver_plan` / `my_week`, both scorers): a season
+  projection only knows last season's role at last season's club.
+  `club_moved` = the bootstrap club differs from the 2025-26 club in
+  `player_seasons` (null = new to the league); `expected_minutes` = mean
+  minutes over the last 5 finished GWs of the season panel (a missing row is
+  0; null before GW1 finishes). For club-movers only, `ros_adj = ros_points ×
+  clip(expected_minutes / 60, 0.15, 1.0)` (`ROLE_MINUTES_FULL`, `ROLE_FLOOR`
+  in `waiver.py`), and `season_gain`, the drop pick and the heuristic per-GW
+  baseline use `ros_adj`; `ros_points` stays in the output. An injured
+  club-mover is under-valued (accepted, conservative). The drop pick sorts on
+  `(status != "u", ros_adj, xp_next)`: a departed squad player is always the
+  drop at his position, and `drop_candidates` lists the top 3 per position.
+  An optional `data/derived/<season>/ml/role_overrides.json`
+  (`{"overrides": [{"player": "<web_name>", "team": "<short name>",
+  "p_start": 0.4, "fact": "...", "return_gw": 9, "code": 123}]}` — `code`,
+  `fact` and `return_gw` optional) is hand-maintained team news for the next
+  GW: `xp_next = p_start × xP-if-he-starts` (cameo term dropped), `return_gw`
+  still ahead forces 0 (and keeps him off the my_week XI), and an entry whose
+  `return_gw` has arrived is expired and ignored. Every entry is accounted
+  for in `overrides_applied` / `overrides_unmatched` / `overrides_expired`;
+  entries without a `return_gw` never expire, so prune the file by hand.
+  my_week lists the override `fact` and any departed squad player under
+  `attention` (warning codes `role_override`, `departed`).
 - Players the model cannot value (long injury last season, promoted, new
   signings) are **surfaced for human judgment, never scored as zero** — the
   tools refuse to guess rather than quietly recommend dropping a returning star.
