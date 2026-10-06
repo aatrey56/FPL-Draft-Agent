@@ -745,6 +745,25 @@ def test_cli_tolerates_empty_season_panel_beside_archive(tmp_path):
     assert out.exists()
 
 
+def test_cli_eval_out_directory_gets_the_default_file_name(tmp_path):
+    archive, live = tmp_path / "archive.parquet", tmp_path / "live.parquet"
+    _panel().to_parquet(archive)
+    _live_panel().to_parquet(live)
+    out_dir = tmp_path / "ml"
+    out_dir.mkdir()
+    assert mm.main(["--eval-season", LIVE_SEASON, "--eval-gws", "2-3",
+                    "--panel", str(archive), str(live), "--out", str(out_dir)]) == 0
+    written = pd.read_csv(out_dir / "match_model_eval_gw2-3.csv")
+    assert list(written.columns) == ["pool", "position", "predictor", "spearman",
+                                     "top_frac", "mae", "gws", "window"]
+
+
+def test_out_path_keeps_an_explicit_file_and_the_default():
+    default = Path("derived/ml/eval.csv")
+    assert mm._out_path(None, default) == default
+    assert mm._out_path(Path("elsewhere.csv"), default) == Path("elsewhere.csv")
+
+
 def test_next_gameweek_list_shape_mid_gw_prefers_is_next():
     events = [{"id": 5, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"},
               {"id": 6, "finished": False, "is_next": True,

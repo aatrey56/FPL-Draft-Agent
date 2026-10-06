@@ -869,6 +869,14 @@ def _print_live_eval(report: pd.DataFrame, calibration: pd.DataFrame,
     print(calibration.round(3).to_string(index=False))
 
 
+def _out_path(out: Path | None, default: Path) -> Path:
+    """``--out`` resolved: absent → ``default``; an existing directory → the
+    default file name inside it; anything else is the file to write."""
+    if out is None:
+        return default
+    return out / default.name if out.is_dir() else out
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     root = _repo_root()
@@ -898,7 +906,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--season", type=str, default=None,
                         help="season for --gw, e.g. 2026-27 (also picks the data root)")
     parser.add_argument("--bootstrap", type=Path, default=None)
-    parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--out", type=Path, default=None,
+                        help="output file, or a directory to write the default "
+                             "file name into")
     args = parser.parse_args(argv)
 
     # A missing or empty panel (new season, no finished GW yet) is skipped, not concatenated.
@@ -918,7 +928,7 @@ def main(argv: list[str] | None = None) -> int:
         frame = build_match_frame(panel)
         result = _print_backtest(frame, args.min_gw, args.top_fraction,
                                  args.selection_max_gw)
-        out = args.out or root / "data/derived/ml/match_model_backtest.csv"
+        out = _out_path(args.out, root / "data/derived/ml/match_model_backtest.csv")
         out.parent.mkdir(parents=True, exist_ok=True)
         result.to_csv(out, index=False)
         logger.info("wrote %s", out)
@@ -933,8 +943,8 @@ def main(argv: list[str] | None = None) -> int:
             panel, args.eval_season, args.eval_gws, args.top_fraction)
         _print_live_eval(report, calibration, args.eval_season, args.eval_gws)
         span = f"gw{min(args.eval_gws)}-{max(args.eval_gws)}"
-        out = args.out or (root / f"data/derived/{args.eval_season}/ml"
-                           / f"match_model_eval_{span}.csv")
+        out = _out_path(args.out, root / f"data/derived/{args.eval_season}/ml"
+                        / f"match_model_eval_{span}.csv")
         out.parent.mkdir(parents=True, exist_ok=True)
         report[["pool", "position", "predictor", "spearman", "top_frac", "mae",
                 "gws", "window"]].to_csv(out, index=False)
@@ -953,7 +963,7 @@ def main(argv: list[str] | None = None) -> int:
     gw = next_gameweek(bootstrap) if args.gw == "next" else int(args.gw)
     scored = build_gw_xp(panel, bootstrap, gw, season,
                          alpha=args.alpha or dict(SELECTED_ALPHAS))
-    out = args.out or root / f"data/derived/{season}/ml/xp_gw{gw}.parquet"
+    out = _out_path(args.out, root / f"data/derived/{season}/ml/xp_gw{gw}.parquet")
     out.parent.mkdir(parents=True, exist_ok=True)
     scored.to_parquet(out, index=False)
     logger.info("wrote %s (%d players)", out, len(scored))
