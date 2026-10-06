@@ -446,3 +446,36 @@ func TestAttentionItemMatchesStableCodes(t *testing.T) {
 		t.Error("no warnings must yield no rail item")
 	}
 }
+
+func TestWireRecWithUnknownSeasonGain(t *testing.T) {
+	derived := t.TempDir()
+	write(t, filepath.Join(derived, "ml/waiver_plan.json"), map[string]any{
+		"recommendations": []map[string]any{
+			{"add": "Promoted", "add_team": "HUL", "drop": "Weak", "label": "stream",
+				"season_gain": nil, "season_unknown": true, "add_ros": nil, "drop_ros": 40.0},
+			{"add": "Upgrade", "add_team": "ARS", "drop": "Weak", "label": "upgrade",
+				"season_gain": 12.4, "add_ros": 52.4, "drop_ros": 40.0},
+		},
+	})
+	m := newModel(fixtureDir(t), derived, 5, 501, 0)
+	m.w = 160
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	for _, r := range m.snap.NeedsYou {
+		notes = append(notes, r.Note)
+	}
+	if got := strings.Join(notes, "|"); got != "wire · stream · ROS ?|wire · upgrade +12" {
+		t.Fatalf("notes = %q", got)
+	}
+	m.sugSel = 0
+	body := m.sugDetailBody(120)
+	if !strings.Contains(body, "No rest-of-season projection for Promoted") || strings.Contains(body, "+0 is that gap") {
+		t.Fatalf("unknown-season detail:\n%s", body)
+	}
+	m.sugSel = 1
+	if body := m.sugDetailBody(120); !strings.Contains(body, "the +12 is that gap") {
+		t.Fatalf("known-season detail:\n%s", body)
+	}
+}

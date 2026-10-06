@@ -68,12 +68,15 @@ type railItem struct {
 	// Wire recommendations carry the full trade math for the detail view.
 	Drop       string
 	SeasonGain float64
-	Next3Gain  float64
-	AddROS     float64
-	DropROS    float64
-	AddNext3   float64
-	Confidence string
-	News       string
+	// SeasonUnknown: the add has no rest-of-season projection (promoted
+	// club, new signing), so SeasonGain/AddROS are not numbers to quote.
+	SeasonUnknown bool
+	Next3Gain     float64
+	AddROS        float64
+	DropROS       float64
+	AddNext3      float64
+	Confidence    string
+	News          string
 }
 
 type fixtureRow struct {
@@ -982,17 +985,18 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	}
 	var plan struct {
 		Recommendations []struct {
-			Add        string  `json:"add"`
-			AddTeam    string  `json:"add_team"`
-			Drop       string  `json:"drop"`
-			Label      string  `json:"label"`
-			SeasonGain float64 `json:"season_gain"`
-			Next3Gain  float64 `json:"next3_gain"`
-			AddROS     float64 `json:"add_ros"`
-			DropROS    float64 `json:"drop_ros"`
-			AddNext3   float64 `json:"add_next3_xp"`
-			Confidence string  `json:"confidence"`
-			News       string  `json:"news"`
+			Add           string  `json:"add"`
+			AddTeam       string  `json:"add_team"`
+			Drop          string  `json:"drop"`
+			Label         string  `json:"label"`
+			SeasonGain    float64 `json:"season_gain"` // null when season_unknown
+			Next3Gain     float64 `json:"next3_gain"`
+			SeasonUnknown bool    `json:"season_unknown"`
+			AddROS        float64 `json:"add_ros"`
+			DropROS       float64 `json:"drop_ros"`
+			AddNext3      float64 `json:"add_next3_xp"`
+			Confidence    string  `json:"confidence"`
+			News          string  `json:"news"`
 		} `json:"recommendations"`
 	}
 	if err := readJSON(filepath.Join(derived, "ml/waiver_plan.json"), &plan); err == nil {
@@ -1000,11 +1004,15 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			if i >= 3 {
 				break
 			}
+			note := fmt.Sprintf("wire · %s +%.0f", r.Label, r.SeasonGain)
+			if r.SeasonUnknown {
+				note = fmt.Sprintf("wire · %s · ROS ?", r.Label)
+			}
 			snap.NeedsYou = append(snap.NeedsYou, railItem{
-				Glyph: "↑", Name: r.Add, Team: r.AddTeam,
-				Note: fmt.Sprintf("wire · %s +%.0f", r.Label, r.SeasonGain),
-				Drop: r.Drop, SeasonGain: r.SeasonGain, Next3Gain: r.Next3Gain,
-				AddROS: r.AddROS, DropROS: r.DropROS, AddNext3: r.AddNext3,
+				Glyph: "↑", Name: r.Add, Team: r.AddTeam, Note: note,
+				Drop: r.Drop, SeasonGain: r.SeasonGain, SeasonUnknown: r.SeasonUnknown,
+				Next3Gain: r.Next3Gain,
+				AddROS:    r.AddROS, DropROS: r.DropROS, AddNext3: r.AddNext3,
 				Confidence: r.Confidence, News: r.News})
 		}
 	}

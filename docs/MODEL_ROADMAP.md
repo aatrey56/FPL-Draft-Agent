@@ -331,7 +331,8 @@ heuristic for everyone with a WARNING, and the JSON says so: `scorer` is the
 scorer actually used (`heuristic` after a fallback), beside
 `scorer_requested`, `xp_fallback` and `xp_fallback_reason`. Waiver recs rank
 by `next1_gain`; a free agent with no ROS projection but a model `xp_next`
-(promoted clubs) is ranked too, with `season_gain` 0 (at most a `stream`);
+(promoted clubs) is ranked too, with `season_gain` null and `season_unknown`
+true (it counts as 0 for the label and ordering, so at most a `stream`);
 `next3_xp` is still heuristic (horizons are a later section) and the drop
 pick is unchanged. Known scale mismatch: model xP averages higher than the
 `ros/38` heuristic fallback, so a heuristic-valued drop flatters model-valued

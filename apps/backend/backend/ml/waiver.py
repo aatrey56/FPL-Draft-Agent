@@ -32,8 +32,9 @@ Design (v1, pre-GW1-honest):
   (no next-GW gain, better over the season — patience play); holds are listed
   after every positive-next1 recommendation. A free agent with no ROS
   projection but a model ``xp_next`` (e.g. a promoted club's starter) is still
-  ranked, with ``season_gain`` 0 and ``add_ros`` null, so he is at most a
-  ``stream``. With no match xP supplied (the
+  ranked, with ``season_gain`` and ``add_ros`` null and ``season_unknown``
+  true; his season gain counts as 0 for the label and ordering, so he is at
+  most a ``stream``. With no match xP supplied (the
   heuristic scorer) ``recommend`` keeps its original ranking (``rank_by=
   "legacy"``: labels from ``next3_gain``, ordered by the larger gain) so the
   heuristic output is unchanged.
@@ -386,7 +387,9 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
     positive-next1 rec, ordered by ``season_gain``. The label encodes the
     balance so a streamer is never confused with a season upgrade. A free
     agent without a ROS projection is ranked only when the match model
-    values him (``xp_source == "model"``); his ``season_gain`` is 0.
+    values him (``xp_source == "model"``); his ``season_gain`` is emitted as
+    None with ``season_unknown`` True (every other rec carries False) and
+    counts as 0 for the label and the ordering.
 
     ``rank_by="legacy"`` keeps the pre-xP behaviour for the heuristic scorer
     (labels from ``next3_gain``, ranked by the larger of ``next3_gain`` and
@@ -405,8 +408,9 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
                      & squad["ros_points"].notna()]
         # A free agent with no ROS projection (promoted club, new signing,
         # under last season's minutes floor) is still rankable on the next GW
-        # when the match model values him: his season_gain is taken as 0, so
-        # he can only ever label as a "stream". The legacy ranking has no
+        # when the match model values him: his season gain is unknown — it
+        # counts as 0 here, so he can only ever label as a "stream", and is
+        # emitted as null with season_unknown so no consumer reads it as 0. The legacy ranking has no
         # next-GW model value and still skips him.
         model_only = (rank_by != "legacy" and pd.isna(fa["ros_points"])
                       and fa["xp_source"] == "model")
@@ -436,7 +440,8 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             "drop": drop["web_name"],
             "next1_gain": round(next1_gain, 2),
             "next3_gain": round(next3_gain, 1),
-            "season_gain": round(season_gain, 1),
+            "season_gain": None if model_only else round(season_gain, 1),
+            "season_unknown": model_only,
             "label": label,
             "add_xp_next": fa["xp_next"], "drop_xp_next": drop["xp_next"],
             "add_p_start": fa["p_start"], "add_xp_source": fa["xp_source"],
@@ -449,7 +454,8 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
     if rank_by == "legacy":
         recs.sort(key=lambda r: -max(r["next3_gain"], r["season_gain"]))
     else:
-        recs.sort(key=lambda r: (r["label"] == "hold", -r["next1_gain"], -r["season_gain"]))
+        recs.sort(key=lambda r: (r["label"] == "hold", -r["next1_gain"],
+                                 -(r["season_gain"] or 0.0)))
     return recs[:top_n]
 
 
@@ -572,8 +578,9 @@ def main(argv: list[str] | None = None) -> int:
     print("   label    add                    ->  drop                next1  next3   season  src")
     for r in recs:
         flag = f"  [{r['availability']}] {r['news']}" if r["availability"] != "a" else ""
+        season = "?" if r["season_unknown"] else f"{r['season_gain']:+.1f}"
         print(f"  {r['label']:<8} {r['add']:<18}({r['position']}) -> {r['drop']:<18} "
-              f"{r['next1_gain']:>+6.2f} {r['next3_gain']:>+6.1f} {r['season_gain']:>+7.1f}"
+              f"{r['next1_gain']:>+6.2f} {r['next3_gain']:>+6.1f} {season:>7}"
               f"  {r['add_xp_source']}{flag}")
 
     out = args.out or ml_dir / "waiver_plan.json"

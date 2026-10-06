@@ -352,9 +352,35 @@ def test_model_valued_free_agent_without_ros_is_ranked_as_stream(tmp_path):
     recs = wv.recommend(table, squad)
     noproj = next(r for r in recs if r["add"] == "NoProj")
     assert noproj["add_xp_source"] == "model" and pd.isna(noproj["add_ros"])
-    assert noproj["season_gain"] == 0.0 and noproj["label"] == "stream"
+    assert noproj["season_gain"] is None and noproj["season_unknown"] is True
+    assert noproj["label"] == "stream"
     assert noproj["next1_gain"] > 0 and noproj["drop"] == "MyWeakFWD"
     assert recs[0]["add"] == "NoProj"          # ranked on next1_gain like anyone else
+
+
+def test_season_unknown_is_false_and_gain_numeric_for_projected_adds(tmp_path):
+    table, squad = _model_only_world(tmp_path, [(999, 6.0), (201, 5.0)])
+    recs = wv.recommend(table, squad)
+    projected = [r for r in recs if r["add"] != "NoProj"]
+    assert projected and all(r["season_unknown"] is False for r in projected)
+    assert all(isinstance(r["season_gain"], float) for r in projected)
+
+
+def test_unknown_season_gain_orders_like_zero_among_equal_next1(tmp_path):
+    """Ranking is unchanged by the null: an unknown season gain sorts as 0,
+    below an equal-next1 add with a positive season gain."""
+    table, squad = _model_only_world(tmp_path, [(999, 6.0), (201, 6.0)])
+    table.loc[table["web_name"] == "Streamer", "ros_points"] = 200.0
+    recs = wv.recommend(table, squad)
+    assert [r["add"] for r in recs][:2] == ["Streamer", "NoProj"]
+    assert recs[1]["season_gain"] is None and recs[0]["season_gain"] > 0
+
+
+def test_season_unknown_rec_survives_the_json_round_trip(tmp_path):
+    table, squad = _model_only_world(tmp_path, [(999, 6.0)])
+    doc = json.loads(wv.jsonutil.dumps_strict(wv.recommend(table, squad)))   # the CLI's writer
+    noproj = next(r for r in doc if r["add"] == "NoProj")
+    assert noproj["season_gain"] is None and noproj["season_unknown"] is True
 
 
 def test_model_only_free_agent_with_no_next1_gain_is_not_recommended(tmp_path):
