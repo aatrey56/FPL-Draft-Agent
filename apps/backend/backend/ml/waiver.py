@@ -35,7 +35,9 @@ Design (v1, pre-GW1-honest):
   projection but a model ``xp_next`` (e.g. a promoted club's starter) is still
   ranked, with ``season_gain`` and ``add_ros`` null and ``season_unknown``
   true; his season gain counts as 0 for the label and ordering, so he is at
-  most a ``stream``. With no match xP supplied (the
+  most a ``stream``. His heuristic 3-GW value does not exist either, so
+  ``add_next3_xp`` and ``next3_gain`` are null too (unknown, never "0 minus
+  the drop"). With no match xP supplied (the
   heuristic scorer) ``recommend`` keeps its original ranking (``rank_by=
   "legacy"``: labels from ``next3_gain``, ordered by the larger gain) so the
   heuristic output is unchanged.
@@ -407,7 +409,8 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
     agent without a ROS projection is ranked only when the match model
     values him (``xp_source == "model"``); his ``season_gain`` is emitted as
     None with ``season_unknown`` True (every other rec carries False) and
-    counts as 0 for the label and the ordering.
+    counts as 0 for the label and the ordering; his ``next3_gain`` is None
+    as well, because the 3-GW value is built from the missing projection.
 
     ``rank_by="legacy"`` keeps the pre-xP behaviour for the heuristic scorer
     (labels from ``next3_gain``, ranked by the larger of ``next3_gain`` and
@@ -440,7 +443,9 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             return 0.0 if pd.isna(x) else float(x)
 
         next1_gain = _v(fa["xp_next"]) - _v(drop["xp_next"])
-        next3_gain = _v(fa["next3_xp"]) - _v(drop["next3_xp"])
+        # next3_xp is heuristic (ros/38 based), so a model-only add has none:
+        # the gain is unknown, not "0 minus the drop".
+        next3_gain = None if model_only else _v(fa["next3_xp"]) - _v(drop["next3_xp"])
         season_gain = 0.0 if model_only else _v(fa["ros_points"]) - _v(drop["ros_points"])
         short_gain = next3_gain if rank_by == "legacy" else next1_gain
         if short_gain <= 0 and season_gain <= 0:
@@ -457,7 +462,7 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             "add_team": fa["team"], "position": fa["position"],
             "drop": drop["web_name"],
             "next1_gain": round(next1_gain, 2),
-            "next3_gain": round(next3_gain, 1),
+            "next3_gain": None if next3_gain is None else round(next3_gain, 1),
             "season_gain": None if model_only else round(season_gain, 1),
             "season_unknown": model_only,
             "label": label,
@@ -597,8 +602,9 @@ def main(argv: list[str] | None = None) -> int:
     for r in recs:
         flag = f"  [{r['availability']}] {r['news']}" if r["availability"] != "a" else ""
         season = "?" if r["season_unknown"] else f"{r['season_gain']:+.1f}"
+        next3 = "?" if r["next3_gain"] is None else f"{r['next3_gain']:+.1f}"
         print(f"  {r['label']:<8} {r['add']:<18}({r['position']}) -> {r['drop']:<18} "
-              f"{r['next1_gain']:>+6.2f} {r['next3_gain']:>+6.1f} {season:>7}"
+              f"{r['next1_gain']:>+6.2f} {next3:>6} {season:>7}"
               f"  {r['add_xp_source']}{flag}")
 
     out = args.out or ml_dir / "waiver_plan.json"

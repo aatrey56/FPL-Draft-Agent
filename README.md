@@ -61,7 +61,8 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   and an `xp_fallback_reason`). Waiver recommendations rank by `next1_gain` (next-GW xP of the add
   minus the drop); `hold` recs (no next-GW gain, better ROS) come last.
   A free agent with model xP but no ROS projection (promoted club) is ranked
-  as a `stream` with `season_gain: null` and `season_unknown: true`.
+  as a `stream` with `season_gain: null` and `season_unknown: true`; his
+  `next3_gain` is null too (the 3-GW value is built from the projection).
   `--scorer model` is the default (the 2026-27 GW2-5 live check in
   `docs/MODEL_ROADMAP.md` found the model ahead of every baseline in all
   four positions); `--scorer heuristic` reproduces the pre-xP output exactly

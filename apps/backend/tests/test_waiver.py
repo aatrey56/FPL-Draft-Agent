@@ -388,6 +388,37 @@ def test_season_unknown_rec_survives_the_json_round_trip(tmp_path):
     assert noproj["season_gain"] is None and noproj["season_unknown"] is True
 
 
+def test_next3_gain_is_null_for_an_add_without_a_ros_projection(tmp_path):
+    """Review regression: a model-only add has no heuristic 3-GW value, but
+    its null counted as 0 and next3_gain came out as minus the drop's next3."""
+    table, squad = _model_only_world(tmp_path, [(999, 6.0), (201, 5.0)])
+    recs = wv.recommend(table, squad)
+    noproj = next(r for r in recs if r["add"] == "NoProj")
+    assert pd.isna(noproj["add_next3_xp"]) and noproj["drop_next3_xp"] > 0
+    assert noproj["next3_gain"] is None
+    streamer = next(r for r in recs if r["add"] == "Streamer")     # projected: a number
+    assert streamer["next3_gain"] == pytest.approx(
+        streamer["add_next3_xp"] - streamer["drop_next3_xp"], abs=0.05)
+    doc = json.loads(wv.jsonutil.dumps_strict(recs))                # the CLI's writer
+    assert next(r for r in doc if r["add"] == "NoProj")["next3_gain"] is None
+
+
+def test_cli_prints_a_question_mark_for_an_unknown_next3_gain(
+        weekly_cli_root, weekly_cli_argv, tmp_path, capsys):
+    xp_path = weekly_cli_root / "derived/2026-27/ml/xp_gw6.parquet"
+    _gw_xp([(103, 6.0), (102, 5.0), (101, 1.0)], gw=6).to_parquet(xp_path)
+    out = tmp_path / "out" / "waiver_plan.json"
+    assert wv.main(weekly_cli_argv(out, "model")) == 0
+    recs = {r["add"]: r for r in json.loads(out.read_text())["recommendations"]}
+    assert recs["Promoted"]["next3_gain"] is None and recs["Promoted"]["add_next3_xp"] is None
+    assert isinstance(recs["FreeFWD"]["next3_gain"], float)
+    lines = {line.split()[1]: line.split()
+             for line in capsys.readouterr().out.splitlines() if "(FWD) ->" in line}
+    # columns: label, add, (pos), ->, drop, next1, next3, season, src
+    assert lines["Promoted"][6:8] == ["?", "?"]
+    assert lines["FreeFWD"][6].startswith(("+", "-"))
+
+
 def test_model_only_free_agent_with_no_next1_gain_is_not_recommended(tmp_path):
     table, squad = _model_only_world(tmp_path, [(999, 0.1)])
     assert all(r["add"] != "NoProj" for r in wv.recommend(table, squad))

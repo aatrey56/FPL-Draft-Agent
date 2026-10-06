@@ -72,11 +72,14 @@ type railItem struct {
 	// club, new signing), so SeasonGain/AddROS are not numbers to quote.
 	SeasonUnknown bool
 	Next3Gain     float64
-	AddROS        float64
-	DropROS       float64
-	AddNext3      float64
-	Confidence    string
-	News          string
+	// Next3Unknown: the add has no 3-GW value (it is built from the missing
+	// projection), so Next3Gain/AddNext3 are not numbers to quote.
+	Next3Unknown bool
+	AddROS       float64
+	DropROS      float64
+	AddNext3     float64
+	Confidence   string
+	News         string
 }
 
 type fixtureRow struct {
@@ -993,13 +996,15 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			Drop          string  `json:"drop"`
 			Label         string  `json:"label"`
 			SeasonGain    float64 `json:"season_gain"` // null when season_unknown
-			Next3Gain     float64 `json:"next3_gain"`
 			SeasonUnknown bool    `json:"season_unknown"`
 			AddROS        float64 `json:"add_ros"`
 			DropROS       float64 `json:"drop_ros"`
-			AddNext3      float64 `json:"add_next3_xp"`
-			Confidence    string  `json:"confidence"`
-			News          string  `json:"news"`
+			// Null when the add has no ROS projection: the 3-GW value is
+			// heuristic, so there is nothing to compare (not a zero).
+			Next3Gain  *float64 `json:"next3_gain"`
+			AddNext3   *float64 `json:"add_next3_xp"`
+			Confidence string   `json:"confidence"`
+			News       string   `json:"news"`
 		} `json:"recommendations"`
 	}
 	if err := readJSON(filepath.Join(derived, "ml/waiver_plan.json"), &plan); err == nil {
@@ -1011,12 +1016,16 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			if r.SeasonUnknown {
 				note = fmt.Sprintf("wire · %s · ROS ?", r.Label)
 			}
-			snap.NeedsYou = append(snap.NeedsYou, railItem{
+			item := railItem{
 				Glyph: "↑", Name: r.Add, Team: r.AddTeam, Note: note,
 				Drop: r.Drop, SeasonGain: r.SeasonGain, SeasonUnknown: r.SeasonUnknown,
-				Next3Gain: r.Next3Gain,
-				AddROS:    r.AddROS, DropROS: r.DropROS, AddNext3: r.AddNext3,
-				Confidence: r.Confidence, News: r.News})
+				Next3Unknown: r.Next3Gain == nil || r.AddNext3 == nil,
+				AddROS:       r.AddROS, DropROS: r.DropROS,
+				Confidence: r.Confidence, News: r.News}
+			if !item.Next3Unknown {
+				item.Next3Gain, item.AddNext3 = *r.Next3Gain, *r.AddNext3
+			}
+			snap.NeedsYou = append(snap.NeedsYou, item)
 		}
 	}
 

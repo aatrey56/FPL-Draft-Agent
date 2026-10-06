@@ -482,6 +482,44 @@ func TestWireRecWithUnknownSeasonGain(t *testing.T) {
 	}
 }
 
+// A free agent with no ROS projection has no 3-GW value: waiver_plan writes
+// next3_gain and add_next3_xp as null, which must not be quoted as 0.0.
+func TestWireRecWithUnknownNext3Gain(t *testing.T) {
+	derived := t.TempDir()
+	write(t, filepath.Join(derived, "ml/waiver_plan.json"), map[string]any{
+		"recommendations": []map[string]any{
+			{"add": "Promoted", "add_team": "HUL", "drop": "Weak", "label": "stream",
+				"season_gain": nil, "season_unknown": true, "add_ros": nil, "drop_ros": 40.0,
+				"next3_gain": nil, "add_next3_xp": nil},
+			{"add": "Upgrade", "add_team": "ARS", "drop": "Weak", "label": "upgrade",
+				"season_gain": 12.4, "add_ros": 52.4, "drop_ros": 40.0,
+				"next3_gain": 2.3, "add_next3_xp": 4.1},
+			// a known zero is a number, not "unavailable"
+			{"add": "Level", "add_team": "WOL", "drop": "Weak", "label": "upgrade",
+				"season_gain": 3.0, "add_ros": 43.0, "drop_ros": 40.0,
+				"next3_gain": 0.0, "add_next3_xp": 1.8},
+		},
+	})
+	m := newModel(fixtureDir(t), derived, 5, 501, 0)
+	m.w = 160
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	m.sugSel = 0
+	body := m.sugDetailBody(120)
+	if !strings.Contains(body, "Next 3 GWs: unavailable") || strings.Contains(body, "projects 0.0") {
+		t.Fatalf("unknown next3 must render as unavailable:\n%s", body)
+	}
+	m.sugSel = 1
+	if body := m.sugDetailBody(120); !strings.Contains(body, "Upgrade projects 4.1 xP, +2.3 over Weak") {
+		t.Fatalf("known next3 detail:\n%s", body)
+	}
+	m.sugSel = 2
+	if body := m.sugDetailBody(120); !strings.Contains(body, "Level projects 1.8 xP, +0.0 over Weak") {
+		t.Fatalf("zero next3 gain is a number:\n%s", body)
+	}
+}
+
 // sharedWarningCodes reads the my_week warning-code contract that the Python
 // suite (apps/backend/tests/test_myweek.py) pins too.
 func sharedWarningCodes(t *testing.T) []string {

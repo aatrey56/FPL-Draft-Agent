@@ -366,8 +366,13 @@ func (m *model) sugDetailBody(width int) string {
 				r.Name, r.AddROS, r.Drop, r.DropROS, r.SeasonGain))
 		}
 		b.WriteString("\n")
-		para(fmt.Sprintf("Next 3 GWs: %s projects %.1f xP, +%.1f over %s.",
-			r.Name, r.AddNext3, r.Next3Gain, r.Drop))
+		if r.Next3Unknown {
+			para(fmt.Sprintf("Next 3 GWs: unavailable — %s has no projection to build a 3-GW value from.",
+				r.Name))
+		} else {
+			para(fmt.Sprintf("Next 3 GWs: %s projects %.1f xP, +%.1f over %s.",
+				r.Name, r.AddNext3, r.Next3Gain, r.Drop))
+		}
 		if r.Confidence != "" {
 			b.WriteString("\n" + styDim.Render("confidence: "+r.Confidence) + "\n")
 		}
