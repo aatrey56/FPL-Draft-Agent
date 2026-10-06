@@ -40,6 +40,15 @@ schedule, H2H, draft picks), `current_roster`, `player_gw_stats`, `epl`
 flat `data/` roots are the 2025-26 archive, current seasons nest under
 `data/{raw,derived}/<season>/`.
 
+The Python derive steps (waiver, my_week, ownership, replay) resolve paths
+through `backend/ml/paths.py` and their `--data-root` flag: a season's
+projection is `derived/<season>/ml/projections.json`, falling back — for
+2026-27 only — to the flat preseason `derived/ml/projections_2627.json`; any
+other season without its own projection fails fast naming the expected path.
+Team strengths and club moves read `prior_season(season)` from the
+multi-season `derived/ml/player_seasons.parquet`. Go `draft_board` (a
+preseason tool) still reads the flat 2026-27 projection directly.
+
 ## The models (honest by design)
 
 - **Season projection** (`backend/ml/projection.py`): closed-form ridge +
