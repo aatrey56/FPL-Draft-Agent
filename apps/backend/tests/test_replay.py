@@ -346,3 +346,56 @@ def test_output_has_no_ids_and_prints_five_rows_per_gw(tmp_path):
     assert "entry" not in json.dumps(doc["rows"])
     assert all(r["won"] in ("y", "n", "fallback", "-") for r in doc["rows"])
     assert "no_change" in rp.format_table(doc) and rp.CAVEAT in rp.format_table(doc)
+
+
+# ---- scorer=model ---------------------------------------------------------
+
+def _panel(season, gws):
+    return pd.DataFrame([{"code": 1020, "season": season, "gw": gw, "total_points": 2}
+                         for gw in gws])
+
+
+def _model_world(tmp_path, monkeypatch, captured):
+    """build_world plus panels; matchmodel.build_gw_xp is stubbed (records its panel)."""
+    world = build_world(tmp_path)
+    _panel("2025-26", [1, 2]).to_parquet(world / "derived/ml/player_gameweeks.parquet")
+    (world / "derived/2026-27/ml").mkdir(parents=True)
+    _panel("2026-27", [1, 2, 3, 4]).to_parquet(world / "derived/2026-27/ml/player_gameweeks.parquet")
+
+    def fake_build(panel, bootstrap, gw, season):
+        captured.append((panel, bootstrap, gw))
+        return pd.DataFrame([{"code": 1021, "xp": 9.0, "p_start": 0.9, "xp_floor": 5.0,
+                              "xp_ceiling": 12.0, "drivers": "d", "opponents": "vWOL", "gw": gw}])
+
+    monkeypatch.setattr(rp.matchmodel, "build_gw_xp", fake_build)
+    return world
+
+
+def test_model_scorer_uses_asof_panel_and_leaves_other_rows_identical(tmp_path, monkeypatch):
+    captured: list = []
+    world = _model_world(tmp_path, monkeypatch, captured)
+    heuristic = rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "heuristic")
+    model = rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "model")
+    assert model["scorer"] == "model" and heuristic["scorer"] == "heuristic"
+    for strategy in ("no_change", "std_points", "form3", "me"):
+        assert [r for r in model["rows"] if r["strategy"] == strategy] == \
+               [r for r in heuristic["rows"] if r["strategy"] == strategy]
+    for panel, bootstrap, event in captured:
+        assert panel.loc[panel["season"] == "2026-27", "gw"].max() < event
+        assert set(bootstrap["fixtures"]) == {str(event)}
+    assert {event for _, _, event in captured} == {2, 3}
+    assert _row(model, "waiver_plan")["add"] == "Yorke"      # the only model-covered player
+
+
+def test_asof_panel_drops_deadline_gw_and_guard_raises_on_sentinel():
+    archive, season_panel = _panel("2025-26", [1]), _panel("2026-27", [1, 2, 3])
+    asof = rp.asof_panel(archive, season_panel, 3)
+    assert asof.loc[asof["season"] == "2026-27", "gw"].tolist() == [1, 2]
+    rp.assert_no_panel_leak(asof, "2026-27", 3)
+    with pytest.raises(ValueError, match="leak"):
+        rp.assert_no_panel_leak(pd.concat([asof, _panel("2026-27", [3])]), "2026-27", 3)
+
+
+def test_unknown_scorer_rejected(tmp_path):
+    with pytest.raises(ValueError, match="scorer"):
+        rp.run(build_world(tmp_path), "2026-27", LEAGUE, ME, [2], "magic")

@@ -48,10 +48,17 @@ the ``moves`` count.
 Caveats: n=4 deadlines, one league, no waiver-order simulation. This proves
 the harness runs; it is not evidence about the model.
 
-CLI (reads only; writes ``derived/<season>/ml/waiver_replay.json``):
+Scorers (``--scorer``): ``heuristic`` ranks on the ros/38 next-GW value;
+``model`` builds the match xP for deadline N from ``archive panel UNION season
+panel[gw < N]`` (Stage 1 sees the same neutral availability as the heuristic)
+and passes it to ``waiver.plan`` as ``gw_xp``. A leak guard raises if the
+as-of season panel holds any gameweek >= N. The other four strategies do not
+depend on the scorer, so their rows are identical between scorers.
+
+CLI (reads only; writes ``derived/<season>/ml/waiver_replay_<scorer>.json``):
 
     uv run python -m backend.ml.replay --season 2026-27 --gws 2-5 \\
-        [--league ID --entry ID] [--data-root PATH]
+        [--scorer {heuristic,model}] [--league ID --entry ID] [--data-root PATH]
 
 League/entry fall back to LEAGUE_ID / ENTRY_ID (repo .env, then the .env next
 to ``--data-root``); since load_dotenv does not override values already set,
@@ -72,6 +79,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from backend.ml import jsonutil
+from backend.ml import matchmodel
 from backend.ml import waiver as wv
 
 logger = logging.getLogger(__name__)
@@ -139,6 +147,33 @@ def asof_fixtures(bootstrap: dict, raw_root: Path, event: int,
         if fixtures is not None:
             out[str(k)] = [{"team_h": f.get("team_h"), "team_a": f.get("team_a")} for f in fixtures]
     return out
+
+
+def asof_panel(archive: pd.DataFrame, season_panel: pd.DataFrame, event: int) -> pd.DataFrame:
+    """Training panel as of the deadline of ``event``: archive + season rows with gw < event."""
+    return pd.concat([archive, season_panel[season_panel["gw"] < event]], ignore_index=True)
+
+
+def assert_no_panel_leak(panel: pd.DataFrame, season: str, event: int) -> None:
+    """Raise if the panel holds any ``season`` gameweek >= event (future data)."""
+    in_season = panel.loc[panel["season"] == season, "gw"]
+    if not in_season.empty and int(in_season.max()) >= event:
+        raise ValueError(f"as-of panel for {season} holds gw {int(in_season.max())} "
+                         f">= deadline gw {event} (leak)")
+
+
+def model_gw_xp(archive: pd.DataFrame, season_panel: pd.DataFrame, neutral: dict,
+                fixtures: dict[str, list[dict]], season: str, event: int) -> pd.DataFrame:
+    """Match xP for the deadline of ``event`` using only data before it.
+
+    ``neutral`` is the neutralised bootstrap (so Stage 1 sees neutral
+    availability exactly like the heuristic); ``fixtures`` is the as-of
+    schedule from ``asof_fixtures``, of which only ``event`` is scored.
+    """
+    panel = asof_panel(archive, season_panel, event)
+    assert_no_panel_leak(panel, season, event)
+    bootstrap = {**neutral, "fixtures": {str(event): fixtures[str(event)]}}
+    return matchmodel.build_gw_xp(panel, bootstrap, event, season)
 
 
 def departed_before(bootstrap: dict, raw_root: Path, event: int) -> set[int]:
@@ -341,9 +376,20 @@ def _load_inputs(data_root: Path, season: str, league: int) -> dict:
     }
 
 
-def run(data_root: Path, season: str, league: int, entry: int, gws: list[int]) -> dict:
-    """Replay each deadline in gws and return the full result document."""
+def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
+        scorer: str = wv.DEFAULT_SCORER) -> dict:
+    """Replay each deadline in gws and return the full result document.
+
+    ``scorer`` selects how ``waiver_plan`` values the next GW: ``heuristic``
+    (ros/38 x fixtures) or ``model`` (match xP built as of each deadline).
+    """
+    if scorer not in wv.SCORERS:
+        raise ValueError(f"unknown scorer {scorer!r}")
     inputs = _load_inputs(data_root, season, league)
+    if scorer == "model":
+        archive = pd.read_parquet(Path(data_root) / "derived/ml/player_gameweeks.parquet")
+        season_panel = pd.read_parquet(
+            Path(data_root) / "derived" / season / "ml/player_gameweeks.parquet")
     raw, bootstrap = inputs["raw"], inputs["bootstrap"]
     events = {e["id"]: e for e in bootstrap["events"]["data"]}
     elements = {el["id"]: el for el in neutralize_bootstrap(bootstrap)["elements"]}
@@ -362,10 +408,13 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int]) -
                       if r.get("owner") is None and int(r["element"]) not in departed)
         squad = sorted(int(r["element"]) for r in status_rows if r.get("owner") == entry)
 
+        fixtures = asof_fixtures(bootstrap, raw, event)
+        gw_xp = (model_gw_xp(archive, season_panel, neutral, fixtures, season, event)
+                 if scorer == "model" else None)
         result = wv.plan(neutral, {"element_status": status_rows}, inputs["seasons"],
                          inputs["projections"], entry, MAX_CANDIDATES,
-                         fixtures_by_event=asof_fixtures(bootstrap, raw, event),
-                         neutral_availability=True)
+                         fixtures_by_event=fixtures,
+                         neutral_availability=True, gw_xp=gw_xp)
         candidates = {
             "no_change": [],
             "waiver_plan": [(r["add_element"], r["drop_element"]) for r in result["recommendations"]],
@@ -386,8 +435,8 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int]) -
                              [elements[a]["web_name"] for a in skipped]))
         rows.append(score_actual(my_moves(transactions, event, entry), event, elements,
                                  live_points, minutes))
-    return {"season": season, "gws": gws, "availability_mode": AVAILABILITY_MODE,
-            "caveat": CAVEAT, "totals": _totals(rows), "rows": rows}
+    return {"season": season, "gws": gws, "scorer": scorer,
+            "availability_mode": AVAILABILITY_MODE, "caveat": CAVEAT, "totals": _totals(rows), "rows": rows}
 
 
 def _totals(rows: list[dict]) -> dict[str, dict[str, float]]:
@@ -420,6 +469,7 @@ def format_table(doc: dict) -> str:
         lines.append(f"{r['gw']:<3}{r['strategy']:<12}{add:<28}{drop:<22}{r['won']:<9}"
                      f"{r['moves']:<6}{add_pts:<8}{_fmt_gain(r['gw_gain']):<8}{_fmt_gain(r['gw3_gain'])}")
     totals = doc["totals"]
+    lines.append(f"scorer: {doc['scorer']}")
     lines.append("TOTAL gw_gain: " + " | ".join(
         f"{s} {totals[s]['gw_gain']:+.1f}" for s in STRATEGIES))
     lines.append("TOTAL gw3_gain (rows with all 3 GWs only): " + " | ".join(
@@ -446,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gws", default="2-5", help="GW or range, e.g. 2-5")
     parser.add_argument("--league", type=int, default=None)
     parser.add_argument("--entry", type=int, default=None)
+    parser.add_argument("--scorer", choices=wv.SCORERS, default=wv.DEFAULT_SCORER)
     parser.add_argument("--data-root", type=Path, default=_repo_root() / "data")
     args = parser.parse_args(argv)
     load_dotenv(args.data_root.parent / ".env")
@@ -454,14 +505,14 @@ def main(argv: list[str] | None = None) -> int:
     if not league or not entry:
         parser.error("--league and --entry required (or set LEAGUE_ID / ENTRY_ID)")
 
-    doc = run(args.data_root, args.season, league, entry, _parse_gws(args.gws))
+    doc = run(args.data_root, args.season, league, entry, _parse_gws(args.gws), args.scorer)
     print(format_table(doc))
-    out = args.data_root / "derived" / args.season / "ml/waiver_replay.json"
+    out = args.data_root / "derived" / args.season / "ml" / f"waiver_replay_{args.scorer}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
     try:
         tmp.write_text(jsonutil.dumps_strict(
-            {k: doc[k] for k in ("season", "gws", "availability_mode", "caveat", "rows")}, indent=1))
+            {k: doc[k] for k in ("season", "gws", "scorer", "availability_mode", "caveat", "rows")}, indent=1))
         os.replace(tmp, out)  # atomic: readers never see a partial file
     finally:
         tmp.unlink(missing_ok=True)  # no-op after a successful replace
