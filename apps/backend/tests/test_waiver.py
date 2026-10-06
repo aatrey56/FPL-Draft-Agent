@@ -9,6 +9,7 @@ from test_matchmodel import SEASON as PANEL_SEASON
 from test_matchmodel import _bootstrap as _panel_bootstrap
 from test_matchmodel import _panel as _synthetic_panel
 
+from backend.ml import jsonutil
 from backend.ml import matchmodel as mm
 from backend.ml import waiver as wv
 
@@ -375,7 +376,7 @@ def test_unknown_season_gain_orders_like_zero_among_equal_next1(tmp_path):
     """Ranking is unchanged by the null: an unknown season gain sorts as 0,
     below an equal-next1 add with a positive season gain."""
     table, squad = _model_only_world(tmp_path, [(999, 6.0), (201, 6.0)])
-    table.loc[table["web_name"] == "Streamer", "ros_points"] = 200.0
+    table.loc[table["web_name"] == "Streamer", ["ros_points", "ros_adj"]] = 200.0
     recs = wv.recommend(table, squad)
     assert [r["add"] for r in recs][:2] == ["Streamer", "NoProj"]
     assert recs[1]["season_gain"] is None and recs[0]["season_gain"] > 0
@@ -701,6 +702,108 @@ def test_seasons_table_without_codes_flags_nobody(tmp_path):
         {"id": 1, "code": 300, "web_name": "A", "element_type": 2, "team": 1, "status": "a"}]}
     table = wv.build_player_table(bootstrap, SEASONS, proj_path)   # SEASONS has no code column
     assert table.loc[0, "club_moved"] is None
+
+
+# ---------------------------------------------------------------------------
+# Drop pick: departed first, then role-adjusted ROS
+# ---------------------------------------------------------------------------
+
+def _drop_world(tmp_path, *, departed_status="u", season_panel=None, gw_xp=None,
+                departed_projection=160.0):
+    """My DEFs: Departed (high ROS), Solid, Weak, plus an unprojected Unknown.
+    Free DEFs: FreeA, FreeB and FreeMover (moved clubs, big projection)."""
+    projections = [{"code": 400, "projected_points": departed_projection},
+                   {"code": 401, "projected_points": 120.0},
+                   {"code": 402, "projected_points": 70.0},
+                   {"code": 410, "projected_points": 110.0},
+                   {"code": 411, "projected_points": 90.0},
+                   {"code": 300, "projected_points": 175.0}]
+    projections = [p for p in projections if p["projected_points"] is not None]
+    proj_path = tmp_path / "projections.json"
+    proj_path.write_text(json.dumps(projections))
+    bootstrap = {
+        "teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]},
+        "elements": [
+            {"id": 40, "code": 400, "web_name": "Departed", "element_type": 2, "team": 1,
+             "status": departed_status},
+            {"id": 41, "code": 401, "web_name": "Solid", "element_type": 2, "team": 1, "status": "a"},
+            {"id": 42, "code": 402, "web_name": "Weak", "element_type": 2, "team": 2, "status": "a"},
+            {"id": 43, "code": 403, "web_name": "Unknown", "element_type": 2, "team": 2, "status": "a"},
+            {"id": 50, "code": 410, "web_name": "FreeA", "element_type": 2, "team": 1, "status": "a"},
+            {"id": 51, "code": 411, "web_name": "FreeB", "element_type": 2, "team": 2, "status": "a"},
+            {"id": 52, "code": 300, "web_name": "FreeMover", "element_type": 2, "team": 1, "status": "a"}]}
+    status = {"element_status": [
+        *({"element": e, "owner": 42} for e in (40, 41, 42, 43)),
+        *({"element": e, "owner": None} for e in (50, 51, 52))]}
+    return wv.plan(bootstrap, status, ROLE_SEASONS, proj_path, 42, gw_xp=gw_xp,
+                   season_panel=season_panel)
+
+
+@pytest.mark.parametrize("gw_xp", [None, _gw_xp([(410, 5.0), (411, 4.0), (300, 3.0), (402, 1.0)])],
+                         ids=["heuristic", "model"])
+def test_departed_squad_player_is_the_drop_for_every_rec_at_his_position(tmp_path, gw_xp):
+    """Regression: the drop was the lowest raw ROS, so a departed player with a
+    big projection was kept and a playing teammate dropped instead."""
+    result = _drop_world(tmp_path, gw_xp=gw_xp)
+    recs = result["recommendations"]
+    assert len(recs) == 3
+    assert {r["drop"] for r in recs} == {"Departed"}
+    assert all(r["drop_status"] == "u" and r["drop_ros_adj"] == 0.0 for r in recs)
+    # dropping a departed player for anyone projected is a season gain, not a "stream"
+    free_a = next(r for r in recs if r["add"] == "FreeA")
+    assert free_a["season_gain"] == pytest.approx(110.0) and free_a["label"] == "upgrade"
+    assert free_a["drop_ros"] == 160.0                       # raw projection still shown
+
+
+def test_departed_squad_player_without_a_projection_is_still_the_drop(tmp_path):
+    result = _drop_world(tmp_path, departed_projection=None)
+    assert {r["drop"] for r in result["recommendations"]} == {"Departed"}
+    assert "Unknown" not in {c["web_name"] for c in result["drop_candidates"]}
+
+
+def test_without_a_departed_player_the_drop_is_the_lowest_ros_adj(tmp_path):
+    result = _drop_world(tmp_path, departed_status="a")
+    assert {r["drop"] for r in result["recommendations"]} == {"Weak"}
+
+
+def test_drop_candidates_lists_three_per_position_in_drop_order(tmp_path):
+    result = _drop_world(tmp_path)
+    candidates = [c for c in result["drop_candidates"] if c["position"] == "DEF"]
+    assert [c["web_name"] for c in candidates] == ["Departed", "Weak", "Solid"]
+    assert candidates[0] == {
+        "web_name": "Departed", "position": "DEF", "team": "ARS", "status": "u",
+        "ros_points": 160.0, "ros_adj": 0.0, "xp_next": 0.0,
+        "club_moved": None, "expected_minutes": None}
+    json.loads(jsonutil.dumps_strict(result["drop_candidates"]))     # strict-JSON safe
+
+
+def test_season_gain_and_rec_fields_use_the_role_adjusted_projection(tmp_path):
+    """A club-mover with a 175 projection and no minutes is not a season upgrade."""
+    panel = _panel({300: [0, 0, 0], 410: [90, 90, 90]})
+    gw_xp = _gw_xp([(410, 5.0), (411, 4.0), (300, 3.0), (402, 1.0)])
+    recs = _drop_world(tmp_path, departed_status="a", season_panel=panel,
+                       gw_xp=gw_xp)["recommendations"]
+    mover = next(r for r in recs if r["add"] == "FreeMover")
+    assert mover["club_moved"] is True and mover["add_expected_minutes"] == 0.0
+    assert mover["add_minutes_season"] == 0 and mover["add_role_factor"] == wv.ROLE_FLOOR
+    assert mover["add_ros"] == 175.0 and mover["add_ros_adj"] == 26.2
+    assert mover["season_gain"] == pytest.approx(26.2 - 70.0, abs=0.05)
+    assert mover["label"] == "stream"                # was an "upgrade" on raw ROS
+    newcomer = next(r for r in recs if r["add"] == "FreeA")     # no prior-season row
+    assert newcomer["club_moved"] is None and newcomer["add_expected_minutes"] == 90.0
+    assert newcomer["add_role_factor"] == 1.0 and newcomer["add_ros_adj"] == 110.0
+    json.loads(jsonutil.dumps_strict(recs))
+
+
+def test_heuristic_ranking_no_longer_leads_with_a_benched_club_mover(tmp_path):
+    """Regression (the Senesi case): on the heuristic scorer a transferred
+    player with a big projection and no minutes was the rank-1 add."""
+    blind = _drop_world(tmp_path, departed_status="a")["recommendations"]
+    assert blind[0]["add"] == "FreeMover"            # no panel: club-move blind
+    panel = _panel({300: [0, 0, 0], 410: [90, 90, 90]})
+    seen = _drop_world(tmp_path, departed_status="a", season_panel=panel)["recommendations"]
+    assert seen[0]["add"] == "FreeA"
+    assert "FreeMover" not in [r["add"] for r in seen]   # 26.2 ROS: no gain on any horizon
 
 
 def _ruled_out_world(tmp_path, status, chance=None):

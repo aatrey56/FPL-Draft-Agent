@@ -524,13 +524,60 @@ def best_xi(squad: pd.DataFrame, value_col: str = "next3_xp") -> tuple[pd.DataFr
 # Recommendations
 # ---------------------------------------------------------------------------
 
+def _none_if_nan(value: Any) -> Any:
+    """None for a missing table cell (NaN / None), else the value unchanged."""
+    return None if pd.isna(value) else value
+
+
+def _drop_tiebreak(rank_by: str) -> str:
+    """Third drop-order key: the short-horizon value the ranking is built on."""
+    return "next3_xp" if rank_by == "legacy" else "xp_next"
+
+
+def drop_order(squad: pd.DataFrame, tiebreak: str = "xp_next") -> pd.DataFrame:
+    """Squad players who may be dropped, most droppable first.
+
+    Sort key ``(status != "u", ros_adj, tiebreak)``: a departed player is
+    always first, then the lowest role-adjusted season value. Only players
+    with a ROS projection are droppable — an unprojected teammate is unknown,
+    not worthless — except departed ones, who are droppable regardless.
+    """
+    droppable = squad[squad["ros_points"].notna() | (squad["status"] == "u")]
+    return (droppable.assign(_kept=droppable["status"] != "u")
+            .sort_values(["_kept", "ros_adj", tiebreak])
+            .drop(columns="_kept"))
+
+
+def drop_candidates(squad: pd.DataFrame, tiebreak: str = "xp_next",
+                    per_position: int = DROP_CANDIDATES_PER_POSITION) -> list[dict[str, Any]]:
+    """The first ``per_position`` of ``drop_order`` at each position, so the
+    drop pick behind every recommendation can be audited (and overruled)."""
+    rows = []
+    for position in POSITIONS.values():
+        ordered = drop_order(squad[squad["position"] == position], tiebreak)
+        for _, p in ordered.head(per_position).iterrows():
+            rows.append({
+                "web_name": p["web_name"], "position": position, "team": p["team"],
+                "status": p["status"],
+                "ros_points": _none_if_nan(p["ros_points"]), "ros_adj": _none_if_nan(p["ros_adj"]),
+                "xp_next": _none_if_nan(p["xp_next"]),
+                "club_moved": _none_if_nan(p["club_moved"]),
+                "expected_minutes": _none_if_nan(p["expected_minutes"]),
+            })
+    return rows
+
+
 def recommend(players: pd.DataFrame, squad: pd.DataFrame,
               top_n: int = 10, *, rank_by: str = "next1") -> list[dict[str, Any]]:
     """Ranked add/drop pairs with the short-vs-long balance made explicit.
 
-    For each free agent, pair with the weakest same-position player in my
-    squad (by ROS). ``next1_gain`` = next-GW xP of the add minus the drop,
-    ``season_gain`` = ROS difference. Ranking is by ``next1_gain`` descending;
+    For each free agent, pair with the first same-position player of
+    ``drop_order`` (a departed squad player, else the lowest ``ros_adj``).
+    ``next1_gain`` = next-GW xP of the add minus the drop, ``season_gain`` =
+    ``ros_adj`` difference (role-adjusted ROS; a departed drop counts as 0).
+    Each rec carries the add's role signals (``club_moved``,
+    ``add_expected_minutes``, ``add_role_factor``, ``add_ros_adj``) next to
+    the raw ``add_ros``. Ranking is by ``next1_gain`` descending;
     ``hold`` recs (no next-GW gain, better over the season) come after every
     positive-next1 rec, ordered by ``season_gain``. The label encodes the
     balance so a streamer is never confused with a season upgrade. A free
@@ -546,15 +593,18 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
     """
     # Free agents by definition have no owner, so my squad is already excluded.
     pool = players[players["is_free_agent"] & (players["status"] != "u")]
+    # Drop candidates come only from players the model can value. An
+    # unprojected teammate (under the minutes floor last season, promoted,
+    # or newly signed) is NOT worth zero — it is unknown, and auto-dropping
+    # a returning star on missing data is the one unrecoverable mistake.
+    # Those players go in the plan's unprojected_squad section instead.
+    # (A departed teammate is the exception: see drop_order.)
+    droppable = {position: drop_order(squad[squad["position"] == position],
+                                      _drop_tiebreak(rank_by))
+                 for position in POSITIONS.values()}
     recs: list[dict[str, Any]] = []
     for _, fa in pool.iterrows():
-        # Drop candidates come only from players the model can value. An
-        # unprojected teammate (under the minutes floor last season, promoted,
-        # or newly signed) is NOT worth zero — it is unknown, and auto-dropping
-        # a returning star on missing data is the one unrecoverable mistake.
-        # Those players go in the plan's unprojected_squad section instead.
-        mine = squad[(squad["position"] == fa["position"])
-                     & squad["ros_points"].notna()]
+        mine = droppable.get(fa["position"], squad.iloc[0:0])
         # A free agent with no ROS projection (promoted club, new signing,
         # under last season's minutes floor) is still rankable on the next GW
         # when the match model values him: his season gain is unknown — it
@@ -565,7 +615,7 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
                       and fa["xp_source"] == "model")
         if mine.empty or (pd.isna(fa["ros_points"]) and not model_only):
             continue  # cannot recommend a player we cannot value
-        drop = mine.sort_values(["ros_points", "next3_xp"]).iloc[0]
+        drop = mine.iloc[0]
 
         def _v(x):
             return 0.0 if pd.isna(x) else float(x)
@@ -574,7 +624,7 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
         # next3_xp is heuristic (ros/38 based), so a model-only add has none:
         # the gain is unknown, not "0 minus the drop".
         next3_gain = None if model_only else _v(fa["next3_xp"]) - _v(drop["next3_xp"])
-        season_gain = 0.0 if model_only else _v(fa["ros_points"]) - _v(drop["ros_points"])
+        season_gain = 0.0 if model_only else _v(fa["ros_adj"]) - _v(drop["ros_adj"])
         short_gain = next3_gain if rank_by == "legacy" else next1_gain
         if short_gain <= 0 and season_gain <= 0:
             continue
@@ -599,6 +649,13 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             "drivers": fa["drivers"], "opponents": fa["opponents"],
             "add_next3_xp": fa["next3_xp"], "add_ros": fa["ros_points"],
             "drop_next3_xp": drop["next3_xp"], "drop_ros": drop["ros_points"],
+            "add_ros_adj": _none_if_nan(fa["ros_adj"]),
+            "drop_ros_adj": _none_if_nan(drop["ros_adj"]),
+            "drop_status": drop["status"],
+            "club_moved": _none_if_nan(fa["club_moved"]),
+            "add_expected_minutes": _none_if_nan(fa["expected_minutes"]),
+            "add_minutes_season": _none_if_nan(fa["minutes_season"]),
+            "add_role_factor": float(fa["role_factor"]),
             "availability": fa["status"], "news": fa["news"],
             "confidence": fa["confidence"],
         })
@@ -629,32 +686,35 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
          projections_path: Path, entry_id: int, top_n: int = 10, *,
          fixtures_by_event: dict | None = None,
          neutral_availability: bool = False,
-         gw_xp: pd.DataFrame | None = None) -> dict[str, Any]:
+         gw_xp: pd.DataFrame | None = None,
+         season_panel: pd.DataFrame | None = None) -> dict[str, Any]:
     """Pure waiver plan: players table, my squad, best-XI xP, ranked recs.
 
     ``gw_xp`` (optional) is the match model's next-GW frame; see
     ``build_player_table``. Without it the heuristic scorer applies and
     ``recommend`` keeps its pre-xP ranking (``rank_by="legacy"``).
+    ``season_panel`` (optional) switches on the club-move role signals.
 
     Free agents are the element-status rows with no owner. Returns
     ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``recommendations``,
-    ``unprojected_squad`` and ``xp_reconciled`` (how many model rows were
-    zeroed because the player is now ruled out; see ``build_player_table``).
-    No I/O beyond reading ``projections_path``.
+    ``drop_candidates``, ``unprojected_squad`` and ``xp_reconciled`` (how many
+    model rows were zeroed because the player is now ruled out; see
+    ``build_player_table``). No I/O beyond reading ``projections_path``.
     """
     players = build_player_table(
         bootstrap, seasons, projections_path,
         fixtures_by_event=fixtures_by_event, neutral_availability=neutral_availability,
-        gw_xp=gw_xp)
+        gw_xp=gw_xp, season_panel=season_panel)
     free = {row["element"] for row in element_status.get("element_status", [])
             if row.get("owner") is None}
     players["is_free_agent"] = players["element"].isin(free)
     squad = my_squad(players, element_status, entry_id)
     _, xi_total = best_xi(squad)
+    rank_by = "next1" if gw_xp is not None else "legacy"
     return {
         "players": players, "squad": squad, "xi_next3_xp": xi_total,
-        "recommendations": recommend(players, squad, top_n,
-                                     rank_by="next1" if gw_xp is not None else "legacy"),
+        "recommendations": recommend(players, squad, top_n, rank_by=rank_by),
+        "drop_candidates": drop_candidates(squad, _drop_tiebreak(rank_by)),
         "unprojected_squad": unprojected_squad(squad),
         "xp_reconciled": int(players["xp_reconciled"].sum()),
     }
