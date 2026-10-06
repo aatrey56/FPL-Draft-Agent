@@ -552,6 +552,7 @@ def build_gw_xp(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
     scored["season"], scored["gw"] = season, gw
     return scored.sort_values("xp", ascending=False).reset_index(drop=True)
 
+
 def panel_stub_rows(rows: pd.DataFrame) -> pd.DataFrame:
     """Completed panel rows reduced to what was known before kickoff.
 
@@ -871,7 +872,11 @@ def _print_live_eval(report: pd.DataFrame, calibration: pd.DataFrame,
 
 def _out_path(out: Path | None, default: Path) -> Path:
     """``--out`` resolved: absent → ``default``; an existing directory → the
-    default file name inside it; anything else is the file to write."""
+    default file name inside it; anything else is the file to write.
+
+    The directory must already exist: argparse's ``Path`` drops a trailing
+    slash, so ``--out newdir/`` for a missing ``newdir`` writes a file named
+    ``newdir``."""
     if out is None:
         return default
     return out / default.name if out.is_dir() else out

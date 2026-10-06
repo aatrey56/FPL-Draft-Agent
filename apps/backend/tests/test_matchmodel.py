@@ -764,6 +764,11 @@ def test_out_path_keeps_an_explicit_file_and_the_default():
     assert mm._out_path(Path("elsewhere.csv"), default) == Path("elsewhere.csv")
 
 
+def test_out_path_puts_the_default_name_inside_an_existing_directory(tmp_path):
+    default = Path("derived/ml/eval.csv")
+    assert mm._out_path(tmp_path, default) == tmp_path / "eval.csv"
+
+
 def test_next_gameweek_list_shape_mid_gw_prefers_is_next():
     events = [{"id": 5, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"},
               {"id": 6, "finished": False, "is_next": True,
