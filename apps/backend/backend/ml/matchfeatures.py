@@ -48,6 +48,9 @@ FORM_SOURCES = {
 
 KEY = ["code", "season"]
 
+# Team-level strength columns produced by ``team_form`` (goals per game).
+TEAM_FORM_COLUMNS = ["team_scored_pg", "team_conceded_pg"]
+
 
 def _sorted_panel(panel: pd.DataFrame) -> pd.DataFrame:
     """Panel sorted into the chronological order every shift/roll relies on."""
@@ -98,7 +101,9 @@ def team_form(panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     * ``overall`` — per ``(season, gw, team_id)``: ``team_scored_pg`` and
       ``team_conceded_pg``, the team's goals for/against per game across
-      gameweeks strictly before ``gw``.
+      its played gameweeks strictly before ``gw``. Every gameweek in the
+      panel gets a row, including blanks and the upcoming stub gameweek
+      (see ``_carry_team_form``).
     * ``by_position`` — per ``(season, gw, team_id, element_type)``:
       ``opp_pts_allowed_pg``, the FPL points that team has conceded per game to
       players of that position. This is the fixture-targeting signal.
@@ -116,7 +121,12 @@ def team_form(panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         overall[name] = grouped[src].transform(
             lambda s: s.shift(1).expanding().mean()
         )
-    overall = overall[["season", "gw", "team_id", "team_scored_pg", "team_conceded_pg"]]
+        # Post-gameweek value (this gameweek included) — what the *next*
+        # gameweek inherits when the team has no played row there.
+        overall[_post(name)] = grouped[src].transform(lambda s: s.expanding().mean())
+    overall = overall[
+        ["season", "gw", "team_id", *TEAM_FORM_COLUMNS, *map(_post, TEAM_FORM_COLUMNS)]
+    ]
     overall = _carry_team_form(overall, panel)
 
     allowed = (
@@ -136,26 +146,48 @@ def team_form(panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return overall, by_position
 
 
-def _carry_team_form(overall: pd.DataFrame, panel: pd.DataFrame) -> pd.DataFrame:
-    """Give every team a strength row in every gameweek, carried forward.
+def _post(column: str) -> str:
+    """Name of the post-gameweek companion of a team-form column."""
+    return f"{column}_post"
 
-    A team only appears in ``overall`` for gameweeks in which somebody played,
-    so a blank gameweek — or an upcoming one, which has no results yet —
-    leaves a hole that would join as NaN and silently drop the whole fixture
-    signal exactly when it is needed. Because these columns are already
-    "as of before this gameweek", the last completed value is the correct one
-    to carry into the gap.
+
+def _carry_team_form(overall: pd.DataFrame, panel: pd.DataFrame) -> pd.DataFrame:
+    """Give every team a strength row in every gameweek of the panel.
+
+    Contract: for every ``(season, gw, team_id)`` the team-form columns are the
+    mean over the team's *played* gameweeks strictly before ``gw`` — whether or
+    not the team plays in ``gw`` itself.
+
+    * Gameweeks the team played keep the shifted expanding mean computed in
+      ``team_form`` untouched.
+    * Gameweeks with no played row — a blank, or the upcoming gameweek scored
+      from outcome-free stub rows by ``matchmodel.build_gw_xp`` — take the
+      *post*-gameweek value of the team's last played gameweek, i.e. the
+      expanding mean that includes it. Carrying that gameweek's own
+      pre-gameweek value instead would leave serving one gameweek stale (and
+      all-NaN at GW2), so the backtest and the live forecast would disagree
+      about what "team form" means.
+
+    Without this a gap would join as NaN and silently drop the whole fixture
+    signal exactly when it is needed. Gameweeks before the team's first played
+    one stay NaN. Expects ``overall`` to carry ``_post(column)`` companions
+    for each of ``TEAM_FORM_COLUMNS``; they are consumed and dropped here.
     """
+    keys = ["season", "team_id"]
     grid = (
         panel[["season", "gw"]].drop_duplicates()
-        .merge(overall[["season", "team_id"]].drop_duplicates(), on="season")
+        .merge(overall[keys].drop_duplicates(), on="season")
     )
     filled = (
-        grid.merge(overall, on=["season", "gw", "team_id"], how="left")
+        grid.merge(overall, on=["season", "gw", "team_id"], how="left", indicator=True)
         .sort_values(["season", "team_id", "gw"])
     )
-    columns = ["team_scored_pg", "team_conceded_pg"]
-    filled[columns] = filled.groupby(["season", "team_id"], sort=False)[columns].ffill()
+    played = filled.pop("_merge").eq("both")
+    by_team = filled.groupby(keys, sort=False)
+    for column in TEAM_FORM_COLUMNS:
+        carried = by_team[_post(column)].transform(lambda s: s.ffill().shift(1))
+        filled[column] = filled[column].where(played, carried)
+    filled = filled.drop(columns=[_post(c) for c in TEAM_FORM_COLUMNS])
     return filled.reset_index(drop=True)
 
 
