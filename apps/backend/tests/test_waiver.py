@@ -4,7 +4,12 @@ import json
 
 import pandas as pd
 import pytest
+from test_matchmodel import N_GWS, SMALL_FIT
+from test_matchmodel import SEASON as PANEL_SEASON
+from test_matchmodel import _bootstrap as _panel_bootstrap
+from test_matchmodel import _panel as _synthetic_panel
 
+from backend.ml import matchmodel as mm
 from backend.ml import waiver as wv
 
 TEAMS = [{"id": 1, "name": "Arsenal", "short_name": "ARS"},
@@ -503,3 +508,46 @@ def test_unprojected_squad_means_no_projection_and_no_model_xp(tmp_path):
     table = _xp_table(tmp_path, _gw_xp([(200, 4.0)]))       # NoProj: no value at all
     squad = wv.my_squad(table, status, entry_id=42)
     assert [p["web_name"] for p in wv.unprojected_squad(squad)] == ["NoProj"]
+
+
+def test_unfitted_position_is_not_served_as_model_xp(tmp_path, caplog):
+    """Review regression: a panel too thin to fit one position still yields
+    rows for its players (xp 0, p_start NaN) and they were served as
+    xp_source "model" — a fabricated zero. They take the heuristic instead."""
+    full = _synthetic_panel()
+    gw = N_GWS + 1
+    bootstrap = _panel_bootstrap(full, gw)          # every keeper has a fixture stub
+    bootstrap["teams"] = [{**team, "name": team["short_name"]} for team in bootstrap["teams"]]
+    for element in bootstrap["elements"]:
+        element["web_name"] = f"P{element['code']}"
+    no_keepers = full[full["element_type"] != 1]    # the keeper model cannot be fitted
+    gw_xp = mm.build_gw_xp(no_keepers, bootstrap, gw, PANEL_SEASON, min_train_rows=SMALL_FIT)
+    keeper_rows = gw_xp[gw_xp["element_type"] == 1]
+    assert len(keeper_rows) and (keeper_rows["xp"] == 0).all()
+    assert keeper_rows["p_start"].isna().all()
+
+    keepers = sorted(int(code) for code in keeper_rows["code"])
+    outfielder = int(gw_xp.loc[gw_xp["element_type"] == 3, "code"].iloc[0])
+    proj_path = tmp_path / "projections.json"
+    proj_path.write_text(json.dumps([{"code": keepers[0], "projected_points": 114.0},
+                                     {"code": outfielder, "projected_points": 114.0}]))
+    with caplog.at_level("WARNING"):
+        table = wv.build_player_table(bootstrap, SEASONS, proj_path, gw_xp=gw_xp).set_index("code")
+    assert f"no prediction for {len(keepers)} of {len(gw_xp)} players" in caplog.text
+
+    assert set(table.loc[keepers, "xp_source"]) == {"heuristic", "none"}
+    projected = table.loc[keepers[0]]
+    assert projected["xp_source"] == "heuristic" and projected["xp_next"] > 0
+    assert pd.isna(projected["p_start"]) and pd.isna(projected["drivers"])
+    unprojected = table.loc[keepers[1]]
+    assert unprojected["xp_source"] == "none" and pd.isna(unprojected["xp_next"])
+    assert table.loc[outfielder, "xp_source"] == "model"
+    assert table.loc[outfielder, "p_start"] == pytest.approx(
+        gw_xp.set_index("code").loc[outfielder, "p_start"])
+
+
+def test_usable_gw_xp_keeps_a_predicted_blank_and_drops_no_opinion_rows():
+    frame = _gw_xp([(200, 0.0), (201, 4.0), (999, 0.0)])
+    frame.loc[frame["code"] == 201, "xp"] = float("nan")        # no xP at all
+    frame.loc[frame["code"] == 999, "p_start"] = float("nan")   # unfitted position
+    assert list(wv.usable_gw_xp(frame)["code"]) == [200]        # xp 0 with a p_start stays

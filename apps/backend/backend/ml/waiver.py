@@ -18,7 +18,8 @@ Design (v1, pre-GW1-honest):
   doubtful=chance/100, injured/suspended=chance if stated else 0, departed=0.
 * **Next-GW xP** (``xp_next``) comes from the match model's
   ``xp_gw{N}.parquet`` when ``--scorer model`` and the file is fresh; players
-  the model does not cover (blank GW, no row) fall back to the heuristic
+  the model does not cover (blank GW, no row, or a position the panel was too
+  thin to fit — a row with a NaN ``p_start``) fall back to the heuristic
   ``ros/38 x fixture load x availability``. ``xp_source`` (model / heuristic /
   none) is carried on every player and recommendation. Scale caveat: model xP
   and the heuristic fallback share one ranking; the heuristic is on a lower
@@ -220,6 +221,18 @@ def load_gw_xp(path: Path, expected_gw: int | None,
     return frame
 
 
+def usable_gw_xp(gw_xp: pd.DataFrame) -> pd.DataFrame:
+    """The rows of a match xP frame that carry a real prediction.
+
+    ``matchmodel.score_fixtures`` emits a row for every fixture stub, including
+    players in a position the panel was too thin to fit: their NaN per-fixture
+    xP sums to ``xp`` 0 with a NaN ``p_start``. That is "no opinion", not a
+    predicted blank, so those rows are dropped here and the player is valued by
+    the heuristic like anyone else the model does not cover.
+    """
+    return gw_xp[gw_xp["xp"].notna() & gw_xp["p_start"].notna()]
+
+
 SCORERS = ("heuristic", "model")
 DEFAULT_SCORER = "model"
 
@@ -273,7 +286,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     ``gw_xp`` is the match model's one-row-per-code next-GW frame (see
     ``matchmodel.build_gw_xp``). Joined on the permanent ``code``, it supplies
     ``xp_next, p_start, xp_floor, xp_ceiling, drivers, opponents`` with
-    ``xp_source == "model"``. A player it does not cover gets the heuristic
+    ``xp_source == "model"``. A player it does not cover — no row, or a row
+    without a prediction (``usable_gw_xp``) — gets the heuristic
     1-GW value (``ros/38 x next-event fixture load x availability``,
     source ``heuristic``), or ``none`` when there is no projection either.
     ``next3_xp`` stays heuristic.
@@ -286,7 +300,11 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
                               fixtures_by_event=fixtures_by_event)
     model_by_code: dict[int, dict] = {}
     if gw_xp is not None and not gw_xp.empty:
-        model_by_code = gw_xp.drop_duplicates("code").set_index("code").to_dict("index")
+        usable = usable_gw_xp(gw_xp)
+        if len(usable) < len(gw_xp):
+            logger.warning("match xP has no prediction for %d of %d players (position not "
+                           "fitted) — heuristic for those", len(gw_xp) - len(usable), len(gw_xp))
+        model_by_code = usable.drop_duplicates("code").set_index("code").to_dict("index")
     projections = {}
     if Path(projections_path).exists():
         projections = {int(r["code"]): r for r in
