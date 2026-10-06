@@ -577,12 +577,21 @@ def _attach_outcomes(scored: pd.DataFrame, actual: pd.DataFrame) -> pd.DataFrame
     return out
 
 
+def season_start(season: str) -> int:
+    """Start year of a season label such as ``"2026-27"`` — its chronological key."""
+    try:
+        return int(str(season).split("-", 1)[0])
+    except ValueError as exc:
+        raise ValueError(f"season {season!r} is not of the form YYYY-YY") from exc
+
+
 def served_walk_forward(panel: pd.DataFrame, season: str, eval_gws: list[int],
                         alpha: float | dict[int, float] | None = None,
                         min_train_rows: int = MIN_TRAIN_ROWS) -> pd.DataFrame:
     """Score finished gameweeks of ``season`` exactly as they would have been served.
 
-    For each target gameweek ``N``: history = every row of the other seasons
+    For each target gameweek ``N``: history = every row of the seasons that
+    *started before* ``season`` (later ones did not exist at that deadline)
     plus ``season``'s rows with ``gw < N``; the panel's gameweek-``N`` rows are
     stripped to outcome-free stubs (``panel_stub_rows``) and featurised through
     ``stub_frame`` — the path ``build_gw_xp`` serves through — so serving
@@ -594,7 +603,8 @@ def served_walk_forward(panel: pd.DataFrame, season: str, eval_gws: list[int],
     model columns and realized outcomes, in the shape ``walk_forward`` returns.
     """
     alpha = dict(SELECTED_ALPHAS) if alpha is None else alpha
-    others = panel[panel["season"] != season]
+    start = season_start(season)
+    others = panel[panel["season"].map(season_start) < start]
     current = panel[panel["season"] == season]
     predictions = []
     for target_gw in sorted(set(eval_gws)):

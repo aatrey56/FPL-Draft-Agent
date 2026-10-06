@@ -339,6 +339,30 @@ def test_served_walk_forward_training_set_matches_serving(monkeypatch):
     assert set(predicted["gw"]) == {2}
 
 
+def test_served_walk_forward_never_trains_on_a_later_season(monkeypatch):
+    """Scoring 2026-27 must not learn from 2027-28, which did not exist yet."""
+    later = _live_panel(seed=13, season="2027-28", offset=200)
+    panel = pd.concat([_two_season_panel(), later], ignore_index=True)
+    seasons = []
+    real_fit = mm.MatchModel.fit
+
+    def recording_fit(self, train):
+        seasons.append(set(train["season"]))
+        return real_fit(self, train)
+
+    monkeypatch.setattr(mm.MatchModel, "fit", recording_fit)
+    mm.served_walk_forward(panel, LIVE_SEASON, [2, 3], alpha=100.0,
+                           min_train_rows=SMALL_FIT)
+    assert seasons == [{SEASON, LIVE_SEASON}, {SEASON, LIVE_SEASON}]
+
+
+def test_season_start_orders_by_start_year_and_rejects_garbage():
+    assert sorted(["2027-28", "2025-26", "2026-27"], key=mm.season_start) == [
+        "2025-26", "2026-27", "2027-28"]
+    with pytest.raises(ValueError):
+        mm.season_start("last season")
+
+
 def test_served_walk_forward_needs_the_archive_for_a_thin_season():
     """Within the live season alone GW2 has no labelled history; the archive fixes that."""
     alone = mm.served_walk_forward(_live_panel(), LIVE_SEASON, [2], alpha=100.0,
