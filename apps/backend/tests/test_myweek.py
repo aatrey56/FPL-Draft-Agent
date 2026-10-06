@@ -1,6 +1,7 @@
 """Tests for my_week (backend.ml.myweek). No network — fixtures only."""
 
 import json
+from pathlib import Path
 
 import pandas as pd
 
@@ -265,6 +266,19 @@ def test_cli_falls_back_on_an_unreadable_xp_file(weekly_cli_root, weekly_cli_arg
     doc = json.loads(out.read_text())
     assert doc["scorer"] == "heuristic" and doc["xp_fallback"] is True
     assert "unreadable" in doc["xp_fallback_reason"]
+
+
+SHARED_WARNING_CODES = Path(__file__).resolve().parents[3] / "testdata/my_week_warning_codes.json"
+
+
+def test_warning_codes_match_the_fixture_shared_with_go():
+    """The Go TUI and tool note read the same file, so a renamed or added
+    code fails both suites instead of drifting silently."""
+    shared = json.loads(SHARED_WARNING_CODES.read_text())["warning_codes"]
+    assert [mw.WARNING_NO_VALUE, mw.WARNING_HEURISTIC_XP,
+            mw.WARNING_BLANK_GW, mw.WARNING_AVAILABILITY] == shared
+    declared = {value for name, value in vars(mw).items() if name.startswith("WARNING_")}
+    assert declared == set(shared)
 
 
 def test_warning_codes_are_stable_and_aligned_with_text(tmp_path):

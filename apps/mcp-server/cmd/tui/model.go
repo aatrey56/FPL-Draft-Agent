@@ -1373,7 +1373,8 @@ func liveCount(s snapshot) int {
 }
 
 // my_week warning codes (backend/ml/myweek.py WARNING_*): stable identifiers
-// index-aligned with the human-readable warnings text.
+// index-aligned with the human-readable warnings text. Pinned, with the Python
+// constants, to testdata/my_week_warning_codes.json at the repo root.
 const (
 	warnNoValue      = "no_value"
 	warnHeuristicXP  = "heuristic_xp"

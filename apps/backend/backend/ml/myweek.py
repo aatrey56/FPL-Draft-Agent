@@ -62,7 +62,8 @@ def gw_xp_table(bootstrap: dict, seasons: pd.DataFrame,
 
 # Stable machine-readable codes for each warning, index-aligned with the
 # human-readable ``warnings`` text (consumers such as the TUI match on these,
-# never on the prose, which is free to change).
+# never on the prose, which is free to change). The full set is pinned in
+# testdata/my_week_warning_codes.json, which the Go tests read too.
 WARNING_NO_VALUE = "no_value"
 WARNING_HEURISTIC_XP = "heuristic_xp"
 WARNING_BLANK_GW = "blank_gw"

@@ -191,6 +191,37 @@ func TestMyWeekServesSeasonArtifact(t *testing.T) {
 	}
 }
 
+// TestMyWeekNoteNamesEverySharedWarningCode pins the tool note to the
+// warning-code contract shared with the Python suite.
+func TestMyWeekNoteNamesEverySharedWarningCode(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "testdata", "my_week_warning_codes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shared struct {
+		WarningCodes []string `json:"warning_codes"`
+	}
+	if err := json.Unmarshal(raw, &shared); err != nil {
+		t.Fatal(err)
+	}
+	cfg := fixtureConfig(t)
+	writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/my_week.json"), map[string]any{"gw": 1})
+	res, _, err := myWeekHandler(cfg)(context.Background(), nil, MyWeekArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var week struct {
+		Note string `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, res)), &week); err != nil {
+		t.Fatal(err)
+	}
+	want := "warning_codes holds a stable code per warning: " + strings.Join(shared.WarningCodes, ", ") + ")"
+	if !strings.Contains(week.Note, want) {
+		t.Fatalf("my_week note does not list the shared codes %v:\n%s", shared.WarningCodes, week.Note)
+	}
+}
+
 func TestDropRadarReturnsMostRecentEvents(t *testing.T) {
 	cfg := fixtureConfig(t)
 	events := []map[string]any{

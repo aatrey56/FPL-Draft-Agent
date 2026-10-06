@@ -479,3 +479,27 @@ func TestWireRecWithUnknownSeasonGain(t *testing.T) {
 		t.Fatalf("known-season detail:\n%s", body)
 	}
 }
+
+// sharedWarningCodes reads the my_week warning-code contract that the Python
+// suite (apps/backend/tests/test_myweek.py) pins too.
+func sharedWarningCodes(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "testdata", "my_week_warning_codes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		WarningCodes []string `json:"warning_codes"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	return doc.WarningCodes
+}
+
+func TestWarningCodesMatchSharedFixture(t *testing.T) {
+	got := []string{warnNoValue, warnHeuristicXP, warnBlankGW, warnAvailability}
+	if want := sharedWarningCodes(t); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("TUI warning codes %v, shared fixture %v", got, want)
+	}
+}
