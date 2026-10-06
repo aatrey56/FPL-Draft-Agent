@@ -1401,8 +1401,8 @@ func liveCount(s snapshot) int {
 // constants, to testdata/my_week_warning_codes.json at the repo root.
 const (
 	warnDeparted     = "departed"
-	warnRoleOverride = "role_override"
 	warnNoValue      = "no_value"
+	warnRoleOverride = "role_override"
 	warnBlankGW      = "blank_gw"
 	warnAvailability = "availability"
 	warnHeuristicXP  = "heuristic_xp"

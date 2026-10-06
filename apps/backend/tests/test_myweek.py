@@ -275,7 +275,7 @@ def test_warning_codes_match_the_fixture_shared_with_go():
     """The Go TUI and tool note read the same file, so a renamed or added
     code fails both suites instead of drifting silently."""
     shared = json.loads(SHARED_WARNING_CODES.read_text())["warning_codes"]
-    assert [mw.WARNING_DEPARTED, mw.WARNING_ROLE_OVERRIDE, mw.WARNING_NO_VALUE,
+    assert [mw.WARNING_DEPARTED, mw.WARNING_NO_VALUE, mw.WARNING_ROLE_OVERRIDE,
             mw.WARNING_BLANK_GW, mw.WARNING_AVAILABILITY, mw.WARNING_HEURISTIC_XP] == shared
     declared = {value for name, value in vars(mw).items() if name.startswith("WARNING_")}
     assert declared == set(shared)
@@ -375,6 +375,20 @@ def test_role_override_warning_text_for_fact_only_and_empty_entries(tmp_path):
     att = {p["web_name"]: p["warnings"][0] for p in mw.build_my_week(players, status, 42)["attention"]}
     assert att["Covered"] == "role override: new manager"
     assert att["Heur"] == "role override: no detail given"
+
+
+def test_no_value_leads_an_override_on_an_unprojected_player(tmp_path):
+    """The TUI rail shows the first warning: "unprojected", not the fact."""
+    players = _xp_world(tmp_path, _model_frame([(10, 7.0)]))
+    status = {"element_status": [{"element": e, "owner": 42} for e in (1, 2, 3)]}
+    overrides = [{"player": "Mystery", "team": "ARS", "p_start": 0.7, "fact": "new signing",
+                  **FRESH}]
+    players, report = mw.apply_role_overrides(players, overrides, target_gw=4)
+    assert report["overrides_applied"] == ["Mystery"]
+    att = {p["web_name"]: p for p in mw.build_my_week(players, status, 42)["attention"]}
+    assert att["Mystery"]["warning_codes"] == [mw.WARNING_NO_VALUE, mw.WARNING_ROLE_OVERRIDE]
+    assert att["Mystery"]["warnings"] == ["no value — judge manually (player_card)",
+                                          "role override: p_start 0.7 — new signing"]
 
 
 def test_override_ruling_a_player_out_keeps_him_off_the_xi(tmp_path):

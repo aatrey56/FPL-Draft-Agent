@@ -89,8 +89,8 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
 # warning per player (the TUI rail) must lead with "he cannot play", not with
 # a note about where his number came from.
 WARNING_DEPARTED = "departed"
-WARNING_ROLE_OVERRIDE = "role_override"
 WARNING_NO_VALUE = "no_value"
+WARNING_ROLE_OVERRIDE = "role_override"
 WARNING_BLANK_GW = "blank_gw"
 WARNING_AVAILABILITY = "availability"
 WARNING_HEURISTIC_XP = "heuristic_xp"
@@ -104,14 +104,16 @@ def player_warning_items(row: pd.Series) -> list[tuple[str, str]]:
     news = f" — {row['news']}" if row["news"] else ""
     if row["status"] == "u":
         items.append((WARNING_DEPARTED, f"departed — no longer in the league, drop him{news}"))
+    # "unprojected" outranks an override's fact: with no value at all the
+    # override has nothing to re-weight, and the human call is the headline.
+    if row["xp_source"] == "none":
+        items.append((WARNING_NO_VALUE, "no value — judge manually (player_card)"))
     override = row.get("role_override")
     if override is not None and not pd.isna(override):
         p_start = row.get("role_override_p_start")
         chance = "" if pd.isna(p_start) else f"p_start {float(p_start):g}"
         detail = " — ".join(part for part in (chance, override) if part)
         items.append((WARNING_ROLE_OVERRIDE, f"role override: {detail or 'no detail given'}"))
-    if row["xp_source"] == "none":
-        items.append((WARNING_NO_VALUE, "no value — judge manually (player_card)"))
     if row["gw_fixture_load"] == 0:
         items.append((WARNING_BLANK_GW, "blank gameweek: no fixture"))
     if row["status"] not in ("a", "u"):
