@@ -205,7 +205,7 @@ The live check above is a one-off. The standing answer is
 log), run by `make derive` after the xP step:
 
 ```
-uv run python -m backend.ml.trackrecord --season 2026-27 [--data-root ../../data] [--gws 3-5]
+uv run python -m backend.ml.trackrecord --season 2026-27 [--data-root ../../data] [--gws 3-5] [--rescore]
 ```
 
 For every finished gameweek of the season it scores `model_xp` and the five
@@ -228,6 +228,10 @@ predictors = 192 rows at GW5) and rewrites `track_record.md`.
   Each predictor is scored on the players the model covered that week. A re-run
   with unchanged inputs leaves the CSV byte-identical. No `ep_next` column: the
   draft API leaves it null.
+- Gameweeks already in the CSV are not scored again (a replay re-fit takes
+  ~70s and the autopilot derives every 15 minutes) unless `--rescore` is
+  passed, they are named in `--gws`, or a recorded `replay` week has since
+  gained a usable live file.
 
 First record (2026-10-06, GW2 live, GW3-5 replay; re-run on the serving path the
 same day — every replayed score unchanged), startable pool, mean Spearman:

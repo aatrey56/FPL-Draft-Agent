@@ -27,6 +27,11 @@ of its earlier rows are replaced, so a re-run with unchanged inputs rewrites
 the CSV byte-for-byte. Rows already recorded as ``live`` are kept even if the
 xP file later disappears — the log does not forget live evidence.
 
+A gameweek already in the CSV is not scored again (a replay re-fit costs tens
+of seconds, and the autopilot runs derive every 15 minutes) unless
+``--rescore`` is passed, it is named in ``--gws``, or it was recorded as
+``replay`` and a usable live file has since appeared.
+
 Scoring reuses ``matcheval.score_predictor`` through ``matchmodel.compare``:
 per position, on the startable and full pools, for ``model_xp`` and the five
 naive baselines, each restricted to the players the model covered that week so
@@ -349,28 +354,38 @@ def render_markdown(table: pd.DataFrame, season: str) -> str:
 
 def run(panel: pd.DataFrame, season: str, ml_dir: Path, bootstrap: dict | None = None,
         gws: list[int] | None = None, fraction: float = me.TOP_FRACTION,
-        min_train_rows: int = mm.MIN_TRAIN_ROWS) -> pd.DataFrame:
-    """Score every finished GW (or ``gws``), upsert the CSV, rewrite the markdown.
+        min_train_rows: int = mm.MIN_TRAIN_ROWS, rescore: bool = False) -> pd.DataFrame:
+    """Score new finished GWs (or re-score ``gws``), upsert the CSV, rewrite the markdown.
 
     ``panel`` is the raw archive panel(s) plus the season panel. Live weeks are
     joined to the built frame; replayed weeks are rebuilt from ``panel`` per
-    gameweek. Returns the full, updated track record.
+    gameweek. Gameweeks already recorded are skipped unless ``rescore`` is set,
+    they are named in ``gws``, or a recorded replay week now has a live file.
+    Returns the full, updated track record.
     """
     frame = build_match_frame(panel)
     csv_path = ml_dir / "track_record.csv"
     existing = read_record(csv_path)
-    recorded_live = set(existing.loc[existing["source"] == LIVE, "gw"].astype(int))
+    recorded = {int(gw): source for gw, source
+                in existing.groupby("gw")["source"].first().items()}
     targets = finished_gameweeks(frame, season)
     if gws is not None:
         targets = [gw for gw in targets if gw in set(gws)]
+    force = rescore or gws is not None
 
     scored, replay_gws = [], []
     for gw in targets:
+        if not force and recorded.get(gw) == LIVE:
+            logger.info("GW%d: already recorded (live); skipped", gw)
+            continue
         path = live_xp_path(ml_dir, gw, bootstrap)
+        if not force and recorded.get(gw) == REPLAY and path is None:
+            logger.info("GW%d: already recorded (replay); skipped", gw)
+            continue
         if path is not None:
             scored.append(score_gameweek(live_predictions(frame, season, gw, path),
                                          gw, LIVE, fraction))
-        elif gw in recorded_live:
+        elif recorded.get(gw) == LIVE:
             logger.info("GW%d: keeping the recorded live rows (xp_gw%d.parquet is gone)", gw, gw)
         else:
             replay_gws.append(gw)
@@ -411,7 +426,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-root", type=Path, default=mm._repo_root() / "data",
                         help="the data/ directory (raw/ and derived/ beneath it)")
     parser.add_argument("--gws", type=mm._gw_range, default=None,
-                        help="only re-score these finished gameweeks, e.g. 3 or 2-5")
+                        help="only re-score these finished gameweeks, e.g. 3 or 2-5 "
+                             "(re-scored even if already recorded)")
+    parser.add_argument("--rescore", action="store_true",
+                        help="re-score gameweeks already in track_record.csv "
+                             "(default: only new ones, or replay weeks that gained a live file)")
     args = parser.parse_args(argv)
 
     derived = args.data_root / "derived"
@@ -426,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         panel = _load_panels([derived / "ml/player_gameweeks.parquet",
                               ml_dir / "player_gameweeks.parquet"])
-        table = run(panel, args.season, ml_dir, bootstrap, args.gws)
+        table = run(panel, args.season, ml_dir, bootstrap, args.gws, rescore=args.rescore)
     except TrackRecordError as error:
         print(f"trackrecord: {error}")
         return 1

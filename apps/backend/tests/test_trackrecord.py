@@ -236,3 +236,58 @@ def test_cli_reads_the_data_root(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "replay" in out and "rows in" in out
     assert len(pd.read_csv(season_dir / "track_record.csv")) == 2 * len(tr.POOLS) * 4 * 6
+
+
+def _spy_replay(monkeypatch) -> list[list[int]]:
+    """Record the gameweeks each ``replay_predictions`` call is asked to rebuild."""
+    calls: list[list[int]] = []
+    real = tr.replay_predictions
+
+    def spy(panel, season, gws, min_train_rows=tr.mm.MIN_TRAIN_ROWS):
+        calls.append(list(gws))
+        return real(panel, season, gws, min_train_rows)
+
+    monkeypatch.setattr(tr, "replay_predictions", spy)
+    return calls
+
+
+def test_recorded_gameweeks_are_skipped_on_a_rerun(panel, frame, tmp_path, monkeypatch):
+    ml_dir = tmp_path / "ml"
+    _write_live_xp(ml_dir, frame, 2)
+    calls = _spy_replay(monkeypatch)
+    first = _run(panel, ml_dir)
+    csv_before = (ml_dir / "track_record.csv").read_bytes()
+    md_before = (ml_dir / "track_record.md").read_bytes()
+
+    # A recorded live week is not even re-read: a corrupt file would fail the join.
+    (ml_dir / "xp_gw2.parquet").write_bytes(b"not parquet")
+    second = _run(panel, ml_dir)
+    assert calls == [[3, 4], []]
+    pd.testing.assert_frame_equal(second, first)
+    assert (ml_dir / "track_record.csv").read_bytes() == csv_before
+    assert (ml_dir / "track_record.md").read_bytes() == md_before
+
+
+def test_rescore_rebuilds_recorded_gameweeks(panel, tmp_path, monkeypatch):
+    ml_dir = tmp_path / "ml"
+    calls = _spy_replay(monkeypatch)
+    first = _run(panel, ml_dir)
+    csv_before = (ml_dir / "track_record.csv").read_bytes()
+
+    again = _run(panel, ml_dir, rescore=True)
+    assert calls == [[2, 3, 4], [2, 3, 4]]
+    pd.testing.assert_frame_equal(again, first)
+    assert (ml_dir / "track_record.csv").read_bytes() == csv_before
+
+
+def test_cli_rescore_flag_reaches_run(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(tr, "_load_panels", lambda paths: pd.DataFrame())
+
+    def fake_run(panel, season, ml_dir, bootstrap, gws, rescore=False):
+        seen["rescore"] = rescore
+        return pd.DataFrame(columns=tr.COLUMNS)
+
+    monkeypatch.setattr(tr, "run", fake_run)
+    tr.main(["--season", LIVE_SEASON, "--data-root", str(tmp_path), "--rescore"])
+    assert seen == {"rescore": True}
