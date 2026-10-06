@@ -97,6 +97,28 @@ def test_minutes_predictor_reports_no_points_mae():
     assert pd.isna(scores["mae"])
 
 
+def test_metrics_average_over_the_gameweeks_spearman_scores():
+    """A gameweek with a constant predictor counts towards no metric, not just Spearman."""
+    frame = pd.DataFrame({
+        "gw": [1] * 4 + [2] * 4,
+        "pred": [1.0, 2.0, 3.0, 4.0, 5.0, 5.0, 5.0, 5.0],
+        "label_points": [1.0, 2.0, 3.0, 4.0, 9.0, 0.0, 0.0, 0.0],
+    })
+    scores = me.score_predictor(frame, "pred", "custom", fraction=0.5, point_scale=True)
+    assert scores["gws"] == 1
+    assert scores["spearman"] == pytest.approx(1.0)
+    assert scores["top_frac"] == pytest.approx(1.0)
+    assert scores["mae"] == pytest.approx(0.0)
+
+
+def test_predictor_constant_in_every_gameweek_scores_nan_with_zero_gws():
+    frame = pd.DataFrame({"gw": [1, 1, 1], "pred": [2.0, 2.0, 2.0],
+                          "label_points": [1.0, 2.0, 3.0]})
+    scores = me.score_predictor(frame, "pred", "custom", point_scale=True)
+    assert scores["gws"] == 0
+    assert all(pd.isna(scores[key]) for key in ("spearman", "top_frac", "mae"))
+
+
 # --- team form for gameweeks with no played row (serving stubs, blanks) -----
 
 TEAM_COLUMNS = ["team_scored_pg", "team_conceded_pg", "opp_scored_pg", "opp_conceded_pg"]

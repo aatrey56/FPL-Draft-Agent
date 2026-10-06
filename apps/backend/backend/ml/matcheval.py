@@ -83,6 +83,11 @@ def score_predictor(frame: pd.DataFrame, predictor: str, name: str,
     ``point_scale`` overrides the ``POINT_SCALE`` membership test for callers
     whose predictor is not one of the named baselines — a model that predicts
     points should report MAE; a ranking-only predictor must not.
+
+    Every metric averages over the same gameweeks, the ``gws`` that get a
+    Spearman: a gameweek where the predictor (or the label) is constant has
+    no ranking, so its top-N pick is arbitrary tie-breaking and it is dropped
+    from all three rather than from Spearman alone.
     """
     on_point_scale = name in POINT_SCALE if point_scale is None else point_scale
     spearmans, precisions, errors = [], [], []
@@ -90,7 +95,10 @@ def score_predictor(frame: pd.DataFrame, predictor: str, name: str,
         usable = group.dropna(subset=[predictor, "label_points"])
         if usable.empty:
             continue
-        spearmans.append(_spearman(usable[predictor], usable["label_points"]))
+        spearman = _spearman(usable[predictor], usable["label_points"])
+        if pd.isna(spearman):
+            continue
+        spearmans.append(spearman)
         precisions.append(_top_n_precision(usable, predictor, fraction))
         if on_point_scale:
             errors.append((usable[predictor] - usable["label_points"]).abs().mean())
@@ -99,7 +107,7 @@ def score_predictor(frame: pd.DataFrame, predictor: str, name: str,
         "spearman": float(series.mean()),
         "top_frac": float(pd.Series(precisions, dtype="float64").mean()),
         "mae": float(pd.Series(errors, dtype="float64").mean()),
-        "gws": int(series.notna().sum()),
+        "gws": len(spearmans),
     }
 
 

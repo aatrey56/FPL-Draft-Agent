@@ -419,6 +419,25 @@ def test_live_eval_scores_every_requested_gameweek():
     assert set(calibration["position"]) == {"GKP", "DEF", "MID", "FWD"}
 
 
+def _tiny_report() -> tuple[pd.DataFrame, pd.DataFrame]:
+    rows = [{"pool": pool, "position": "MID", "predictor": predictor,
+             "spearman": value, "top_frac": 0.5, "mae": 2.0, "gws": 3}
+            for pool in ("startable", "all")
+            for predictor, value in (("model_xp", 0.3), ("mean_l3", 0.2))]
+    calibration = pd.DataFrame([{"position": "MID", "brier": 0.1,
+                                 "predicted_rate": 0.6, "actual_rate": 0.62, "n": 9}])
+    return pd.DataFrame(rows), calibration
+
+
+def test_live_report_prints_the_gw2_caveat_only_when_gw2_is_scored(capsys):
+    report, calibration = _tiny_report()
+    mm._print_live_eval(report, calibration, LIVE_SEASON, [2, 3, 4, 5])
+    assert "GW2 form = 1 gameweek" in capsys.readouterr().out
+    mm._print_live_eval(report, calibration, LIVE_SEASON, [3, 4, 5])
+    out = capsys.readouterr().out
+    assert "GW2 form" not in out and "LIVE CHECK 2026-27 GW3-5" in out
+
+
 def test_gw_range_parses_ranges_lists_and_rejects_garbage():
     assert mm._gw_range("2-5") == [2, 3, 4, 5]
     assert mm._gw_range("3") == [3]

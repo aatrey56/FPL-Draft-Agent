@@ -853,8 +853,10 @@ def _print_live_eval(report: pd.DataFrame, calibration: pd.DataFrame,
                      season: str, eval_gws: list[int]) -> None:
     print(f"\n== LIVE CHECK {season} GW{min(eval_gws)}-{max(eval_gws)}: as-of "
           "walk-forward, trained on archive + earlier GWs of the season ==")
-    print("caveat: GW2 form = 1 gameweek; Spearman is the mean over "
-          f"{len(eval_gws)} gameweeks, so noise is large")
+    if 2 in eval_gws:
+        print("caveat: GW2 form = 1 gameweek")
+    print(f"caveat: every metric is the mean over at most {len(eval_gws)} "
+          "gameweeks (see gws), so noise is large")
     for pool, title in (("startable", "startable pool"), ("all", "full pool")):
         view = report[report["pool"] == pool]
         print(f"\n-- {title}: mean per-gameweek Spearman --")
