@@ -552,6 +552,7 @@ def build_gw_xp(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
     availability = availability_series(bootstrap, target["code"])
     scored = score_fixtures(model, target, availability)
     scored["season"], scored["gw"] = season, gw
+    scored["panel_max_gw"] = panel_max_gw(panel, season)
     return scored.sort_values("xp", ascending=False).reset_index(drop=True)
 
 
@@ -637,6 +638,19 @@ def served_walk_forward(panel: pd.DataFrame, season: str, eval_gws: list[int],
     if not predictions:
         return pd.DataFrame(columns=list(panel.columns) + ["xp"])
     return pd.concat(predictions, ignore_index=True)
+
+
+def panel_max_gw(panel: pd.DataFrame, season: str) -> int:
+    """Last gameweek of ``season`` present in the training panel (0 = none).
+
+    The panel holds finished gameweeks only, so this is the last finished GW
+    the model saw. ``build_gw_xp`` stamps it on every row as ``panel_max_gw``
+    and ``waiver.read_gw_xp`` rejects an ``xp_gw{N}`` file unless it is N-1 —
+    an xP file trained on an unrefreshed panel is stale even if its ``gw``
+    matches.
+    """
+    in_season = panel.loc[panel["season"] == season, "gw"]
+    return int(in_season.max()) if not in_season.empty else 0
 
 
 def next_gameweek(bootstrap: dict, now: datetime | None = None) -> int:

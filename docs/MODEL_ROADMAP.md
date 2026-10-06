@@ -314,7 +314,12 @@ FWD 0.412 vs 0.356) met the win rule in 4 of 4 positions. The Makefile
 `SCORER` variable and `replay` CLI default the same way. `model` joins
 `xp_gw<N>.parquet` on the permanent `code`; players it does not cover (blank
 GW) get the heuristic value, tagged `xp_source` = `heuristic` (`none` when
-there is no projection either). A missing or stale file falls back to the
+there is no projection either). `xp_gw<N>.parquet` is stale unless its `gw`
+is N and its `panel_max_gw` (the last finished GW in the training panel,
+stamped by `build_gw_xp`) is N-1; `make derive` chains the panel rebuild and
+the xP build with `&&`, so a failed panel step never yields an xP file
+trained on an old panel. Mid-gameweek the panel stops at N-2, so the model
+file is rejected until the gameweek finishes. A missing or stale file falls back to the
 heuristic for everyone with a WARNING, and the JSON says so: `scorer` is the
 scorer actually used (`heuristic` after a fallback), beside
 `scorer_requested`, `xp_fallback` and `xp_fallback_reason`. Waiver recs rank

@@ -162,7 +162,8 @@ def test_blank_gameweek_flags_players(tmp_path):
 def _model_frame(rows, gw=4):
     return pd.DataFrame([{
         "code": code, "xp": xp, "p_start": 0.9, "xp_floor": 0.0, "xp_ceiling": xp + 3,
-        "drivers": "d", "opponents": "vWOL", "gw": gw} for code, xp in rows])
+        "drivers": "d", "opponents": "vWOL", "gw": gw, "panel_max_gw": gw - 1}
+        for code, xp in rows])
 
 
 def _xp_world(tmp_path, gw_xp):

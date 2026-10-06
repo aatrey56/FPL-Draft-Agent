@@ -207,7 +207,8 @@ def _gw_xp(rows, gw=1):
     """Match-model next-GW frame with the columns build_player_table reads."""
     return pd.DataFrame([{
         "code": code, "xp": xp, "p_start": 0.9, "xp_floor": xp - 2.0, "xp_ceiling": xp + 3.0,
-        "drivers": "pts_std", "opponents": "vWOL", "gw": gw} for code, xp in rows])
+        "drivers": "pts_std", "opponents": "vWOL", "gw": gw, "panel_max_gw": gw - 1}
+        for code, xp in rows])
 
 
 def _xp_table(tmp_path, gw_xp):
@@ -361,3 +362,28 @@ def test_unprojected_free_agent_stays_skipped_without_model_value(tmp_path):
     table, squad = _model_only_world(tmp_path, [(999, 6.0)])
     legacy = wv.recommend(table, squad, rank_by="legacy")      # heuristic scorer
     assert all(r["add"] != "NoProj" for r in legacy)
+
+
+def test_load_gw_xp_rejects_a_file_trained_on_an_unrefreshed_panel(tmp_path, caplog):
+    """Review regression: a failed panel rebuild let xP train on a stale panel
+    while its gw still matched. panel_max_gw must be N-1."""
+    path = tmp_path / "xp_gw6.parquet"
+    _gw_xp([(200, 6.5)], gw=6).assign(panel_max_gw=4).to_parquet(path)
+    with caplog.at_level("WARNING"):
+        assert wv.load_gw_xp(path, 6) is None
+    assert "panel not refreshed" in caplog.text
+    frame, reason = wv.read_gw_xp(path, 6)
+    assert frame is None and "through gw [4], expected 5" in reason
+
+
+def test_load_gw_xp_rejects_a_file_without_panel_max_gw(tmp_path):
+    path = tmp_path / "xp_gw6.parquet"
+    _gw_xp([(200, 6.5)], gw=6).drop(columns="panel_max_gw").to_parquet(path)
+    frame, reason = wv.read_gw_xp(path, 6)
+    assert frame is None and "no panel_max_gw" in reason
+
+
+def test_load_gw_xp_accepts_gw1_with_an_empty_season_panel(tmp_path):
+    path = tmp_path / "xp_gw1.parquet"
+    _gw_xp([(200, 6.5)], gw=1).to_parquet(path)              # panel_max_gw 0
+    assert wv.load_gw_xp(path, 1) is not None

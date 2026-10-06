@@ -151,6 +151,16 @@ def read_gw_xp(path: Path, expected_gw: int | None) -> tuple[pd.DataFrame | None
     gws = sorted(int(g) for g in frame["gw"].unique()) if "gw" in frame else []
     if expected_gw is None or gws != [expected_gw]:
         return None, f"match xP file {path.name} is for gw {gws}, expected {expected_gw} (stale)"
+    # The model for GW N must be trained on a panel through GW N-1. Mid-GW
+    # (current GW N-1 still in play) the panel stops at N-2, so the file is
+    # rejected until the gameweek finishes and the panel is rebuilt.
+    if "panel_max_gw" not in frame:
+        return None, (f"match xP file {path.name} has no panel_max_gw "
+                      "(built before the panel check; rebuild it)")
+    panel_gws = sorted(int(g) for g in frame["panel_max_gw"].unique())
+    if panel_gws != [expected_gw - 1]:
+        return None, (f"match xP file {path.name} was trained on a panel through gw "
+                      f"{panel_gws}, expected {expected_gw - 1} (panel not refreshed; stale)")
     return frame, None
 
 
@@ -158,8 +168,9 @@ def load_gw_xp(path: Path, expected_gw: int | None) -> pd.DataFrame | None:
     """Read the match model's ``xp_gw{N}.parquet`` for the upcoming gameweek.
 
     Returns None (with a WARNING, so the caller falls back to the heuristic
-    loudly) when the file is missing or was built for a different gameweek
-    than ``expected_gw`` (stale). See ``read_gw_xp`` for the reason string.
+    loudly) when the file is missing, was built for a different gameweek
+    than ``expected_gw``, or was trained on a panel whose last GW is not
+    ``expected_gw - 1`` (stale). See ``read_gw_xp`` for the reason string.
     """
     frame, reason = read_gw_xp(path, expected_gw)
     if reason:

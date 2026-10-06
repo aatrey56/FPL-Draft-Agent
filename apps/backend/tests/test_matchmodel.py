@@ -877,3 +877,17 @@ def test_played_row_team_form_snapshot_on_the_synthetic_season(frame):
     for column, total in expected.items():
         assert frame[column].sum() == pytest.approx(total, abs=1e-5)
         assert frame[column].isna().sum() == PER_POSITION * 4  # GW1 only
+
+
+def test_build_gw_xp_stamps_the_panels_last_finished_gw():
+    """waiver.read_gw_xp checks panel_max_gw == N-1; build_gw_xp records it."""
+    archive = _panel()
+    new_season = archive[archive["gw"] <= 2].assign(season="2026-27")
+    panel = pd.concat([archive, new_season], ignore_index=True)
+    scored = mm.build_gw_xp(panel, _bootstrap(new_season, 3), 3, "2026-27",
+                            min_train_rows=SMALL_FIT)
+    assert set(scored["panel_max_gw"]) == {2}
+
+
+def test_panel_max_gw_is_zero_for_a_season_with_no_rows():
+    assert mm.panel_max_gw(_panel(), "2030-31") == 0
