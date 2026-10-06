@@ -52,8 +52,13 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   stage one predicts *who plays*, stage two *how many points if they do*, per
   position, with the opponent in the features. It beats every naive baseline
   in all four positions on a held-out slice of gameweeks (table below).
-  Not yet wired into `waiver_plan` / `my_week`, which still run the per-GW
-  heuristic (projection/38 × fixture multiplier × availability).
+  `waiver_plan` / `my_week` read it (`xp_gw<N>.parquet`) with
+  `--scorer model` and fall back, with a WARNING and a per-player `xp_source`
+  (`model` / `heuristic` / `none`), to the per-GW heuristic (projection/38 ×
+  fixture multiplier × availability) for uncovered players or a missing/stale
+  file. Waiver recommendations rank by `next1_gain` (next-GW xP of the add
+  minus the drop); `hold` recs (no next-GW gain, better ROS) come last.
+  `--scorer heuristic` reproduces the pre-xP output exactly.
 - Players the model cannot value (long injury last season, promoted, new
   signings) are **surfaced for human judgment, never scored as zero** — the
   tools refuse to guess rather than quietly recommend dropping a returning star.
@@ -156,7 +161,7 @@ make autopilot-off
 ```
 
 Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
-derive: ownership, waiver, my_week first, then season panel, next-GW xP and the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`) (a panel/xP failure fails `make derive` but never blocks the decision artifacts); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
+derive: ownership, then season panel && next-GW xP (`-`-prefixed: a failure warns and waiver/my_week fall back to the heuristic), then waiver and my_week with `SCORER={heuristic,model}`, then the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
 Non-Mac or cron fans: schedule `scripts/autorefresh.sh` (crontab example inline).
 
 Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):

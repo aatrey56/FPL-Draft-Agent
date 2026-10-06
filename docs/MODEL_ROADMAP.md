@@ -263,8 +263,9 @@ live-season check has to be re-earned by live rows from GW6 on.
     rather than explicit in the output.
   - **Venue-split team environment** (`lambda_for`/`lambda_against` per venue)
     and the `fixture_targets` derived view.
-  - **Wire the weekly tools onto it** — `waiver_plan`, `my_week` and
-    `trade_check` still consume the per-GW heuristic.
+  - **Wire `trade_check` onto it** — `waiver_plan` and `my_week` now consume
+    the per-GW xP (see "Weekly tools on match xP" below); `trade_check` still
+    uses the heuristic.
   - **Horizons**: xP is produced for one gameweek; the 3-GW and ROS horizons
     in CLAUDE.md §5.2 are not built.
   - Club-move flag and `expected_minutes` surfaced (fixes the case where
@@ -298,10 +299,31 @@ from the ownership snapshots and per-GW live files as they stood at
 points, and compares it with `no_change`, `std_points`, `form3` and my actual
 moves (`me`). Run `uv run python -m backend.ml.replay --season 2026-27
 --gws 2-5` from `apps/backend` (`--data-root` points at another checkout's
-`data/`); it writes `derived/2026-27/ml/waiver_replay.json`. Availability is
+`data/`); it writes `derived/2026-27/ml/waiver_replay_<scorer>.json`
+(`--scorer {heuristic,model}`). Availability is
 neutralised (only the current status/news snapshot exists), so n=4 deadlines
 proves the harness runs, not the model. The as-of contract and caveats are in
 the module docstring.
+
+## Weekly tools on match xP
+
+`waiver_plan` and `my_week` take `--scorer {heuristic,model}`. `model` joins
+`xp_gw<N>.parquet` on the permanent `code`; players it does not cover (blank
+GW) get the heuristic value, tagged `xp_source` = `heuristic` (`none` when
+there is no projection either). A missing or stale file falls back to the
+heuristic for everyone with a WARNING. Waiver recs rank by `next1_gain`;
+`next3_xp` is still heuristic (horizons are a later section) and the drop
+pick is unchanged. Known scale mismatch: model xP averages higher than the
+`ros/38` heuristic fallback, so a heuristic-valued drop flatters model-valued
+adds until the horizons work removes most fallbacks.
+
+`replay --scorer model` rebuilds the match xP per deadline N from
+`archive panel UNION season panel[gw < N]` with the same neutral availability
+as the heuristic (a guard raises if any season gw >= N is present). Replay
+`waiver_plan` rank-1 `gw_gain` totals over GW2-5 (n=4, a reported number, not
+a gate): heuristic **-15.0**, model **+9.0**; `std_points` +7.0, `form3` +7.0
+and `me` +2.0 are identical between scorers. Outputs go to
+`waiver_replay_<scorer>.json`.
 
 ## Working rules
 
