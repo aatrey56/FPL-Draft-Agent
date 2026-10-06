@@ -64,7 +64,10 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   as a `stream` with `season_gain: null` and `season_unknown: true`.
   `--scorer model` is the default (the 2026-27 GW2-5 live check in
   `docs/MODEL_ROADMAP.md` found the model ahead of every baseline in all
-  four positions); `--scorer heuristic` reproduces the pre-xP output exactly.
+  four positions); `--scorer heuristic` reproduces the pre-xP output exactly
+  between gameweeks. Mid-gameweek (GW N in play) both scorers now plan for
+  N+1: the heuristic's fixture loads and my_week's `gw` used to start at the
+  locked GW N.
 - Players the model cannot value (long injury last season, promoted, new
   signings) are **surfaced for human judgment, never scored as zero** — the
   tools refuse to guess rather than quietly recommend dropping a returning star.

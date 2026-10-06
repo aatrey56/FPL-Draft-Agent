@@ -317,7 +317,11 @@ GW) get the heuristic value, tagged `xp_source` = `heuristic` (`none` when
 there is no projection either). N is `matchmodel.next_gameweek` for the xP
 build, `waiver_plan` and `my_week` alike (the heuristic fixture loads start
 at N too, dropping a still-in-play gameweek from the bootstrap fixture
-map). `xp_gw<N>.parquet` is stale unless its `gw`
+map). This applies to `SCORER=heuristic` as well, and changes its output
+mid-gameweek: with GW N in play (past its deadline, unfinished), the
+heuristic fixture loads and my_week's `gw` used to start at N (the smallest
+fixture-map key, a locked gameweek) and now start at N+1. Between gameweeks
+the heuristic output is unchanged. `xp_gw<N>.parquet` is stale unless its `gw`
 is N and its `panel_max_gw` (the last finished GW in the training panel,
 stamped by `build_gw_xp`) equals the bootstrap's last finished gameweek;
 `make derive` chains the panel rebuild and the xP build with `&&`, so a
