@@ -510,6 +510,32 @@ def test_double_gameweek_sums_both_fixtures():
     assert row["xp_ceiling"] > row["xp"] > row["xp_floor"] >= 0
 
 
+def test_served_frame_carries_the_stage_two_conditionals():
+    """xp_started / xp_cameo let a consumer re-weight with its own p_start."""
+    panel = _panel()
+    gw = N_GWS + 1
+    scored = mm.build_gw_xp(panel, _bootstrap(panel, gw), gw, SEASON,
+                            min_train_rows=SMALL_FIT)
+    assert scored[["xp_started", "xp_cameo"]].notna().all().all()
+    p_cameo = scored["p_appear"] - scored["p_start"]
+    rebuilt = scored["p_start"] * scored["xp_started"] + p_cameo * scored["xp_cameo"]
+    assert rebuilt.to_numpy() == pytest.approx(scored["xp"].to_numpy())
+    assert {"panel_max_gw", "gw", "season"} <= set(scored.columns)   # stamps intact
+
+
+def test_double_gameweek_conditionals_describe_the_first_fixture():
+    """In a double, xp sums both fixtures but xp_started is one fixture's."""
+    panel = _panel()
+    gw = N_GWS + 1
+    bootstrap = _bootstrap(panel, gw, doubles=(3,))
+    scored = mm.build_gw_xp(panel, bootstrap, gw, SEASON, min_train_rows=SMALL_FIT)
+    doubled = scored[scored["num_fixtures"] == 2]
+    assert not doubled.empty
+    one_fixture = (doubled["p_start"] * doubled["xp_started"]
+                   + (doubled["p_appear"] - doubled["p_start"]) * doubled["xp_cameo"])
+    assert (doubled["xp"] > one_fixture + 1e-9).any()
+
+
 def test_blank_gameweek_scores_zero():
     """No fixture means no row and no expected points."""
     panel = _panel()
