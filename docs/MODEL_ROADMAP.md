@@ -136,6 +136,39 @@ the best naive baseline above, or add the public FPL API as a second read-only
 source and snapshot `ep_next` weekly so a real comparison accumulates
 prospectively. Until then, the baselines above are the bar.
 
+## Live-season check — 2026-27 GW2-5
+
+`uv run python -m backend.ml.matchmodel --eval-season 2026-27 --eval-gws 2-5
+--panel <archive panel> <2026-27 panel>` scores each target gameweek as-of:
+the model for GW N is fitted on every labelled 2025-26 row plus 2026-27 rows
+with `gw < N` — the training set `build_gw_xp` uses when serving, unlike
+`--backtest`, which trains within one season. Alphas are the shipped
+`SELECTED_ALPHAS` (nothing tuned on these gameweeks) and it writes
+`derived/2026-27/ml/match_model_eval_gw2-5.csv`. Mean per-gameweek Spearman,
+**startable** pool, 4 gameweeks:
+
+| position | model | best baseline | edge | model top-20% | baseline top-20% | model MAE |
+|---|---|---|---|---|---|---|
+| GKP | 0.391 | 0.223 (mean l5) | +0.168 | 0.312 | 0.250 | 2.26 |
+| DEF | 0.342 | 0.226 (minutes) | +0.117 | 0.405 | 0.298 | 2.43 |
+| MID | 0.345 | 0.291 (minutes) | +0.054 | 0.296 | 0.333 | 2.05 |
+| FWD | 0.412 | 0.356 (minutes) | +0.056 | 0.462 | 0.488 | 2.69 |
+
+The full pool agrees (model ahead in all four positions, +0.03 to +0.12).
+Stage 1 holds up live: Brier 0.07 / 0.13 / 0.13 / 0.12 (GKP/DEF/MID/FWD),
+predicted start rate within 3pp of actual.
+
+**Verdict: model wins 4/4 — it out-ranks the best naive baseline in every
+position on the startable pool, so the weekly tools' default scorer becomes
+the model (`--scorer model`).**
+
+Caveats: GW2 form is one gameweek; four gameweeks is a small sample (the
+baselines differ by less than the week-to-week spread), and top-20% precision
+is behind the baseline for MID/FWD even where Spearman is ahead. Availability
+is inert here (no historical flags), as in the backtest. GKP `minutes_only` is
+constant at GW2 (every startable keeper has one 90-minute game), so its
+Spearman averages 3 gameweeks, not 4; it is not the best GKP baseline.
+
 ## Phases
 
 ### Phase A — Match xP model  *(core built 2026-08-24)*
