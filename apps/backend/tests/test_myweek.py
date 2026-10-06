@@ -363,6 +363,16 @@ def test_role_override_fact_is_listed_and_drives_gw_xp(tmp_path):
     assert all(p["role_override"] is None for p in others)
 
 
+def test_role_override_warning_text_for_fact_only_and_empty_entries(tmp_path):
+    players, status = _role_squad(tmp_path)
+    overrides = [{"player": "Covered", "team": "ARS", "fact": "new manager"},
+                 {"player": "Heur", "team": "ARS"}]
+    players, _ = mw.apply_role_overrides(players, overrides, target_gw=4)
+    att = {p["web_name"]: p["warnings"][0] for p in mw.build_my_week(players, status, 42)["attention"]}
+    assert att["Covered"] == "role override: new manager"
+    assert att["Heur"] == "role override: no detail given"
+
+
 def test_override_ruling_a_player_out_keeps_him_off_the_xi(tmp_path):
     """Regression (the Maddison case): flagged out in role_overrides.json but
     status "a" in the bootstrap, he took an XI slot from a fit player."""

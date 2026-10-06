@@ -107,8 +107,8 @@ def player_warning_items(row: pd.Series) -> list[tuple[str, str]]:
     if override is not None and not pd.isna(override):
         p_start = row.get("role_override_p_start")
         chance = "" if pd.isna(p_start) else f"p_start {float(p_start):g}"
-        items.append((WARNING_ROLE_OVERRIDE,
-                      "role override: " + " — ".join(part for part in (chance, override) if part)))
+        detail = " — ".join(part for part in (chance, override) if part)
+        items.append((WARNING_ROLE_OVERRIDE, f"role override: {detail or 'no detail given'}"))
     if row["xp_source"] == "none":
         items.append((WARNING_NO_VALUE, "no value — judge manually (player_card)"))
     if row["gw_fixture_load"] == 0:
