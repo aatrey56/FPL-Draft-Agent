@@ -7,7 +7,7 @@ import pytest
 
 from backend.ml import replay as rp
 from backend.ml import waiver as wv
-from test_waiver import SEASONS, _players_fixture
+from test_waiver import SEASONS, _horizon_xp, _players_fixture
 
 ME, OTHER, LEAGUE = 42, 99, 7
 T2 = "2026-08-27T17:30:00Z"            # waivers_time of GW2
@@ -278,9 +278,10 @@ def test_leak6_plan_regression_matches_pre_seam_recommendations(tmp_path):
     assert [(r["add"], r["drop"]) for r in result["recommendations"]] == golden
     star = next(r for r in result["recommendations"] if r["add"] == "SeasonStar")
     assert (star["add_element"], star["drop_element"]) == (20, 11)
-    assert set(result) == {"players", "squad", "xi_next3_xp", "recommendations",
+    assert set(result) == {"players", "squad", "xi_next3_xp", "rank_by", "recommendations",
                            "drop_candidates", "unprojected_squad", *wv.OVERRIDE_REPORT_KEYS,
                            "xp_reconciled"}
+    assert result["rank_by"] == "legacy"
 
 
 def test_leak7_dnp_and_missing_are_zero_not_nan_and_gw3_null_for_late_gws():
@@ -357,8 +358,10 @@ def _panel(season, gws):
                           "minutes": 90} for gw in gws])
 
 
-def _model_world(tmp_path, monkeypatch, captured):
-    """build_world plus panels; matchmodel.build_gw_xp is stubbed (records its panel)."""
+def _model_world(tmp_path, monkeypatch, captured, horizons=None):
+    """build_world plus panels; matchmodel.build_gw_xp is stubbed (records its
+    panel), and so is build_horizon_xp (records into ``horizons``): Yorke has
+    the best next GW, Zeta the best three."""
     world = build_world(tmp_path)
     _panel("2025-26", [1, 2]).to_parquet(world / "derived/ml/player_gameweeks.parquet")
     (world / "derived/2026-27/ml").mkdir(parents=True)
@@ -369,7 +372,13 @@ def _model_world(tmp_path, monkeypatch, captured):
         return pd.DataFrame([{"code": 1021, "xp": 9.0, "p_start": 0.9, "xp_floor": 5.0,
                               "xp_ceiling": 12.0, "drivers": "d", "opponents": "vWOL", "gw": gw}])
 
+    def fake_horizon(panel, bootstrap, season, gws):
+        if horizons is not None:
+            horizons.append((panel, bootstrap, gws))
+        return _horizon_xp({1021: [9.0, 1.0, 1.0], 1022: [1.0, 8.0, 8.0]}, gw=gws[0])
+
     monkeypatch.setattr(rp.matchmodel, "build_gw_xp", fake_build)
+    monkeypatch.setattr(rp.matchmodel, "build_horizon_xp", fake_horizon)
     return world
 
 
@@ -377,7 +386,7 @@ def test_model_scorer_uses_asof_panel_and_leaves_other_rows_identical(tmp_path, 
     captured: list = []
     world = _model_world(tmp_path, monkeypatch, captured)
     heuristic = rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "heuristic")
-    model = rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "model")
+    model = rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "model", "1")
     assert model["scorer"] == "model" and heuristic["scorer"] == "heuristic"
     for strategy in ("no_change", "std_points", "form3", "me"):
         assert [r for r in model["rows"] if r["strategy"] == strategy] == \
@@ -450,10 +459,11 @@ def test_completion_reads_bootstrap_fixtures_when_live_is_missing(tmp_path, capl
 
 def test_replay_excludes_an_unfinished_previous_gw_from_panel_and_history(tmp_path,
                                                                          monkeypatch):
-    """GW2 ends after GW3's waivers: the model panel and the baselines'
-    history at the GW3 deadline see GW1 only."""
+    """GW2 ends after GW3's waivers: the model panel, the 3-GW horizon's
+    panel and the baselines' history at the GW3 deadline see GW1 only."""
     captured: list = []
-    world = _model_world(tmp_path, monkeypatch, captured)
+    horizons: list = []
+    world = _model_world(tmp_path, monkeypatch, captured, horizons)
     _with_kickoffs(world, 2, ["2026-09-03T16:30:00Z"])
     seen: list = []
     real_pick = rp.baseline_pick
@@ -467,6 +477,8 @@ def test_replay_excludes_an_unfinished_previous_gw_from_panel_and_history(tmp_pa
     (panel, _, event), = captured
     assert event == 3
     assert panel.loc[panel["season"] == "2026-27", "gw"].tolist() == [1]
+    (horizon_panel, _, _), = horizons
+    assert horizon_panel.loc[horizon_panel["season"] == "2026-27", "gw"].tolist() == [1]
     assert seen == [(3, [1]), (3, [1])]
 
 
@@ -514,3 +526,85 @@ def test_asof_season_panel_keeps_only_the_season_before_the_deadline():
 def test_unknown_scorer_rejected(tmp_path):
     with pytest.raises(ValueError, match="scorer"):
         rp.run(build_world(tmp_path), "2026-27", LEAGUE, ME, [2], "magic")
+
+
+# ---- --horizon ------------------------------------------------------------
+
+def test_horizon_3_builds_the_asof_horizon_and_ranks_on_it(tmp_path, monkeypatch):
+    horizons: list = []
+    world = _model_world(tmp_path, monkeypatch, [], horizons)
+    doc = rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "model", "3")
+    assert doc["horizon"] == "3" and doc["rank_by"] == "next3"
+    assert [gws for _, _, gws in horizons] == [[2, 3, 4], [3, 4, 5]]
+    for panel, bootstrap, gws in horizons:
+        assert panel.loc[panel["season"] == "2026-27", "gw"].max() < gws[0]   # as-of panel
+        assert set(bootstrap["fixtures"]) <= {str(g) for g in gws}             # schedule only
+        assert str(gws[0]) in bootstrap["fixtures"]
+        assert {e["status"] for e in bootstrap["elements"]} == {"a"}           # neutral
+    assert _row(doc, "waiver_plan")["add"] == "Zeta"         # best three GWs, not best next GW
+
+
+def test_horizon_1_is_the_next_gw_ranking_and_builds_no_horizon(tmp_path, monkeypatch):
+    """Regression: --horizon 1 must reproduce the pre-horizon model replay —
+    same inputs to waiver.plan, so the same rank-1 picks and totals."""
+    horizons: list = []
+    world = _model_world(tmp_path, monkeypatch, [], horizons)
+    seen: list = []
+    real_plan = rp.wv.plan
+
+    def spy(*args, **kwargs):
+        seen.append((kwargs["horizon"], kwargs["horizon_xp"]))
+        return real_plan(*args, **kwargs)
+
+    monkeypatch.setattr(rp.wv, "plan", spy)
+    doc = rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "model", "1")
+    assert horizons == [] and seen == [("1", None), ("1", None)]
+    assert doc["horizon"] == "1" and doc["rank_by"] == "next1"
+    assert _row(doc, "waiver_plan")["add"] == "Yorke"
+
+
+def test_heuristic_scorer_ignores_the_horizon(tmp_path, monkeypatch):
+    """Regression guard for the replay 'before' number (waiver_plan -15.0 on
+    the live data): no horizon may move a heuristic row."""
+    horizons: list = []
+    world = _model_world(tmp_path, monkeypatch, [], horizons)
+    docs = [rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "heuristic", h) for h in wv.HORIZONS]
+    assert horizons == []
+    assert all(doc["rank_by"] == "legacy" for doc in docs)
+    assert all(doc["rows"] == docs[0]["rows"] and doc["totals"] == docs[0]["totals"]
+               for doc in docs)
+
+
+def test_unknown_horizon_rejected(tmp_path):
+    with pytest.raises(ValueError, match="horizon"):
+        rp.run(build_world(tmp_path), "2026-27", LEAGUE, ME, [2], "heuristic", "5")
+
+
+def test_every_run_reports_both_gain_totals_and_its_horizon(tmp_path, monkeypatch):
+    world = _model_world(tmp_path, monkeypatch, [])
+    table = rp.format_table(rp.run(world, "2026-27", LEAGUE, ME, [2], "model", "3"))
+    assert "scorer: model | horizon: 3 (ranked by next3)" in table
+    assert "TOTAL gw_gain:" in table and "TOTAL gw3_gain" in table
+
+
+def test_output_file_is_one_per_ranking():
+    assert rp.output_name("heuristic", "3") == "waiver_replay_heuristic.json"
+    assert rp.output_name("heuristic", "1") == "waiver_replay_heuristic.json"
+    assert rp.output_name("model", "1") == "waiver_replay_model_h1.json"
+    assert rp.output_name("model", "3") == "waiver_replay_model_h3.json"
+    assert rp.output_name("model", "ros") == "waiver_replay_model_hros.json"
+
+
+def test_cli_writes_the_horizon_into_the_document(tmp_path, monkeypatch, capsys):
+    world = _model_world(tmp_path, monkeypatch, [])
+    argv = ["--season", "2026-27", "--gws", "2", "--league", str(LEAGUE), "--entry", str(ME),
+            "--data-root", str(world), "--scorer", "model"]
+    assert rp.main(argv) == 0                                   # default --horizon 3
+    assert rp.main([*argv, "--horizon", "1"]) == 0
+    ml_dir = world / "derived/2026-27/ml"
+    by_three = json.loads((ml_dir / "waiver_replay_model_h3.json").read_text())
+    by_one = json.loads((ml_dir / "waiver_replay_model_h1.json").read_text())
+    assert (by_three["horizon"], by_three["rank_by"]) == ("3", "next3")
+    assert (by_one["horizon"], by_one["rank_by"]) == ("1", "next1")
+    assert str(ME) not in json.dumps(by_three["rows"])
+    assert capsys.readouterr().out.count("TOTAL gw3_gain") == 2

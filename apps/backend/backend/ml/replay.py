@@ -64,6 +64,15 @@ heuristic) and passes it to ``waiver.plan`` as ``gw_xp``. A leak guard raises if
 the as-of season panel holds any gameweek not completed by T_N. The other four strategies do not
 depend on the scorer, so their rows are identical between scorers.
 
+Horizon (``--horizon {1,3,ros}``, default 3; ``model`` scorer only): the gain
+``waiver.plan`` ranks on. ``1`` is the next-GW ranking, unchanged from before
+the horizon existed (same rank-1 picks, same totals). ``3`` and ``ros`` also
+build the model's 3-GW horizon as of the deadline
+(``matchmodel.build_horizon_xp`` over GW N..N+2 of the as-of schedule, from
+the same as-of panel and neutral availability) and pass it as ``horizon_xp``.
+Every run reports both the ``gw_gain`` and the ``gw3_gain`` totals, whatever
+it ranked on. ``heuristic`` ignores the horizon: it is the frozen baseline.
+
 Role signals: ``model`` also passes the as-of season panel (the gameweeks
 completed by T_N) to
 ``waiver.plan`` so club-movers are valued on the minutes they had played by
@@ -79,10 +88,13 @@ unchanged by it (waiver_plan -15.0). ``role_overrides.json`` is never
 applied in replay — it is hand-written knowledge as of today, not as of the
 deadline.
 
-CLI (reads only; writes ``derived/<season>/ml/waiver_replay_<scorer>.json``):
+CLI (reads only; writes ``derived/<season>/ml/waiver_replay_heuristic.json``
+or ``waiver_replay_model_h<horizon>.json`` — one file per ranking, so the
+horizons can be compared side by side):
 
     uv run python -m backend.ml.replay --season 2026-27 --gws 2-5 \\
-        [--scorer {heuristic,model}] [--league ID --entry ID] [--data-root PATH]
+        [--scorer {heuristic,model}] [--horizon {1,3,ros}] \\
+        [--league ID --entry ID] [--data-root PATH]
 
 League/entry fall back to LEAGUE_ID / ENTRY_ID (repo .env, then the .env next
 to ``--data-root``); since load_dotenv does not override values already set,
@@ -255,6 +267,22 @@ def model_gw_xp(archive: pd.DataFrame, season_panel: pd.DataFrame, neutral: dict
     assert_no_panel_leak(panel, season, event, completed)
     bootstrap = {**neutral, "fixtures": {str(event): fixtures[str(event)]}}
     return matchmodel.build_gw_xp(panel, bootstrap, event, season)
+
+
+def model_horizon_xp(archive: pd.DataFrame, season_panel: pd.DataFrame, neutral: dict,
+                     fixtures: dict[str, list[dict]], season: str, event: int,
+                     completed: set[int]) -> pd.DataFrame:
+    """The model's 3-GW horizon for the deadline of ``event``, as of it.
+
+    Same as-of panel (``completed`` gameweeks), leak guard and neutral
+    availability as ``model_gw_xp``; ``fixtures`` (``asof_fixtures``)
+    supplies the schedule for ``event`` and the two gameweeks after it, all
+    of which are scored.
+    """
+    panel = asof_panel(archive, season_panel, completed)
+    assert_no_panel_leak(panel, season, event, completed)
+    return matchmodel.build_horizon_xp(panel, {**neutral, "fixtures": fixtures}, season,
+                                       matchmodel.horizon_gameweeks(event))
 
 
 def departed_before(bootstrap: dict, raw_root: Path, event: int,
@@ -460,14 +488,19 @@ def _load_inputs(data_root: Path, season: str, league: int) -> dict:
 
 
 def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
-        scorer: str = "heuristic") -> dict:
+        scorer: str = "heuristic", horizon: str = wv.DEFAULT_HORIZON) -> dict:
     """Replay each deadline in gws and return the full result document.
 
     ``scorer`` selects how ``waiver_plan`` values the next GW: ``heuristic``
     (ros/38 x fixtures) or ``model`` (match xP built as of each deadline).
+    ``horizon`` is the gain the model scorer ranks on (``waiver.HORIZONS``);
+    the document records it, and ``rank_by`` — the ranking ``waiver.plan``
+    actually used (``legacy`` for the heuristic scorer, whatever the horizon).
     """
     if scorer not in wv.SCORERS:
         raise ValueError(f"unknown scorer {scorer!r}")
+    if horizon not in wv.HORIZONS:
+        raise ValueError(f"unknown horizon {horizon!r}")
     inputs = _load_inputs(data_root, season, league)
     if scorer == "model":
         archive = pd.read_parquet(Path(data_root) / "derived/ml/player_gameweeks.parquet")
@@ -478,6 +511,7 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
     elements = {el["id"]: el for el in neutralize_bootstrap(bootstrap)["elements"]}
     transactions = inputs["transactions"]
     rows: list[dict] = []
+    rank_by = wv.rank_key(horizon, None, None)
     for event in gws:
         if event < 2:
             raise ValueError("replay needs GW >= 2 (GW1 has no prior gameweek)")
@@ -493,17 +527,21 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
         squad = sorted(int(r["element"]) for r in status_rows if r.get("owner") == entry)
 
         fixtures = asof_fixtures(bootstrap, raw, event)
-        gw_xp, minutes_panel = None, None
+        gw_xp, horizon_xp, minutes_panel = None, None, None
         if scorer == "model":
             gw_xp = model_gw_xp(archive, season_panel, neutral, fixtures, season, event,
                                 completed)
+            if horizon != "1":   # the next-GW ranking never reads a 3-GW value
+                horizon_xp = model_horizon_xp(archive, season_panel, neutral, fixtures,
+                                              season, event, completed)
             minutes_panel = asof_season_panel(season_panel, season, completed)
             assert_no_panel_leak(minutes_panel, season, event, completed)
         result = wv.plan(neutral, {"element_status": status_rows}, inputs["seasons"],
                          inputs["projections"], entry, MAX_CANDIDATES,
                          fixtures_by_event=fixtures,
                          neutral_availability=True, gw_xp=gw_xp,
-                         season_panel=minutes_panel)
+                         season_panel=minutes_panel, horizon_xp=horizon_xp, horizon=horizon)
+        rank_by = result["rank_by"]
         candidates = {
             "no_change": [],
             "waiver_plan": [(r["add_element"], r["drop_element"]) for r in result["recommendations"]],
@@ -525,6 +563,7 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
         rows.append(score_actual(my_moves(transactions, event, entry), event, elements,
                                  live_points, minutes))
     return {"season": season, "gws": gws, "scorer": scorer,
+            "horizon": horizon, "rank_by": rank_by,
             "availability_mode": AVAILABILITY_MODE, "caveat": CAVEAT, "totals": _totals(rows), "rows": rows}
 
 
@@ -558,7 +597,8 @@ def format_table(doc: dict) -> str:
         lines.append(f"{r['gw']:<3}{r['strategy']:<12}{add:<28}{drop:<22}{r['won']:<9}"
                      f"{r['moves']:<6}{add_pts:<8}{_fmt_gain(r['gw_gain']):<8}{_fmt_gain(r['gw3_gain'])}")
     totals = doc["totals"]
-    lines.append(f"scorer: {doc['scorer']}")
+    lines.append(f"scorer: {doc['scorer']} | horizon: {doc['horizon']} "
+                 f"(ranked by {doc['rank_by']})")
     lines.append("TOTAL gw_gain: " + " | ".join(
         f"{s} {totals[s]['gw_gain']:+.1f}" for s in STRATEGIES))
     lines.append("TOTAL gw3_gain (rows with all 3 GWs only): " + " | ".join(
@@ -571,6 +611,13 @@ def format_table(doc: dict) -> str:
 def _parse_gws(text: str) -> list[int]:
     start, _, end = text.partition("-")
     return list(range(int(start), int(end or start) + 1))
+
+
+def output_name(scorer: str, horizon: str) -> str:
+    """File the replay document is written to: one per ranking. The heuristic
+    scorer ignores the horizon, so it has a single file."""
+    return (f"waiver_replay_{scorer}.json" if scorer != "model"
+            else f"waiver_replay_model_h{horizon}.json")
 
 
 def _repo_root() -> Path:
@@ -586,6 +633,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--league", type=int, default=None)
     parser.add_argument("--entry", type=int, default=None)
     parser.add_argument("--scorer", choices=wv.SCORERS, default=wv.DEFAULT_SCORER)
+    parser.add_argument("--horizon", choices=wv.HORIZONS, default=wv.DEFAULT_HORIZON,
+                        help="gain the model scorer ranks on: next GW (1), next 3 GWs (3) "
+                             "or rest of season (ros); ignored by the heuristic scorer")
     parser.add_argument("--data-root", type=Path, default=_repo_root() / "data")
     args = parser.parse_args(argv)
     load_dotenv(args.data_root.parent / ".env")
@@ -594,14 +644,16 @@ def main(argv: list[str] | None = None) -> int:
     if not league or not entry:
         parser.error("--league and --entry required (or set LEAGUE_ID / ENTRY_ID)")
 
-    doc = run(args.data_root, args.season, league, entry, _parse_gws(args.gws), args.scorer)
+    doc = run(args.data_root, args.season, league, entry, _parse_gws(args.gws), args.scorer,
+              args.horizon)
     print(format_table(doc))
-    out = args.data_root / "derived" / args.season / "ml" / f"waiver_replay_{args.scorer}.json"
+    out = args.data_root / "derived" / args.season / "ml" / output_name(args.scorer, args.horizon)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
     try:
         tmp.write_text(jsonutil.dumps_strict(
-            {k: doc[k] for k in ("season", "gws", "scorer", "availability_mode", "caveat", "rows")}, indent=1))
+            {k: doc[k] for k in ("season", "gws", "scorer", "horizon", "rank_by",
+                                 "availability_mode", "caveat", "rows")}, indent=1))
         os.replace(tmp, out)  # atomic: readers never see a partial file
     finally:
         tmp.unlink(missing_ok=True)  # no-op after a successful replace
