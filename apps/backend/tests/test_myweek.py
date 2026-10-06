@@ -345,10 +345,14 @@ def test_departed_squad_player_always_needs_attention(tmp_path):
         "departed — no longer in the league, drop him — Has joined Elsewhere FC"]
 
 
+# Explicit lifetime: these tests are about the my_week rendering, not staleness.
+FRESH = {"valid_through_gw": 38}
+
+
 def test_role_override_fact_is_listed_and_drives_gw_xp(tmp_path):
     frame = _model_frame([(10, 7.0)]).assign(xp_started=8.0, xp_cameo=1.0, num_fixtures=1)
     players, status = _role_squad(tmp_path, frame)
-    overrides = [{"player": "Covered", "team": "ARS", "p_start": 0.25, "fact": "4th-choice now"}]
+    overrides = [{"player": "Covered", "team": "ARS", "p_start": 0.25, "fact": "4th-choice now", **FRESH}]
     players, report = mw.apply_role_overrides(players, overrides, target_gw=4)
     assert report["overrides_applied"] == ["Covered"]
     week = mw.build_my_week(players, status, 42)
@@ -365,8 +369,8 @@ def test_role_override_fact_is_listed_and_drives_gw_xp(tmp_path):
 
 def test_role_override_warning_text_for_fact_only_and_empty_entries(tmp_path):
     players, status = _role_squad(tmp_path)
-    overrides = [{"player": "Covered", "team": "ARS", "fact": "new manager"},
-                 {"player": "Heur", "team": "ARS"}]
+    overrides = [{"player": "Covered", "team": "ARS", "fact": "new manager", **FRESH},
+                 {"player": "Heur", "team": "ARS", **FRESH}]
     players, _ = mw.apply_role_overrides(players, overrides, target_gw=4)
     att = {p["web_name"]: p["warnings"][0] for p in mw.build_my_week(players, status, 42)["attention"]}
     assert att["Covered"] == "role override: new manager"

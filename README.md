@@ -88,16 +88,22 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   drop at his position, and `drop_candidates` lists the top 3 per position.
   An optional `data/derived/<season>/ml/role_overrides.json`
   (`{"overrides": [{"player": "<web_name>", "team": "<short name>",
-  "p_start": 0.4, "fact": "...", "return_gw": 9, "code": 123}]}` — `code`,
-  `fact` and `return_gw` optional) is hand-maintained team news for the next
+  "p_start": 0.4, "fact": "...", "return_gw": 9, "valid_through_gw": 7,
+  "as_of": "2026-10-06", "code": 123}]}` — all but `player`/`team`
+  optional) is hand-maintained team news for the next
   GW: `xp_next = p_start × xP-if-he-starts` (cameo term dropped), `return_gw`
   still ahead forces 0 (and keeps him off the my_week XI), and an entry whose
   `return_gw` has arrived is expired and ignored. An override never lifts
   the availability gate: a player the live feed rules out (status u/i/s or a
   0% chance) keeps his 0 and the entry is listed as blocked. Every entry is
   accounted for in `overrides_applied` / `overrides_unmatched` /
-  `overrides_expired` / `overrides_blocked`;
-  entries without a `return_gw` never expire, so prune the file by hand.
+  `overrides_expired` / `overrides_stale` / `overrides_blocked`.
+  Staleness rule: an entry with `valid_through_gw` applies through that GW;
+  an entry with neither `return_gw` nor `valid_through_gw` applies only up to
+  the first GW whose deadline falls after its `as_of` (else the file's
+  top-level `as_of`/`updated`, else the file mtime; a bare date means 00:00
+  UTC). Later it is stale and ignored — team news written for GW2 is not
+  evidence about GW6. Give long-lived facts a `valid_through_gw`.
   my_week lists the override `fact` and any departed squad player under
   `attention` (warning codes `role_override`, `departed`).
 - Players the model cannot value (long injury last season, promoted, new

@@ -63,10 +63,12 @@ Design (v1, pre-GW1-honest):
   top ``DROP_CANDIDATES_PER_POSITION`` per position so the pick is auditable.
 * **Role overrides** — ``data/derived/<season>/ml/role_overrides.json``
   (hand-maintained team news, optional) is applied to the next GW only: see
-  ``apply_role_overrides``. An override never lifts the availability gate: a
+  ``apply_role_overrides``. An entry with neither ``return_gw`` nor
+  ``valid_through_gw`` goes stale after the first deadline following its
+  ``as_of`` (file ``updated`` / mtime fallback). An override never lifts the availability gate: a
   player the live feed rules out (availability 0) is ``overrides_blocked``.
   ``overrides_applied`` / ``overrides_unmatched`` / ``overrides_expired`` /
-  ``overrides_blocked`` in the output say what happened to every entry.
+  ``overrides_stale`` / ``overrides_blocked`` in the output say what happened to every entry.
 
 CLI: python -m backend.ml.waiver --league <id> --entry <id> [--scorer {heuristic,model}]
 (env fallback: LEAGUE_ID / ENTRY_ID; ``--data-root`` and ``--out`` override the
@@ -79,7 +81,7 @@ import argparse
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -113,7 +115,7 @@ DROP_CANDIDATES_PER_POSITION = 3
 # What ``apply_role_overrides`` did with each role_overrides.json entry, in
 # the order the output JSON and CLI list them.
 OVERRIDE_REPORT_KEYS = ("overrides_applied", "overrides_unmatched", "overrides_expired",
-                        "overrides_blocked")
+                        "overrides_stale", "overrides_blocked")
 
 
 # ---------------------------------------------------------------------------
@@ -520,19 +522,95 @@ def load_role_overrides(path: Path) -> list[dict]:
 
     The file is optional: absent -> ``[]`` silently; unparseable or the wrong
     shape -> ``[]`` with a WARNING, so a typo never blocks the weekly run.
+
+    Every returned entry carries an ``as_of`` (when the fact was written, for
+    the staleness rule in ``apply_role_overrides``): its own if it has one,
+    else the file's top-level ``as_of`` or ``updated``, else the file's
+    modification time (UTC, ISO). Entries are copies; the file is not touched.
     """
     path = Path(path)
     if not path.exists():
         return []
     try:
-        entries = json.loads(path.read_text(encoding="utf-8")).get("overrides", [])
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        entries = doc.get("overrides", [])
+        file_as_of = (doc.get("as_of") or doc.get("updated")
+                      or datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat())
     except (OSError, ValueError, AttributeError) as exc:
         logger.warning("role overrides %s unreadable (%s) — ignored", path.name, exc)
         return []
     if not isinstance(entries, list):
         logger.warning("role overrides %s: 'overrides' is not a list — ignored", path.name)
         return []
-    return [entry for entry in entries if isinstance(entry, dict)]
+    return [{**entry, "as_of": entry.get("as_of") or file_as_of}
+            for entry in entries if isinstance(entry, dict)]
+
+
+def event_deadlines(bootstrap: dict) -> dict[int, datetime]:
+    """Gameweek -> deadline (UTC) from the bootstrap ``events`` (draft
+    ``{"data": [...]}`` shape or a plain list); events without a parseable
+    ``deadline_time`` are left out."""
+    from backend.ml import matchmodel   # local import: matchmodel imports this module
+    events = bootstrap.get("events") or []
+    if isinstance(events, dict):
+        events = events.get("data") or []
+    deadlines = {int(e["id"]): matchmodel._parse_deadline(e.get("deadline_time"))
+                 for e in events if "id" in e}
+    return {gw: deadline for gw, deadline in deadlines.items() if deadline is not None}
+
+
+def _parse_as_of(value: Any) -> datetime | None:
+    """``as_of`` as an aware UTC datetime: an ISO date (read as 00:00 UTC that
+    day, so a fact written on a deadline day counts for that gameweek) or an
+    ISO datetime (naive = UTC). None when absent or unparseable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def override_window_end(as_of: Any, deadlines: dict[int, datetime]) -> int | None:
+    """The last gameweek an undated override entry may describe: the first
+    gameweek whose deadline falls after ``as_of``. None when ``as_of`` is
+    unknown or no deadline in ``deadlines`` follows it."""
+    written = _parse_as_of(as_of)
+    if written is None:
+        return None
+    after = [gw for gw, deadline in deadlines.items() if deadline > written]
+    return min(after) if after else None
+
+
+def _override_lifetime(entry: dict, target_gw: int | None,
+                       deadlines: dict[int, datetime] | None) -> str:
+    """``"live"``, ``"expired"`` or ``"stale"`` for ``entry`` at ``target_gw``.
+
+    * ``valid_through_gw`` (explicit): stale once ``target_gw`` is past it.
+    * ``return_gw``: expired once ``return_gw <= target_gw`` (the absence it
+      described is over).
+    * Neither: the fact describes the gameweek it was written for and no
+      other — live only while ``target_gw <= override_window_end(as_of)``.
+      Unknown ``as_of``, no calendar, or no ``target_gw`` -> stale (an entry
+      that cannot be shown to be current is not applied).
+
+    Raises ValueError/TypeError on a non-numeric ``valid_through_gw`` /
+    ``return_gw``.
+    """
+    valid_through = entry.get("valid_through_gw")
+    return_gw = entry.get("return_gw")
+    if valid_through is not None:
+        if target_gw is None or target_gw > int(valid_through):
+            return "stale"
+    if return_gw is not None:
+        return "expired" if target_gw is not None and int(return_gw) <= target_gw else "live"
+    if valid_through is not None:
+        return "live"
+    window_end = override_window_end(entry.get("as_of"), deadlines or {})
+    if target_gw is None or window_end is None or target_gw > window_end:
+        return "stale"
+    return "live"
 
 
 def _override_p_start(entry: dict, target_gw: int | None) -> float | None:
@@ -551,11 +629,14 @@ def _override_p_start(entry: dict, target_gw: int | None) -> float | None:
 
 
 def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
-                         target_gw: int | None) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+                         target_gw: int | None,
+                         deadlines: dict[int, datetime] | None = None,
+                         ) -> tuple[pd.DataFrame, dict[str, list[str]]]:
     """Apply ``role_overrides.json`` entries to the next gameweek's values.
 
     Entry: ``{"player": web_name, "team": short name, "fact": str,
-    "p_start": 0..1, "return_gw": int, "code": int}`` — only ``player`` +
+    "p_start": 0..1, "return_gw": int, "valid_through_gw": int,
+    "as_of": ISO date/datetime, "code": int}`` — only ``player`` +
     ``team`` (or ``code``, which wins when present, for the rare same-name
     team-mates) are needed to match; an entry must match exactly one player.
 
@@ -569,6 +650,14 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
     * ``return_gw`` after ``target_gw`` forces ``p_start`` 0 (out until then).
       Once ``return_gw <= target_gw`` the entry has EXPIRED and is ignored —
       its ``p_start`` described the absence, not the player after it.
+    * Staleness (team news goes off): an entry with ``valid_through_gw``
+      applies through that gameweek. An entry with neither ``return_gw`` nor
+      ``valid_through_gw`` applies only up to the first gameweek whose
+      deadline (``deadlines``, see ``event_deadlines``) falls after its
+      ``as_of`` (``load_role_overrides`` fills that from the file's
+      ``as_of``/``updated`` or mtime). Past that it is STALE and ignored — a
+      "rotation risk" note written for GW2 says nothing about GW6. Without
+      ``deadlines`` every such entry is stale.
     * The availability gate wins: a matched player whose ``availability`` is
       0 (status u/i/s, or a stated 0% chance) is BLOCKED — his row is left
       untouched. A start chance written weeks ago must not resurrect a player
@@ -577,9 +666,9 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
     Returns ``(players copy, report)``. The copy gains ``role_override`` (the
     entry's ``fact``, None when not overridden) and ``role_override_p_start``.
     The report lists entry names under ``overrides_applied``,
-    ``overrides_unmatched`` (no single match, or an invalid ``p_start``),
-    ``overrides_expired`` and ``overrides_blocked``; nothing raises on a bad
-    entry.
+    ``overrides_unmatched`` (no single match, or an invalid ``p_start`` /
+    gameweek), ``overrides_expired``, ``overrides_stale`` and
+    ``overrides_blocked``; nothing raises on a bad entry.
     """
     out = players.copy()
     out["role_override"] = None
@@ -587,17 +676,16 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
     report: dict[str, list[str]] = {key: [] for key in OVERRIDE_REPORT_KEYS}
     for entry in overrides:
         name = str(entry.get("player") or entry.get("code") or "?")
-        return_gw = entry.get("return_gw")
         try:
-            expired = (return_gw is not None and target_gw is not None
-                       and int(return_gw) <= target_gw)
-            p_override = None if expired else _override_p_start(entry, target_gw)
+            lifetime = _override_lifetime(entry, target_gw, deadlines)
+            p_override = _override_p_start(entry, target_gw) if lifetime == "live" else None
         except (TypeError, ValueError):
-            logger.warning("role override for %s has a non-numeric p_start/return_gw — skipped", name)
+            logger.warning("role override for %s has a non-numeric p_start/return_gw/"
+                           "valid_through_gw — skipped", name)
             report["overrides_unmatched"].append(name)
             continue
-        if expired:
-            report["overrides_expired"].append(name)
+        if lifetime != "live":
+            report[f"overrides_{lifetime}"].append(name)
             continue
         if entry.get("code") is not None:
             matched = out.index[out["code"] == entry["code"]]
@@ -621,6 +709,12 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
             if pd.notna(out.at[row, "xp_started"]):
                 out.at[row, "xp_next"] = round(p_override * float(out.at[row, "xp_started"]), 2)
         report["overrides_applied"].append(name)
+    if report["overrides_stale"]:
+        logger.warning("role overrides: %d stale entr%s ignored for GW%s (no return_gw/"
+                       "valid_through_gw and written before an earlier deadline) — "
+                       "prune or re-date them: %s", len(report["overrides_stale"]),
+                       "y" if len(report["overrides_stale"]) == 1 else "ies", target_gw,
+                       ", ".join(report["overrides_stale"]))
     return out, report
 
 
@@ -853,7 +947,7 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
         fixtures_by_event=fixtures_by_event, neutral_availability=neutral_availability,
         gw_xp=gw_xp, season_panel=season_panel)
     players, override_report = apply_role_overrides(
-        players, role_overrides or [], next_event(bootstrap))
+        players, role_overrides or [], next_event(bootstrap), event_deadlines(bootstrap))
     free = {row["element"] for row in element_status.get("element_status", [])
             if row.get("owner") is None}
     players["is_free_agent"] = players["element"].isin(free)

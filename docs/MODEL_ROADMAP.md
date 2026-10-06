@@ -407,8 +407,13 @@ changed club). Three signals, all in `backend/ml/waiver.py`, used by
   and his row keeps the gate's 0 (live data: Mateta, status i, would
   otherwise have gone 0.00 -> 1.87 on a stale p_start 0.60). The output lists
   every entry under `overrides_applied`, `overrides_unmatched`,
-  `overrides_expired` or `overrides_blocked`; an entry
-  with no `return_gw` never expires, so stale lines must be pruned by hand.
+  `overrides_expired`, `overrides_stale` or `overrides_blocked`. Staleness:
+  `valid_through_gw` bounds an entry explicitly; an entry with neither
+  `return_gw` nor `valid_through_gw` describes only the first GW whose
+  deadline falls after its `as_of` (fallback: the file's `as_of`/`updated`,
+  then its mtime) and is `overrides_stale` after that. On the live file
+  (`updated` 2026-08-27, no per-entry dates) every undated entry was written
+  for GW2 and is stale for GW6.
   Overrides touch the next GW only (not `next3_xp`, not ROS).
 
 Replay (GW2-5, rank-1 `gw_gain`): `--scorer model` passes the as-of season

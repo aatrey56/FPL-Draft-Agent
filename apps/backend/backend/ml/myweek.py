@@ -71,11 +71,12 @@ def gw_xp_table(bootstrap: dict, seasons: pd.DataFrame,
 
 
 def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
-                         target_gw: int | None) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+                         target_gw: int | None, deadlines: dict | None = None,
+                         ) -> tuple[pd.DataFrame, dict[str, list[str]]]:
     """``waiver.apply_role_overrides`` on a ``gw_xp_table`` frame, keeping
     ``gw_xp`` in step with the overridden ``xp_next``. Returns the new frame
     and the ``waiver.OVERRIDE_REPORT_KEYS`` report."""
-    out, report = wv.apply_role_overrides(players, overrides, target_gw)
+    out, report = wv.apply_role_overrides(players, overrides, target_gw, deadlines)
     out["gw_xp"] = pd.to_numeric(out["xp_next"], errors="coerce").round(1)
     return out, report
 
@@ -227,7 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         gw_xp=gw_xp,
         season_panel=wv.load_season_panel(ml_dir / "player_gameweeks.parquet", args.season))
     players, override_report = apply_role_overrides(
-        players, wv.load_role_overrides(ml_dir / "role_overrides.json"), next_event(bootstrap))
+        players, wv.load_role_overrides(ml_dir / "role_overrides.json"), next_event(bootstrap),
+        wv.event_deadlines(bootstrap))
     week = build_my_week(players, element_status, entry)
     week["gw"] = next_event(bootstrap)
     week.update(override_report)

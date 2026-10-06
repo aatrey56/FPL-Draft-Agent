@@ -1,6 +1,7 @@
 """Tests for waiver_plan (backend.ml.waiver). No network — fixtures only."""
 
 import json
+import os
 
 import pandas as pd
 import pytest
@@ -845,6 +846,11 @@ def _by_name(table):
     return table.set_index("web_name")
 
 
+# An explicit lifetime for entries whose test is not about staleness (an
+# undated entry with no calendar is stale — see the staleness tests below).
+FRESH = {"valid_through_gw": 38}
+
+
 def _report(**names):
     """An ``apply_role_overrides`` report: every key empty except ``names``."""
     return {key: names.get(key.removeprefix("overrides_"), [])
@@ -854,7 +860,7 @@ def _report(**names):
 def test_override_replaces_xp_next_with_p_override_times_xp_started(tmp_path):
     table = _override_table(tmp_path)
     assert _by_name(table).loc["SeasonStar", "xp_started"] == 7.0
-    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.4, "fact": "rotation risk"}]
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.4, "fact": "rotation risk", **FRESH}]
     out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
     star = _by_name(out).loc["SeasonStar"]
     assert star["xp_next"] == pytest.approx(0.4 * 7.0)        # cameo term dropped
@@ -874,7 +880,7 @@ def test_override_in_a_double_gameweek_scales_by_the_fixture_count(tmp_path):
     table = _xp_table(tmp_path, gw_xp)
     assert _by_name(table).loc["SeasonStar", "xp_started"] == 14.0
     out, _ = wv.apply_role_overrides(
-        table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.5}], target_gw=1)
+        table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.5, **FRESH}], target_gw=1)
     assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(7.0)
 
 
@@ -884,16 +890,16 @@ def test_override_on_a_heuristic_player_uses_the_full_availability_heuristic(tmp
     assert streamer["xp_source"] == "heuristic"
     assert streamer["xp_started"] == pytest.approx(streamer["xp_next"])   # status "a"
     out, _ = wv.apply_role_overrides(
-        table, [{"player": "Streamer", "team": "ARS", "p_start": 0.5}], target_gw=1)
+        table, [{"player": "Streamer", "team": "ARS", "p_start": 0.5, **FRESH}], target_gw=1)
     assert _by_name(out).loc["Streamer", "xp_next"] == pytest.approx(
         0.5 * streamer["xp_started"], abs=0.006)
 
 
 def test_unmatched_override_is_reported_without_raising(tmp_path):
     table = _override_table(tmp_path)
-    overrides = [{"player": "Nobody", "team": "ARS", "p_start": 0.1},
-                 {"player": "SeasonStar", "team": "WOL", "p_start": 0.1},   # wrong team
-                 {"player": "Streamer", "team": "ARS", "p_start": "soon"}]  # not a number
+    overrides = [{"player": "Nobody", "team": "ARS", "p_start": 0.1, **FRESH},
+                 {"player": "SeasonStar", "team": "WOL", "p_start": 0.1, **FRESH},   # wrong team
+                 {"player": "Streamer", "team": "ARS", "p_start": "soon", **FRESH}]  # not a number
     out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
     assert report["overrides_unmatched"] == ["Nobody", "SeasonStar", "Streamer"]
     assert report["overrides_applied"] == []
@@ -935,7 +941,7 @@ def test_override_never_lifts_the_availability_gate(tmp_path, status, chance):
                                          num_fixtures=1)
     table = wv.build_player_table(bootstrap, SEASONS, projections, gw_xp=gw_xp)
     assert table.loc[0, "availability"] == 0.0
-    overrides = [{"player": "Crocked", "team": "ARS", "p_start": 0.6, "fact": "contract war"}]
+    overrides = [{"player": "Crocked", "team": "ARS", "p_start": 0.6, "fact": "contract war", **FRESH}]
     out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
     assert report == _report(blocked=["Crocked"])
     row = out.iloc[0]
@@ -947,7 +953,7 @@ def test_doubtful_player_with_a_nonzero_chance_is_still_overridden(tmp_path):
     table = _override_table(tmp_path)
     table.loc[table["web_name"] == "SeasonStar", "availability"] = 0.25
     out, report = wv.apply_role_overrides(
-        table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.5}], target_gw=1)
+        table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.5, **FRESH}], target_gw=1)
     assert report == _report(applied=["SeasonStar"])
     assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(3.5)
 
@@ -955,7 +961,7 @@ def test_doubtful_player_with_a_nonzero_chance_is_still_overridden(tmp_path):
 def test_override_prefers_code_over_name_when_names_collide(tmp_path):
     table = _override_table(tmp_path)
     table.loc[table["web_name"] == "Streamer", "web_name"] = "SeasonStar"   # same name + team
-    by_name = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.2}]
+    by_name = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.2, **FRESH}]
     _, report = wv.apply_role_overrides(table, by_name, target_gw=1)
     assert report["overrides_unmatched"] == ["SeasonStar"]                  # ambiguous: skipped
     by_code = [{**by_name[0], "code": 200}]
@@ -967,8 +973,8 @@ def test_override_prefers_code_over_name_when_names_collide(tmp_path):
 
 def test_fact_only_override_and_unvalued_player_keep_their_xp(tmp_path):
     table = _override_table(tmp_path)
-    overrides = [{"player": "SeasonStar", "team": "ARS", "fact": "new manager"},
-                 {"player": "NoProj", "team": "ARS", "p_start": 0.0}]
+    overrides = [{"player": "SeasonStar", "team": "ARS", "fact": "new manager", **FRESH},
+                 {"player": "NoProj", "team": "ARS", "p_start": 0.0, **FRESH}]
     out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
     rows = _by_name(out)
     assert rows.loc["SeasonStar", "xp_next"] == pytest.approx(6.5)
@@ -978,11 +984,99 @@ def test_fact_only_override_and_unvalued_player_keep_their_xp(tmp_path):
     assert report["overrides_applied"] == ["SeasonStar", "NoProj"]
 
 
+# Staleness: live role_overrides.json written around GW2 (``updated``
+# 2026-08-27, no per-entry dates) kept changing GW6 xP every week.
+DEADLINES = {gw: pd.Timestamp(day, tz="UTC").to_pydatetime() for gw, day in
+             {2: "2026-08-28 17:30", 3: "2026-09-04 17:30", 4: "2026-09-12 12:30",
+              5: "2026-09-18 17:30", 6: "2026-10-10 10:00"}.items()}
+
+
+def test_event_deadlines_reads_the_draft_bootstrap_shape():
+    bootstrap = {"events": {"current": 5, "next": 6, "data": [
+        {"id": 5, "deadline_time": "2026-09-18T17:30:00Z"},
+        {"id": 6, "deadline_time": "2026-10-10T10:00:00Z"},
+        {"id": 7, "deadline_time": None}]}}
+    assert wv.event_deadlines(bootstrap) == {5: DEADLINES[5], 6: DEADLINES[6]}
+    assert wv.event_deadlines({}) == {}
+
+
+@pytest.mark.parametrize("as_of, window_end", [
+    ("2026-08-27", 2),                    # written before the GW2 deadline -> GW2 only
+    ("2026-08-28", 2),                    # date only = 00:00 UTC: the deadline-day fact counts
+    ("2026-08-28T18:00:00Z", 3),          # after the GW2 deadline -> describes GW3
+    ("2026-10-11", None),                 # no later deadline in the calendar
+    ("not a date", None), (None, None),
+])
+def test_override_window_end_is_the_first_deadline_after_as_of(as_of, window_end):
+    assert wv.override_window_end(as_of, DEADLINES) == window_end
+
+
+def test_undated_entry_written_before_an_earlier_deadline_is_stale(tmp_path):
+    """Regression: an undated GW2 entry must not touch GW6 (the live file)."""
+    table = _override_table(tmp_path)
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.6, "as_of": "2026-08-27"}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=6, deadlines=DEADLINES)
+    assert report == _report(stale=["SeasonStar"])
+    star = _by_name(out).loc["SeasonStar"]
+    assert star["xp_next"] == pytest.approx(6.5) and star["role_override"] is None
+
+
+def test_fresh_undated_entry_applies_to_the_next_deadline_only(tmp_path):
+    table = _override_table(tmp_path)
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.4,
+                  "as_of": "2026-10-06T09:00:00Z"}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=6, deadlines=DEADLINES)
+    assert report == _report(applied=["SeasonStar"])
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(0.4 * 7.0)
+    _, report = wv.apply_role_overrides(table, overrides, target_gw=7, deadlines=DEADLINES)
+    assert report == _report(stale=["SeasonStar"])
+    # no calendar or no as_of: the entry cannot be shown to be current
+    _, report = wv.apply_role_overrides(table, overrides, target_gw=6)
+    assert report == _report(stale=["SeasonStar"])
+
+
+def test_valid_through_gw_is_honoured_whatever_the_as_of(tmp_path):
+    table = _override_table(tmp_path)
+    entry = {"player": "SeasonStar", "team": "ARS", "p_start": 0.4, "as_of": "2026-08-27",
+             "valid_through_gw": 8}
+    for target_gw, expected in ((6, _report(applied=["SeasonStar"])),
+                                (8, _report(applied=["SeasonStar"])),
+                                (9, _report(stale=["SeasonStar"]))):
+        _, report = wv.apply_role_overrides(table, [entry], target_gw, deadlines=DEADLINES)
+        assert report == expected, target_gw
+    _, report = wv.apply_role_overrides(table, [{**entry, "valid_through_gw": "soon"}], 6)
+    assert report == _report(unmatched=["SeasonStar"])
+
+
+def test_return_gw_entries_are_not_aged_by_their_as_of(tmp_path):
+    """A dated absence keeps its own lifetime: out until return_gw, then expired."""
+    table = _override_table(tmp_path)
+    entry = {"player": "SeasonStar", "team": "ARS", "p_start": 0.0, "return_gw": 9,
+             "as_of": "2026-08-27"}
+    _, report = wv.apply_role_overrides(table, [entry], target_gw=6, deadlines=DEADLINES)
+    assert report == _report(applied=["SeasonStar"])
+
+
+def test_load_role_overrides_dates_entries_from_the_file(tmp_path):
+    path = tmp_path / "role_overrides.json"
+    path.write_text(json.dumps({"updated": "2026-08-27", "overrides": [
+        {"player": "A", "team": "ARS"}, {"player": "B", "team": "ARS", "as_of": "2026-10-05"}]}))
+    assert [e["as_of"] for e in wv.load_role_overrides(path)] == ["2026-08-27", "2026-10-05"]
+    path.write_text(json.dumps({"as_of": "2026-09-01", "updated": "2026-08-27",
+                                "overrides": [{"player": "A", "team": "ARS"}]}))
+    assert wv.load_role_overrides(path)[0]["as_of"] == "2026-09-01"     # as_of beats updated
+    path.write_text(json.dumps({"overrides": [{"player": "A", "team": "ARS"}]}))
+    os.utime(path, (1790000000, 1790000000))                             # 2026-09-21 UTC
+    as_of = wv.load_role_overrides(path)[0]["as_of"]
+    assert wv._parse_as_of(as_of) == pd.Timestamp(1790000000, unit="s", tz="UTC")
+    assert wv.override_window_end(as_of, DEADLINES) == 6
+
+
 def test_load_role_overrides_tolerates_missing_and_malformed_files(tmp_path, caplog):
     assert wv.load_role_overrides(tmp_path / "absent.json") == []
     good = tmp_path / "role_overrides.json"
     good.write_text(json.dumps({"updated": "x", "overrides": [{"player": "A", "team": "ARS"}, "junk"]}))
-    assert wv.load_role_overrides(good) == [{"player": "A", "team": "ARS"}]
+    assert wv.load_role_overrides(good) == [{"player": "A", "team": "ARS", "as_of": "x"}]
     for content in ("{not json", "[1, 2]", '{"overrides": {"player": "A"}}'):
         bad = tmp_path / "bad.json"
         bad.write_text(content)
@@ -998,7 +1092,8 @@ def test_cli_prints_the_three_sections_and_writes_role_fields(weekly_cli_root, w
     (ml_dir / "role_overrides.json").write_text(json.dumps({"overrides": [
         {"player": "FreeFWD", "team": "ARS", "p_start": 0.0, "return_gw": 9, "fact": "out"},
         {"player": "Ghost", "team": "ARS", "p_start": 0.5},
-        {"player": "MyFWD", "team": "WOL", "p_start": 0.0, "return_gw": 3}]}))
+        {"player": "MyFWD", "team": "WOL", "p_start": 0.0, "return_gw": 3},
+        {"player": "FreeFWD", "team": "ARS", "p_start": 0.9, "as_of": "2026-08-27"}]}))
     pd.DataFrame([{"season": "2026-27", "code": 101, "gw": gw, "minutes": 90}
                   for gw in (4, 5)]).to_parquet(ml_dir / "player_gameweeks.parquet")
     out = tmp_path / "waiver_plan.json"
@@ -1006,6 +1101,7 @@ def test_cli_prints_the_three_sections_and_writes_role_fields(weekly_cli_root, w
     doc = json.loads(out.read_text())
     assert doc["overrides_applied"] == ["FreeFWD"]
     assert doc["overrides_unmatched"] == ["Ghost"] and doc["overrides_expired"] == ["MyFWD"]
+    assert doc["overrides_stale"] == ["FreeFWD"] and doc["overrides_blocked"] == []
     assert doc["minutes_through_gw"] == 5
     assert [c["web_name"] for c in doc["drop_candidates"]] == ["MyFWD"]
     assert doc["drop_candidates"][0]["expected_minutes"] == 90.0
