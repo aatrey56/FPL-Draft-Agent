@@ -307,7 +307,11 @@ the module docstring.
 
 ## Weekly tools on match xP
 
-`waiver_plan` and `my_week` take `--scorer {heuristic,model}`. `model` joins
+`waiver_plan` and `my_week` take `--scorer {heuristic,model}`; the default is
+`model` because the 2026-27 GW2-5 live check (startable pool, Spearman model
+vs best baseline: GKP 0.391 vs 0.223, DEF 0.342 vs 0.226, MID 0.345 vs 0.291,
+FWD 0.412 vs 0.356) met the win rule in 4 of 4 positions. The Makefile
+`SCORER` variable and `replay` CLI default the same way. `model` joins
 `xp_gw<N>.parquet` on the permanent `code`; players it does not cover (blank
 GW) get the heuristic value, tagged `xp_source` = `heuristic` (`none` when
 there is no projection either). A missing or stale file falls back to the

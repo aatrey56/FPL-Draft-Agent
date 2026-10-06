@@ -377,7 +377,7 @@ def _load_inputs(data_root: Path, season: str, league: int) -> dict:
 
 
 def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
-        scorer: str = wv.DEFAULT_SCORER) -> dict:
+        scorer: str = "heuristic") -> dict:
     """Replay each deadline in gws and return the full result document.
 
     ``scorer`` selects how ``waiver_plan`` values the next GW: ``heuristic``

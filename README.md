@@ -58,7 +58,9 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   fixture multiplier × availability) for uncovered players or a missing/stale
   file. Waiver recommendations rank by `next1_gain` (next-GW xP of the add
   minus the drop); `hold` recs (no next-GW gain, better ROS) come last.
-  `--scorer heuristic` reproduces the pre-xP output exactly.
+  `--scorer model` is the default (the 2026-27 GW2-5 live check in
+  `docs/MODEL_ROADMAP.md` found the model ahead of every baseline in all
+  four positions); `--scorer heuristic` reproduces the pre-xP output exactly.
 - Players the model cannot value (long injury last season, promoted, new
   signings) are **surfaced for human judgment, never scored as zero** — the
   tools refuse to guess rather than quietly recommend dropping a returning star.

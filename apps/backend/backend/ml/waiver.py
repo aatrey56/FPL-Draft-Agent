@@ -158,7 +158,7 @@ def load_gw_xp(path: Path, expected_gw: int | None) -> pd.DataFrame | None:
 
 
 SCORERS = ("heuristic", "model")
-DEFAULT_SCORER = "heuristic"
+DEFAULT_SCORER = "model"
 
 
 def scorer_gw_xp(scorer: str, bootstrap: dict, ml_dir: Path) -> pd.DataFrame | None:

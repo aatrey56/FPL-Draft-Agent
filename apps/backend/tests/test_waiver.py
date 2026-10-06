@@ -291,3 +291,7 @@ def test_legacy_ranking_orders_by_larger_of_next3_and_season_gain(tmp_path):
     legacy = wv.recommend(players, squad, rank_by="legacy")
     gains = [max(r["next3_gain"], r["season_gain"]) for r in legacy]
     assert gains == sorted(gains, reverse=True)
+
+
+def test_default_scorer_is_model_and_heuristic_stays_available():
+    assert wv.DEFAULT_SCORER == "model" and "heuristic" in wv.SCORERS

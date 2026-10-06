@@ -1,5 +1,5 @@
 SEASON ?= 2026-27
-SCORER ?= heuristic
+SCORER ?= model
 RAW_SEASON := ../../data/raw/$(SEASON)
 DERIVED_SEASON := ../../data/derived/$(SEASON)
 GO_ROOTS := --raw-root ../../data/raw --derived-root ../../data/derived
