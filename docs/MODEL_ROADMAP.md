@@ -427,7 +427,7 @@ changed club). Three signals, all in `backend/ml/waiver.py`, used by
   heuristic `next3_xp`.
 
 Replay (GW2-5, rank-1 `gw_gain`): `--scorer model` passes the as-of season
-panel (gw < N) to the role signals and scores **+8.0**, the same picks as
+panel (gameweeks completed by the waiver cutoff) to the role signals and scores **+8.0**, the same picks as
 before them (next-GW xP already ranks low-minute players down; the factor
 changes labels, `season_gain` and the heuristic fallback values).
 `--scorer heuristic` is kept as the pre-xP baseline: it runs without a
