@@ -10,7 +10,7 @@ Where a gameweek's prediction comes from — the ``source`` column:
 
 * ``live`` — ``xp_gw{N}.parquet`` exists: the forecast actually served before
   that deadline. ``make derive`` only ever writes the *next* gameweek's file,
-  so a past file is the last pre-deadline write and is never overwritten after
+  so a past file is a pre-deadline forecast and is never overwritten after
   the fact. A file whose modification time is later than the gameweek's
   deadline (e.g. a manual ``make xp GW=3`` run in October) is not a forecast
   and is ignored with a warning, as is a file whose ``gw`` column is not N.
