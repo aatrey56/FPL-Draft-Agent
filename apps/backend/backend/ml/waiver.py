@@ -285,8 +285,8 @@ def upcoming_fixtures(bootstrap: dict) -> dict:
     return {k: v for k, v in fixtures.items() if int(k) >= event}
 
 
-def read_gw_xp(path: Path, expected_gw: int | None,
-               last_finished: int | None = None) -> tuple[pd.DataFrame | None, str | None]:
+def read_gw_xp(path: Path, expected_gw: int | None, last_finished: int | None = None,
+               kind: str = "match xP") -> tuple[pd.DataFrame | None, str | None]:
     """Read the match model's ``xp_gw{N}.parquet``: ``(frame, None)`` when it
     is usable for ``expected_gw``, else ``(None, reason)`` — the reason is
     written to the artifact so a fallback is never silent.
@@ -297,26 +297,27 @@ def read_gw_xp(path: Path, expected_gw: int | None,
     case). Mid-gameweek — GW N-1 in play, planning for N — the freshest panel
     ends at N-2, which is what ``last_finished`` is then, so the file is
     served from the deadline onward instead of being rejected until GW N-1
-    finishes.
+    finishes. ``kind`` names the file in the reason (the horizon file shares
+    this rule: see ``read_horizon_xp``).
     """
     path = Path(path)
     if not path.exists():
-        return None, f"match xP file {path.name} missing"
+        return None, f"{kind} file {path.name} missing"
     try:
         frame = pd.read_parquet(path)
     except (OSError, ValueError) as exc:   # pyarrow's ArrowInvalid is a ValueError
-        return None, (f"match xP file {path.name} is unreadable "
+        return None, (f"{kind} file {path.name} is unreadable "
                       f"({type(exc).__name__}: {exc}); rebuild it")
     gws = sorted(int(g) for g in frame["gw"].unique()) if "gw" in frame else []
     if expected_gw is None or gws != [expected_gw]:
-        return None, f"match xP file {path.name} is for gw {gws}, expected {expected_gw} (stale)"
+        return None, f"{kind} file {path.name} is for gw {gws}, expected {expected_gw} (stale)"
     if "panel_max_gw" not in frame:
-        return None, (f"match xP file {path.name} has no panel_max_gw "
+        return None, (f"{kind} file {path.name} has no panel_max_gw "
                       "(built before the panel check; rebuild it)")
     required = expected_gw - 1 if last_finished is None else last_finished
     panel_gws = sorted(int(g) for g in frame["panel_max_gw"].unique())
     if panel_gws != [required]:
-        return None, (f"match xP file {path.name} was trained on a panel through gw "
+        return None, (f"{kind} file {path.name} was trained on a panel through gw "
                       f"{panel_gws}, but the last finished gw is {required} "
                       "(panel not refreshed; stale)")
     return frame, None
@@ -406,9 +407,9 @@ def read_horizon_xp(path: Path, expected_gw: int | None, last_finished: int | No
     built from different inputs and the 3-GW values cannot be trusted next to
     the next-GW ones.
     """
-    frame, reason = read_gw_xp(path, expected_gw, last_finished)
+    frame, reason = read_gw_xp(path, expected_gw, last_finished, kind="horizon xP")
     if reason:
-        return None, reason.replace("match xP file", "horizon xP file")
+        return None, reason
     required = {"code", "event", "xp", "xp_started", "xp_h1", "xp_h3", "fitted"}
     if not required <= set(frame.columns):
         return None, (f"horizon xP file {Path(path).name} lacks "
