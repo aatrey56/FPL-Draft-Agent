@@ -902,6 +902,24 @@ def test_override_replaces_xp_next_with_p_override_times_xp_started(tmp_path):
     assert untouched["xp_next"] == _by_name(table).loc["Streamer", "xp_next"]
 
 
+@pytest.mark.parametrize("p_override, expected", [(0.0, 0.0), (0.5, 0.5 * 6.5 / 0.8)])
+def test_override_without_xp_started_zeroes_or_rescales_the_model_value(
+        tmp_path, p_override, expected):
+    """A pre-S3 xP file has no xp_started: a ruled-out player must still be
+    worth 0 (regression: he kept his model xP and could be recommended), and a
+    partial override rescales the model value by p_override / model p_start."""
+    table = _override_table(tmp_path).assign(xp_started=float("nan"))
+    star = _by_name(table).loc["SeasonStar"]
+    assert star["xp_next"] == pytest.approx(6.5)
+    table.loc[table["web_name"] == "SeasonStar", "p_start"] = 0.8
+    out, report = wv.apply_role_overrides(
+        table, [{"player": "SeasonStar", "team": "ARS", "p_start": p_override, **FRESH}],
+        target_gw=1)
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(expected, abs=0.006)
+    assert _by_name(out).loc["SeasonStar", "p_start"] == p_override
+    assert report == _report(applied=["SeasonStar"])
+
+
 def test_override_in_a_double_gameweek_uses_the_summed_conditional(tmp_path):
     """The frame's xp_started is already the sum over both fixtures (7.5 + 4.5):
     it is used as is, never multiplied by num_fixtures again."""

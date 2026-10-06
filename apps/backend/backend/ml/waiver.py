@@ -635,6 +635,31 @@ def _override_p_start(entry: dict, target_gw: int | None) -> float | None:
     return max(0.0, min(1.0, float(entry["p_start"])))
 
 
+def _overridden_xp_next(p_override: float, xp_started, xp_next, model_p_start,
+                        name: str):
+    """Next-GW xP once ``p_start`` is overridden to ``p_override``.
+
+    A player with no value at all (no ``xp_next``, no ``xp_started``) stays
+    unvalued. Otherwise a ruled-out player (``p_override == 0``) is worth 0
+    whatever else is known, and the conditional ``xp_started`` gives
+    ``p × xp_started``. An xP file written before S3 has no ``xp_started``:
+    the model's own value is rescaled by ``p_override / model_p_start``,
+    which keeps its cameo term, so it is approximate. With no usable
+    ``p_start`` either, the value is left as it was, with a warning.
+    """
+    if pd.isna(xp_next) and pd.isna(xp_started):
+        return xp_next
+    if p_override == 0:
+        return 0.0
+    if pd.notna(xp_started):
+        return round(p_override * float(xp_started), 2)
+    if pd.notna(xp_next) and pd.notna(model_p_start) and float(model_p_start) > 0:
+        return round(float(xp_next) * p_override / float(model_p_start), 2)
+    logger.warning("role override for %s: no xp_started or model p_start to rescale "
+                   "by — xp_next left unchanged", name)
+    return xp_next
+
+
 def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
                          target_gw: int | None,
                          deadlines: dict[int, datetime] | None = None,
@@ -712,11 +737,13 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
             continue
         out.at[row, "role_override"] = str(entry.get("fact") or "")
         if p_override is not None:
+            model_p_start = out.at[row, "p_start"]
             out.at[row, "role_override_p_start"] = p_override
             out.at[row, "p_start"] = p_override
             out.at[row, "xp_floor"] = out.at[row, "xp_ceiling"] = float("nan")
-            if pd.notna(out.at[row, "xp_started"]):
-                out.at[row, "xp_next"] = round(p_override * float(out.at[row, "xp_started"]), 2)
+            out.at[row, "xp_next"] = _overridden_xp_next(
+                p_override, out.at[row, "xp_started"], out.at[row, "xp_next"],
+                model_p_start, name)
         report["overrides_applied"].append(name)
     if report["overrides_stale"]:
         logger.warning("role overrides: %d stale entr%s ignored for GW%s (no return_gw/"
