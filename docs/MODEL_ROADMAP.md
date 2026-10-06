@@ -423,8 +423,12 @@ Replay (GW2-5, rank-1 `gw_gain`): `--scorer model` passes the as-of season
 panel (gw < N) to the role signals and scores **+8.0**, the same picks as
 before them (next-GW xP already ranks low-minute players down; the factor
 changes labels, `season_gain` and the heuristic fallback values).
-`--scorer heuristic` is kept as the frozen pre-xP baseline: it runs without
-a season panel and still scores **-15.0**, byte-identical output.
+`--scorer heuristic` is kept as the pre-xP baseline: it runs without a
+season panel and still scores **-15.0** with the same rank-1 rows. It is
+not strictly frozen: the replay's departed rule (today's status `u` + 0
+minutes before N keeps a player `u` in the neutral bootstrap) now also
+forces that player to be the drop pick in the heuristic run, as in the
+model run. On GW2-5 that changes no rank-1 pick, so the totals are equal.
 `role_overrides.json` is never replayed (it is knowledge as of today).
 
 ## Working rules

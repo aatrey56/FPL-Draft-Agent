@@ -68,10 +68,16 @@ Role signals: ``model`` also passes the as-of season panel (the gameweeks
 completed by T_N) to
 ``waiver.plan`` so club-movers are valued on the minutes they had played by
 the deadline (``club_moved`` itself reads today's club — the same accepted
-``team`` leak as above). ``heuristic`` deliberately does NOT: it is the frozen
+``team`` leak as above). ``heuristic`` deliberately does NOT: it is the
 pre-xP baseline the model is compared against, so it runs without a season
-panel (every role factor 1.0). ``role_overrides.json`` is never applied in
-replay — it is hand-written knowledge as of today, not as of the deadline.
+panel (every role factor 1.0). It is not strictly frozen, though: the
+departed rule above (status "u" today + 0 minutes before N) leaves such a
+player status "u" in the neutral bootstrap, and ``waiver``'s drop pick
+always drops a status-"u" squad player first at his position — in BOTH
+scorers. On 2026-27 GW2-5 the heuristic rank-1 rows and totals are
+unchanged by it (waiver_plan -15.0). ``role_overrides.json`` is never
+applied in replay — it is hand-written knowledge as of today, not as of the
+deadline.
 
 CLI (reads only; writes ``derived/<season>/ml/waiver_replay_<scorer>.json``):
 
