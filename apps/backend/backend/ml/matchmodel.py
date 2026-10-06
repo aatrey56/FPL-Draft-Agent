@@ -645,9 +645,10 @@ def panel_max_gw(panel: pd.DataFrame, season: str) -> int:
 
     The panel holds finished gameweeks only, so this is the last finished GW
     the model saw. ``build_gw_xp`` stamps it on every row as ``panel_max_gw``
-    and ``waiver.read_gw_xp`` rejects an ``xp_gw{N}`` file unless it is N-1 —
-    an xP file trained on an unrefreshed panel is stale even if its ``gw``
-    matches.
+    and ``waiver.read_gw_xp`` rejects an ``xp_gw{N}`` file unless it equals
+    the bootstrap's last finished gameweek (N-1 between gameweeks, N-2 while
+    N-1 is in play) — an xP file trained on an unrefreshed panel is stale
+    even if its ``gw`` matches.
     """
     in_season = panel.loc[panel["season"] == season, "gw"]
     return int(in_season.max()) if not in_season.empty else 0

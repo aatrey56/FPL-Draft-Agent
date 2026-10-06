@@ -57,6 +57,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from backend.ml import jsonutil
+from backend.ml.gameweeks import finished_gameweeks
 
 logger = logging.getLogger(__name__)
 
@@ -165,10 +166,20 @@ def upcoming_fixtures(bootstrap: dict) -> dict:
     return {k: v for k, v in fixtures.items() if int(k) >= event}
 
 
-def read_gw_xp(path: Path, expected_gw: int | None) -> tuple[pd.DataFrame | None, str | None]:
+def read_gw_xp(path: Path, expected_gw: int | None,
+               last_finished: int | None = None) -> tuple[pd.DataFrame | None, str | None]:
     """Read the match model's ``xp_gw{N}.parquet``: ``(frame, None)`` when it
     is usable for ``expected_gw``, else ``(None, reason)`` — the reason is
-    written to the artifact so a fallback is never silent."""
+    written to the artifact so a fallback is never silent.
+
+    ``last_finished`` is the last finished gameweek in the bootstrap (0 before
+    GW1 finishes); the file must have been trained on a panel through exactly
+    that GW. None means "assume ``expected_gw - 1``" (the between-gameweeks
+    case). Mid-gameweek — GW N-1 in play, planning for N — the freshest panel
+    ends at N-2, which is what ``last_finished`` is then, so the file is
+    served from the deadline onward instead of being rejected until GW N-1
+    finishes.
+    """
     path = Path(path)
     if not path.exists():
         return None, f"match xP file {path.name} missing"
@@ -176,28 +187,29 @@ def read_gw_xp(path: Path, expected_gw: int | None) -> tuple[pd.DataFrame | None
     gws = sorted(int(g) for g in frame["gw"].unique()) if "gw" in frame else []
     if expected_gw is None or gws != [expected_gw]:
         return None, f"match xP file {path.name} is for gw {gws}, expected {expected_gw} (stale)"
-    # The model for GW N must be trained on a panel through GW N-1. Mid-GW
-    # (current GW N-1 still in play) the panel stops at N-2, so the file is
-    # rejected until the gameweek finishes and the panel is rebuilt.
     if "panel_max_gw" not in frame:
         return None, (f"match xP file {path.name} has no panel_max_gw "
                       "(built before the panel check; rebuild it)")
+    required = expected_gw - 1 if last_finished is None else last_finished
     panel_gws = sorted(int(g) for g in frame["panel_max_gw"].unique())
-    if panel_gws != [expected_gw - 1]:
+    if panel_gws != [required]:
         return None, (f"match xP file {path.name} was trained on a panel through gw "
-                      f"{panel_gws}, expected {expected_gw - 1} (panel not refreshed; stale)")
+                      f"{panel_gws}, but the last finished gw is {required} "
+                      "(panel not refreshed; stale)")
     return frame, None
 
 
-def load_gw_xp(path: Path, expected_gw: int | None) -> pd.DataFrame | None:
+def load_gw_xp(path: Path, expected_gw: int | None,
+               last_finished: int | None = None) -> pd.DataFrame | None:
     """Read the match model's ``xp_gw{N}.parquet`` for the upcoming gameweek.
 
     Returns None (with a WARNING, so the caller falls back to the heuristic
-    loudly) when the file is missing, was built for a different gameweek
-    than ``expected_gw``, or was trained on a panel whose last GW is not
-    ``expected_gw - 1`` (stale). See ``read_gw_xp`` for the reason string.
+    loudly) when the file is missing, was built for a different
+    gameweek than ``expected_gw``, or was trained on a panel whose last GW is
+    not the last finished one (stale). See ``read_gw_xp`` for the rule and
+    the reason string.
     """
-    frame, reason = read_gw_xp(path, expected_gw)
+    frame, reason = read_gw_xp(path, expected_gw, last_finished)
     if reason:
         logger.warning("%s — falling back to heuristic", reason)
     return frame
@@ -212,7 +224,9 @@ def resolve_scorer(scorer: str, bootstrap: dict,
     """The next-GW xP frame for the requested scorer, plus run metadata.
 
     ``model`` reads ``<ml_dir>/xp_gw{N}.parquet`` for the bootstrap's next
-    event; a missing or stale file falls back to the heuristic for everyone.
+    event and requires its panel to end at the bootstrap's last finished
+    gameweek (see ``read_gw_xp``); a missing or stale file falls
+    back to the heuristic for everyone.
     The metadata (merged into the waiver_plan / my_week JSON) records what
     actually ran, never just what was asked for:
 
@@ -229,7 +243,9 @@ def resolve_scorer(scorer: str, bootstrap: dict,
     if event is None:
         frame, reason = None, "no upcoming gameweek in the bootstrap"
     else:
-        frame, reason = read_gw_xp(Path(ml_dir) / f"xp_gw{event}.parquet", event)
+        last_finished = max(finished_gameweeks(bootstrap), default=0)
+        frame, reason = read_gw_xp(Path(ml_dir) / f"xp_gw{event}.parquet", event,
+                                   last_finished)
     if reason:
         logger.warning("%s — falling back to heuristic", reason)
         meta.update(scorer="heuristic", xp_fallback=True, xp_fallback_reason=reason)

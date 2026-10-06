@@ -60,7 +60,12 @@ def test_mid_gameweek_plans_the_next_gw_not_the_one_in_play(tmp_path):
     assert players.loc["Wolf", "gw_fixture_load"] == 0 and players.loc["Wolf", "gw_xp"] == 0
     assert players.loc["Gunner", "gw_fixture_load"] > 0
 
-    _model_frame([(10, 5.0)], gw=7).to_parquet(tmp_path / "xp_gw7.parquet")
+    # GW5 is the last finished GW, so the freshest panel (and the xP file's
+    # panel_max_gw) ends there while GW6 is in play.
+    bootstrap["events"]["data"].insert(
+        0, {"id": 5, "finished": True, "deadline_time": "2026-09-26T10:00:00Z"})
+    _model_frame([(10, 5.0)], gw=7).assign(panel_max_gw=5).to_parquet(
+        tmp_path / "xp_gw7.parquet")
     frame, meta = mw.wv.resolve_scorer("model", bootstrap, tmp_path)
     assert frame is not None and meta["scorer"] == "model"
 

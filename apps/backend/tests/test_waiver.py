@@ -379,7 +379,40 @@ def test_load_gw_xp_rejects_a_file_trained_on_an_unrefreshed_panel(tmp_path, cap
         assert wv.load_gw_xp(path, 6) is None
     assert "panel not refreshed" in caplog.text
     frame, reason = wv.read_gw_xp(path, 6)
-    assert frame is None and "through gw [4], expected 5" in reason
+    assert frame is None and "through gw [4], but the last finished gw is 5" in reason
+
+
+MID_GW6 = {"events": {"current": 5, "next": 6, "data": [
+    {"id": 4, "finished": True, "deadline_time": "2026-09-11T17:30:00Z"},
+    {"id": 5, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"},
+    {"id": 6, "finished": False, "deadline_time": "2099-10-10T10:00:00Z"}]},
+    "fixtures": {"5": [], "6": []}}
+
+
+def test_resolve_scorer_serves_model_xp_mid_gameweek(tmp_path):
+    """Review regression: with GW5 in play and GW6 next, the freshest panel
+    ends at GW4. The old rule (panel_max_gw == N-1) rejected every xP file
+    from the deadline until GW5 finished — exactly when matchday derive runs."""
+    _gw_xp([(200, 6.5)], gw=6).assign(panel_max_gw=4).to_parquet(tmp_path / "xp_gw6.parquet")
+    frame, meta = wv.resolve_scorer("model", MID_GW6, tmp_path)
+    assert frame is not None and meta["scorer"] == "model" and not meta["xp_fallback"]
+
+
+def test_resolve_scorer_rejects_a_panel_behind_the_last_finished_gameweek(tmp_path):
+    """Mid-GW, a panel through GW3 when GW4 is finished is genuinely stale."""
+    _gw_xp([(200, 6.5)], gw=6).assign(panel_max_gw=3).to_parquet(tmp_path / "xp_gw6.parquet")
+    frame, meta = wv.resolve_scorer("model", MID_GW6, tmp_path)
+    assert frame is None and meta["xp_fallback"]
+    assert meta["xp_fallback_reason"] == (
+        "match xP file xp_gw6.parquet was trained on a panel through gw [3], "
+        "but the last finished gw is 4 (panel not refreshed; stale)")
+
+
+def test_resolve_scorer_rejects_a_mid_gameweek_file_once_the_gameweek_finishes(tmp_path):
+    """The file built mid-GW (panel through 4) goes stale when GW5 finishes."""
+    _gw_xp([(200, 6.5)], gw=6).assign(panel_max_gw=4).to_parquet(tmp_path / "xp_gw6.parquet")
+    frame, meta = wv.resolve_scorer("model", NEXT_GW6, tmp_path)
+    assert frame is None and "last finished gw is 5" in meta["xp_fallback_reason"]
 
 
 def test_load_gw_xp_rejects_a_file_without_panel_max_gw(tmp_path):

@@ -21,7 +21,8 @@ fetch:
 ## the track record still build (GW38 must still be scored).
 ## Panel and xP are chained with && on one recipe line, so xP never trains on an unrefreshed
 ## panel; the xP file records the panel's last finished GW (panel_max_gw) and waiver/my_week
-## reject it unless that is N-1.
+## reject it unless that equals the bootstrap's last finished GW (N-1 between gameweeks,
+## N-2 mid-gameweek while N-1 is still in play).
 ## SCORER={heuristic,model} picks the next-GW xP source for waiver/my_week.
 ## Reads/writes season-nested paths only; the flat data/ layout is the 2025-26 archive.
 derive:

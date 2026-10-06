@@ -319,10 +319,14 @@ build, `waiver_plan` and `my_week` alike (the heuristic fixture loads start
 at N too, dropping a still-in-play gameweek from the bootstrap fixture
 map). `xp_gw<N>.parquet` is stale unless its `gw`
 is N and its `panel_max_gw` (the last finished GW in the training panel,
-stamped by `build_gw_xp`) is N-1; `make derive` chains the panel rebuild and
-the xP build with `&&`, so a failed panel step never yields an xP file
-trained on an old panel. Mid-gameweek the panel stops at N-2, so the model
-file is rejected until the gameweek finishes. A missing or stale file falls back to the
+stamped by `build_gw_xp`) equals the bootstrap's last finished gameweek;
+`make derive` chains the panel rebuild and the xP build with `&&`, so a
+failed panel step never yields an xP file trained on an old panel.
+Between gameweeks that is N-1. Mid-gameweek (GW N-1 in play, planning for N)
+it is N-2, and a file trained through N-2 is served from the deadline on (the
+earlier `== N-1` rule rejected every model file until the gameweek finished,
+which is exactly when `scripts/matchday.sh` runs derive). Once GW N-1
+finishes, that file is stale until derive rebuilds it. A missing or stale file falls back to the
 heuristic for everyone with a WARNING, and the JSON says so: `scorer` is the
 scorer actually used (`heuristic` after a fallback), beside
 `scorer_requested`, `xp_fallback` and `xp_fallback_reason`. Waiver recs rank
