@@ -74,7 +74,7 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
                          target_gw: int | None) -> tuple[pd.DataFrame, dict[str, list[str]]]:
     """``waiver.apply_role_overrides`` on a ``gw_xp_table`` frame, keeping
     ``gw_xp`` in step with the overridden ``xp_next``. Returns the new frame
-    and the ``overrides_applied`` / ``_unmatched`` / ``_expired`` report."""
+    and the ``waiver.OVERRIDE_REPORT_KEYS`` report."""
     out, report = wv.apply_role_overrides(players, overrides, target_gw)
     out["gw_xp"] = pd.to_numeric(out["xp_next"], errors="coerce").round(1)
     return out, report

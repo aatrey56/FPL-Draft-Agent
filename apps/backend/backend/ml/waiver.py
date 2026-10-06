@@ -63,8 +63,10 @@ Design (v1, pre-GW1-honest):
   top ``DROP_CANDIDATES_PER_POSITION`` per position so the pick is auditable.
 * **Role overrides** — ``data/derived/<season>/ml/role_overrides.json``
   (hand-maintained team news, optional) is applied to the next GW only: see
-  ``apply_role_overrides``. ``overrides_applied`` / ``overrides_unmatched`` /
-  ``overrides_expired`` in the output say what happened to every entry.
+  ``apply_role_overrides``. An override never lifts the availability gate: a
+  player the live feed rules out (availability 0) is ``overrides_blocked``.
+  ``overrides_applied`` / ``overrides_unmatched`` / ``overrides_expired`` /
+  ``overrides_blocked`` in the output say what happened to every entry.
 
 CLI: python -m backend.ml.waiver --league <id> --entry <id> [--scorer {heuristic,model}]
 (env fallback: LEAGUE_ID / ENTRY_ID; ``--data-root`` and ``--out`` override the
@@ -108,6 +110,10 @@ ROLE_MINUTES_WINDOW = 5
 ROLE_MINUTES_FULL = 60.0
 ROLE_FLOOR = 0.15
 DROP_CANDIDATES_PER_POSITION = 3
+# What ``apply_role_overrides`` did with each role_overrides.json entry, in
+# the order the output JSON and CLI list them.
+OVERRIDE_REPORT_KEYS = ("overrides_applied", "overrides_unmatched", "overrides_expired",
+                        "overrides_blocked")
 
 
 # ---------------------------------------------------------------------------
@@ -563,18 +569,22 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
     * ``return_gw`` after ``target_gw`` forces ``p_start`` 0 (out until then).
       Once ``return_gw <= target_gw`` the entry has EXPIRED and is ignored —
       its ``p_start`` described the absence, not the player after it.
+    * The availability gate wins: a matched player whose ``availability`` is
+      0 (status u/i/s, or a stated 0% chance) is BLOCKED — his row is left
+      untouched. A start chance written weeks ago must not resurrect a player
+      the live feed says cannot play.
 
     Returns ``(players copy, report)``. The copy gains ``role_override`` (the
     entry's ``fact``, None when not overridden) and ``role_override_p_start``.
     The report lists entry names under ``overrides_applied``,
-    ``overrides_unmatched`` (no single match, or an invalid ``p_start``) and
-    ``overrides_expired``; nothing raises on a bad entry.
+    ``overrides_unmatched`` (no single match, or an invalid ``p_start``),
+    ``overrides_expired`` and ``overrides_blocked``; nothing raises on a bad
+    entry.
     """
     out = players.copy()
     out["role_override"] = None
     out["role_override_p_start"] = float("nan")
-    report: dict[str, list[str]] = {"overrides_applied": [], "overrides_unmatched": [],
-                                    "overrides_expired": []}
+    report: dict[str, list[str]] = {key: [] for key in OVERRIDE_REPORT_KEYS}
     for entry in overrides:
         name = str(entry.get("player") or entry.get("code") or "?")
         return_gw = entry.get("return_gw")
@@ -600,6 +610,9 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
             report["overrides_unmatched"].append(name)
             continue
         row = matched[0]
+        if out.at[row, "availability"] == 0:
+            report["overrides_blocked"].append(name)
+            continue
         out.at[row, "role_override"] = str(entry.get("fact") or "")
         if p_override is not None:
             out.at[row, "role_override_p_start"] = p_override
@@ -830,7 +843,7 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
 
     Free agents are the element-status rows with no owner. Returns
     ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``recommendations``,
-    ``drop_candidates``, ``unprojected_squad``, the three ``overrides_*``
+    ``drop_candidates``, ``unprojected_squad``, the ``OVERRIDE_REPORT_KEYS``
     name lists and ``xp_reconciled`` (how many model rows were zeroed because
     the player is now ruled out; see ``build_player_table``). No I/O beyond
     reading ``projections_path``.
@@ -926,8 +939,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {p['position']:<4} {p['web_name']:<20} {p['team']:<4}"
                   f" use player_card for their history{flag}")
 
-    overrides = {key: result[key] for key in
-                 ("overrides_applied", "overrides_unmatched", "overrides_expired")}
+    overrides = {key: result[key] for key in OVERRIDE_REPORT_KEYS}
     print("\n== ROLE OVERRIDES (role_overrides.json, next GW only) ==")
     for key, names in overrides.items():
         print(f"  {key}: {', '.join(names) or '-'}")

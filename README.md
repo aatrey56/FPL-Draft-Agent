@@ -92,8 +92,11 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   `fact` and `return_gw` optional) is hand-maintained team news for the next
   GW: `xp_next = p_start × xP-if-he-starts` (cameo term dropped), `return_gw`
   still ahead forces 0 (and keeps him off the my_week XI), and an entry whose
-  `return_gw` has arrived is expired and ignored. Every entry is accounted
-  for in `overrides_applied` / `overrides_unmatched` / `overrides_expired`;
+  `return_gw` has arrived is expired and ignored. An override never lifts
+  the availability gate: a player the live feed rules out (status u/i/s or a
+  0% chance) keeps his 0 and the entry is listed as blocked. Every entry is
+  accounted for in `overrides_applied` / `overrides_unmatched` /
+  `overrides_expired` / `overrides_blocked`;
   entries without a `return_gw` never expire, so prune the file by hand.
   my_week lists the override `fact` and any departed squad player under
   `attention` (warning codes `role_override`, `departed`).

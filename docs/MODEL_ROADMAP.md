@@ -402,8 +402,12 @@ changed club). Three signals, all in `backend/ml/waiver.py`, used by
   fixture x fixture count; the heuristic at full availability for a player
   the model does not cover). The substitute-cameo term is dropped on
   purpose. `return_gw > N` forces 0; once `return_gw <= N` the entry is
-  expired and ignored. The output lists every entry under
-  `overrides_applied`, `overrides_unmatched` or `overrides_expired`; an entry
+  expired and ignored. A player whose availability factor is 0 (status
+  u/i/s or a 0% chance) is never overridden: the entry is `overrides_blocked`
+  and his row keeps the gate's 0 (live data: Mateta, status i, would
+  otherwise have gone 0.00 -> 1.87 on a stale p_start 0.60). The output lists
+  every entry under `overrides_applied`, `overrides_unmatched`,
+  `overrides_expired` or `overrides_blocked`; an entry
   with no `return_gw` never expires, so stale lines must be pruned by hand.
   Overrides touch the next GW only (not `next3_xp`, not ROS).
 

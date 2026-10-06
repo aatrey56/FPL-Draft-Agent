@@ -845,6 +845,12 @@ def _by_name(table):
     return table.set_index("web_name")
 
 
+def _report(**names):
+    """An ``apply_role_overrides`` report: every key empty except ``names``."""
+    return {key: names.get(key.removeprefix("overrides_"), [])
+            for key in wv.OVERRIDE_REPORT_KEYS}
+
+
 def test_override_replaces_xp_next_with_p_override_times_xp_started(tmp_path):
     table = _override_table(tmp_path)
     assert _by_name(table).loc["SeasonStar", "xp_started"] == 7.0
@@ -855,8 +861,7 @@ def test_override_replaces_xp_next_with_p_override_times_xp_started(tmp_path):
     assert star["p_start"] == 0.4 and star["role_override_p_start"] == 0.4
     assert star["role_override"] == "rotation risk"
     assert pd.isna(star["xp_floor"]) and pd.isna(star["xp_ceiling"])   # stale band cleared
-    assert report == {"overrides_applied": ["SeasonStar"], "overrides_unmatched": [],
-                      "overrides_expired": []}
+    assert report == _report(applied=["SeasonStar"])
     # the input table is not mutated, and nobody else moves
     assert _by_name(table).loc["SeasonStar", "xp_next"] == pytest.approx(6.5)
     untouched = _by_name(out).loc["Streamer"]
@@ -913,8 +918,38 @@ def test_override_expires_once_the_return_gameweek_arrives(tmp_path, return_gw):
     overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.0, "return_gw": return_gw}]
     out, report = wv.apply_role_overrides(table, overrides, target_gw=6)
     assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(6.5)
-    assert report == {"overrides_applied": [], "overrides_unmatched": [],
-                      "overrides_expired": ["SeasonStar"]}
+    assert report == _report(expired=["SeasonStar"])
+
+
+@pytest.mark.parametrize("status, chance", [("i", None), ("u", None), ("s", None), ("d", 0)])
+def test_override_never_lifts_the_availability_gate(tmp_path, status, chance):
+    """Regression (live GW6): Mateta, status i with a stale p_start 0.60, went
+    0.00 -> 1.87; Watkins (status u) 0 -> 0.09. An availability-0 player is
+    blocked: xp_next and p_start stay as the gate left them."""
+    projections = tmp_path / "projections.json"
+    projections.write_text(json.dumps([{"code": 200, "projected_points": 150.0}]))
+    bootstrap = {"teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]}, "elements": [
+        {"id": 20, "code": 200, "web_name": "Crocked", "element_type": 4, "team": 1,
+         "status": status, "chance_of_playing_next_round": chance}]}
+    gw_xp = _gw_xp([(200, 0.0)]).assign(p_start=0.0, xp_started=3.1, xp_cameo=1.0,
+                                         num_fixtures=1)
+    table = wv.build_player_table(bootstrap, SEASONS, projections, gw_xp=gw_xp)
+    assert table.loc[0, "availability"] == 0.0
+    overrides = [{"player": "Crocked", "team": "ARS", "p_start": 0.6, "fact": "contract war"}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
+    assert report == _report(blocked=["Crocked"])
+    row = out.iloc[0]
+    assert row["xp_next"] == 0.0 and row["p_start"] == 0.0
+    assert row["role_override"] is None and pd.isna(row["role_override_p_start"])
+
+
+def test_doubtful_player_with_a_nonzero_chance_is_still_overridden(tmp_path):
+    table = _override_table(tmp_path)
+    table.loc[table["web_name"] == "SeasonStar", "availability"] = 0.25
+    out, report = wv.apply_role_overrides(
+        table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.5}], target_gw=1)
+    assert report == _report(applied=["SeasonStar"])
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(3.5)
 
 
 def test_override_prefers_code_over_name_when_names_collide(tmp_path):

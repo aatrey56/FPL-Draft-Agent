@@ -279,8 +279,8 @@ def test_leak6_plan_regression_matches_pre_seam_recommendations(tmp_path):
     star = next(r for r in result["recommendations"] if r["add"] == "SeasonStar")
     assert (star["add_element"], star["drop_element"]) == (20, 11)
     assert set(result) == {"players", "squad", "xi_next3_xp", "recommendations",
-                           "drop_candidates", "unprojected_squad", "overrides_applied",
-                           "overrides_unmatched", "overrides_expired", "xp_reconciled"}
+                           "drop_candidates", "unprojected_squad", *wv.OVERRIDE_REPORT_KEYS,
+                           "xp_reconciled"}
 
 
 def test_leak7_dnp_and_missing_are_zero_not_nan_and_gw3_null_for_late_gws():
