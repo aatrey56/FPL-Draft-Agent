@@ -261,6 +261,29 @@ type WaiverPlanArgs struct {
 	Season string `json:"season,omitempty" jsonschema:"Season (default: server default season)"`
 }
 
+// The waiver_plan note has a ranking part, which differs between the two modes
+// of backend.ml.waiver.recommend, and a part shared by both.
+const (
+	// rank_by "next1": the match model's xP was used.
+	waiverNoteModelRanking = "scorer = model: labels and ordering are next-GW based. next1_gain = next-GW xP of the add minus the drop (xp_source on each rec says whether the add's value came from the model or, for a player the model does not cover, the heuristic). labels: upgrade = better next GW and all season; stream = next-GW help only (plan to re-drop); hold = no next-GW gain but better rest-of-season. Ordered by next1_gain, with holds listed after the others. next3_gain (heuristic 3-GW xP of the add minus the drop) is shown for context and does not drive labels or order. A free agent without a ROS projection (e.g. promoted club) can only be a stream, with season_gain, next3_gain and add_next3_xp null and season_unknown true (no ROS projection to compare)."
+	// rank_by "legacy": the heuristic scorer, requested or after a fallback.
+	waiverNoteHeuristicRanking = "scorer = heuristic (when xp_fallback is true the model was requested but its xP file was missing, unreadable or stale — see xp_fallback_reason): every value is heuristic, and labels and ordering are next-3-GW based, not next-GW. next3_gain = heuristic 3-GW xP of the add minus the drop. labels: upgrade = better over the next 3 GWs and all season; stream = next-3-GW help only (plan to re-drop); hold = no next-3-GW gain but better rest-of-season. Ordered by the larger of next3_gain and season_gain. next1_gain (heuristic next-GW xP of the add minus the drop) is shown for context and does not drive labels or order. A free agent without a ROS projection is never recommended."
+	waiverNoteCommon           = "unprojected_squad = squad players with neither a ROS projection nor model xP (never auto-dropped — check their player_card); only players with a ROS projection are ever the drop. Regenerate with: python -m backend.ml.waiver"
+)
+
+// waiverPlanNote describes the labels and ordering the served plan actually
+// used, keyed on its scorer field (the scorer that ran, not the one asked
+// for). backend.ml.waiver ranks on next1_gain only with the match model's xP
+// (scorer "model"). With --scorer heuristic, after a model fallback
+// (xp_fallback true, scorer "heuristic"), or in a file written before the
+// field existed, labels and order are the next-3-GW ones.
+func waiverPlanNote(plan map[string]any) string {
+	if scorer, _ := plan["scorer"].(string); scorer == "model" {
+		return waiverNoteModelRanking + " " + waiverNoteCommon
+	}
+	return waiverNoteHeuristicRanking + " " + waiverNoteCommon
+}
+
 func waiverPlanHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, WaiverPlanArgs) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, args WaiverPlanArgs) (*mcp.CallToolResult, any, error) {
 		path := filepath.Join(cfg.derivedDir(args.Season), "ml/waiver_plan.json")
@@ -268,7 +291,7 @@ func waiverPlanHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequ
 		if err := readJSONFile(path, &plan); err != nil {
 			return toolError(err), nil, nil
 		}
-		plan["note"] = "next1_gain = next-GW xP of the add minus the drop (xp_source on each rec says model or heuristic; scorer = the scorer actually used — when xp_fallback is true the model was requested but its xP file was missing, unreadable or stale, see xp_fallback_reason, and every value is heuristic). labels: upgrade = better next GW and all season; stream = next-GW help only (plan to re-drop); hold = no next-GW gain but better rest-of-season (listed after the others). unprojected_squad = squad players with neither a ROS projection nor model xP (never auto-dropped — check their player_card); only players with a ROS projection are ever the drop, and a free agent without one (e.g. promoted club) can only be a stream, with season_gain, next3_gain and add_next3_xp null and season_unknown true (no ROS projection to compare). Regenerate with: python -m backend.ml.waiver"
+		plan["note"] = waiverPlanNote(plan)
 		return toolMarshal(plan)
 	}
 }

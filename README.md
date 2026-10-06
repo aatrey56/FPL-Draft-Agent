@@ -66,7 +66,9 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   `--scorer model` is the default (the 2026-27 GW2-5 live check in
   `docs/MODEL_ROADMAP.md` found the model ahead of every baseline in all
   four positions); `--scorer heuristic` reproduces the pre-xP output exactly
-  between gameweeks. Mid-gameweek (GW N in play) both scorers now plan for
+  between gameweeks — labels and ordering are then next-3-GW based, as they
+  are after a model fallback, and the `waiver_plan` tool note describes
+  whichever ranking the served file used (keyed on its `scorer`). Mid-gameweek (GW N in play) both scorers now plan for
   N+1: the heuristic's fixture loads and my_week's `gw` used to start at the
   locked GW N.
 - Players the model cannot value (long injury last season, promoted, new

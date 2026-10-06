@@ -123,7 +123,7 @@ func main() {
 
 	addTool(server, &registry, &mcp.Tool{
 		Name:        "waiver_plan",
-		Description: "Roster-aware add/drop recommendations: best-XI evaluation plus adds paired with drops, each labeled upgrade/stream/hold with next-3-GW and season gains",
+		Description: "Roster-aware add/drop recommendations: best-XI evaluation plus adds paired with drops, each labeled upgrade/stream/hold with next-GW, next-3-GW and season gains (the note says which horizon the labels use: next-GW with the match model, next-3-GW with the heuristic scorer)",
 	}, waiverPlanHandler(cfg))
 
 	addTool(server, &registry, &mcp.Tool{

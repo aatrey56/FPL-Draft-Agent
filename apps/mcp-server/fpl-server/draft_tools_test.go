@@ -165,6 +165,48 @@ func TestWaiverPlanServesSeasonArtifact(t *testing.T) {
 	}
 }
 
+// The labels and ordering of waiver_plan depend on the scorer that ran, so the
+// note must describe that mode and not the other one.
+func TestWaiverPlanNoteDescribesTheRankingUsed(t *testing.T) {
+	const next1, next3 = "labels and ordering are next-GW based", "labels and ordering are next-3-GW based"
+	cases := []struct {
+		name          string
+		meta          map[string]any
+		want, notWant string
+	}{
+		{"model", map[string]any{"scorer": "model", "scorer_requested": "model", "xp_fallback": false}, next1, next3},
+		{"heuristic requested", map[string]any{"scorer": "heuristic", "scorer_requested": "heuristic", "xp_fallback": false}, next3, next1},
+		{"model fell back", map[string]any{"scorer": "heuristic", "scorer_requested": "model", "xp_fallback": true,
+			"xp_fallback_reason": "match xP file xp_gw6.parquet missing"}, next3, next1},
+		// written before the scorer field existed: the heuristic next-3 plan
+		{"no scorer field", map[string]any{}, next3, next1},
+	}
+	for _, c := range cases {
+		cfg := fixtureConfig(t)
+		doc := map[string]any{"xi_next3_xp": 49.3, "recommendations": []map[string]any{}}
+		for k, v := range c.meta {
+			doc[k] = v
+		}
+		writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/waiver_plan.json"), doc)
+		res, _, err := waiverPlanHandler(cfg)(context.Background(), nil, WaiverPlanArgs{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan struct {
+			Note string `json:"note"`
+		}
+		if err := json.Unmarshal([]byte(resultText(t, res)), &plan); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plan.Note, c.want) || strings.Contains(plan.Note, c.notWant) {
+			t.Errorf("%s: note describes the wrong ranking:\n%s", c.name, plan.Note)
+		}
+		if !strings.Contains(plan.Note, "unprojected_squad") || !strings.Contains(plan.Note, "backend.ml.waiver") {
+			t.Errorf("%s: note lost its shared part:\n%s", c.name, plan.Note)
+		}
+	}
+}
+
 func TestMyWeekServesSeasonArtifact(t *testing.T) {
 	cfg := fixtureConfig(t)
 	writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/my_week.json"), map[string]any{
