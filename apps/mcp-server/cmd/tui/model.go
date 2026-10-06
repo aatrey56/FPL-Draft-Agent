@@ -999,6 +999,11 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			SeasonUnknown bool    `json:"season_unknown"`
 			AddROS        float64 `json:"add_ros"`
 			DropROS       float64 `json:"drop_ros"`
+			// Role-adjusted ROS (club-move factor; 0 for a departed drop):
+			// season_gain is their gap. Absent in files written before
+			// the role signals, where the raw ROS pair is the gap.
+			AddROSAdj  *float64 `json:"add_ros_adj"`
+			DropROSAdj *float64 `json:"drop_ros_adj"`
 			// Null when the add has no ROS projection: the 3-GW value is
 			// heuristic, so there is nothing to compare (not a zero).
 			Next3Gain  *float64 `json:"next3_gain"`
@@ -1016,11 +1021,18 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			if r.SeasonUnknown {
 				note = fmt.Sprintf("wire · %s · ROS ?", r.Label)
 			}
+			addROS, dropROS := r.AddROS, r.DropROS
+			if r.AddROSAdj != nil {
+				addROS = *r.AddROSAdj
+			}
+			if r.DropROSAdj != nil {
+				dropROS = *r.DropROSAdj
+			}
 			item := railItem{
 				Glyph: "↑", Name: r.Add, Team: r.AddTeam, Note: note,
 				Drop: r.Drop, SeasonGain: r.SeasonGain, SeasonUnknown: r.SeasonUnknown,
 				Next3Unknown: r.Next3Gain == nil || r.AddNext3 == nil,
-				AddROS:       r.AddROS, DropROS: r.DropROS,
+				AddROS:       addROS, DropROS: dropROS,
 				Confidence: r.Confidence, News: r.News}
 			if !item.Next3Unknown {
 				item.Next3Gain, item.AddNext3 = *r.Next3Gain, *r.AddNext3

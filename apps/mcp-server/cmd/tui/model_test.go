@@ -526,6 +526,29 @@ func TestWireRecWithUnknownNext3Gain(t *testing.T) {
 	}
 }
 
+// A club-mover's season gain is the gap between role-adjusted projections, so
+// the detail view must quote those, not the raw ROS pair.
+func TestWireRecDetailQuotesRoleAdjustedROS(t *testing.T) {
+	derived := t.TempDir()
+	write(t, filepath.Join(derived, "ml/waiver_plan.json"), map[string]any{
+		"recommendations": []map[string]any{
+			{"add": "Mover", "add_team": "ARS", "drop": "Weak", "label": "upgrade",
+				"season_gain": 12.0, "add_ros": 175.0, "drop_ros": 40.0,
+				"add_ros_adj": 52.0, "drop_ros_adj": 40.0},
+		},
+	})
+	m := newModel(fixtureDir(t), derived, 5, 501, 0)
+	m.w = 160
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	m.sugSel = 0
+	body := m.sugDetailBody(120)
+	if !strings.Contains(body, "Mover 52 pts vs Weak 40 pts") || strings.Contains(body, "175") {
+		t.Fatalf("detail should quote the role-adjusted pair:\n%s", body)
+	}
+}
+
 // sharedWarningCodes reads the my_week warning-code contract that the Python
 // suite (apps/backend/tests/test_myweek.py) pins too.
 func sharedWarningCodes(t *testing.T) []string {
