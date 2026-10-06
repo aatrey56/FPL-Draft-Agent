@@ -434,7 +434,7 @@ def test_unprojected_free_agent_stays_skipped_without_model_value(tmp_path):
 
 def test_load_gw_xp_rejects_a_file_trained_on_an_unrefreshed_panel(tmp_path, caplog):
     """Review regression: a failed panel rebuild let xP train on a stale panel
-    while its gw still matched. panel_max_gw must be N-1."""
+    while its gw still matched. panel_max_gw must be the last finished GW."""
     path = tmp_path / "xp_gw6.parquet"
     _gw_xp([(200, 6.5)], gw=6).assign(panel_max_gw=4).to_parquet(path)
     with caplog.at_level("WARNING"):

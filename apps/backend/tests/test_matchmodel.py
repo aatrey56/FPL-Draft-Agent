@@ -880,7 +880,8 @@ def test_played_row_team_form_snapshot_on_the_synthetic_season(frame):
 
 
 def test_build_gw_xp_stamps_the_panels_last_finished_gw():
-    """waiver.read_gw_xp checks panel_max_gw == N-1; build_gw_xp records it."""
+    """waiver.read_gw_xp checks panel_max_gw == the last finished GW;
+    build_gw_xp records it."""
     archive = _panel()
     new_season = archive[archive["gw"] <= 2].assign(season="2026-27")
     panel = pd.concat([archive, new_season], ignore_index=True)

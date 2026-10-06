@@ -431,8 +431,8 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
         # under last season's minutes floor) is still rankable on the next GW
         # when the match model values him: his season gain is unknown — it
         # counts as 0 here, so he can only ever label as a "stream", and is
-        # emitted as null with season_unknown so no consumer reads it as 0. The legacy ranking has no
-        # next-GW model value and still skips him.
+        # emitted as null with season_unknown so no consumer reads it as 0.
+        # The legacy ranking has no next-GW model value and still skips him.
         model_only = (rank_by != "legacy" and pd.isna(fa["ros_points"])
                       and fa["xp_source"] == "model")
         if mine.empty or (pd.isna(fa["ros_points"]) and not model_only):
