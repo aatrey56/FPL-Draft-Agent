@@ -13,7 +13,7 @@ serve:
 fetch:
 	cd apps/mcp-server && go run ./cmd/dev --season $(SEASON) $(GO_ROOTS) --refresh-now
 
-## derive: rebuild the weekly artifacts for SEASON (ownership -> waiver -> my_week, then panel -> next-GW xP)
+## derive: rebuild the weekly artifacts for SEASON (ownership -> waiver -> my_week, then panel -> next-GW xP -> track record)
 ## Decision artifacts run first and are chained, so a panel/xP failure (e.g. a missing
 ## archive panel) cannot block them; it still fails `make derive` afterwards so it stays visible.
 ## Reads/writes season-nested paths only; the flat data/ layout is the 2025-26 archive.
@@ -27,6 +27,7 @@ derive:
 	cd apps/backend && uv run python -m backend.ml.matchmodel --gw next --season $(SEASON) \
 		--panel ../../data/derived/ml/player_gameweeks.parquet $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
 		--bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json
+	cd apps/backend && uv run python -m backend.ml.trackrecord --season $(SEASON) --data-root ../../data
 
 ## weekly: the whole weekly loop (fetch + derive)
 weekly: fetch derive
