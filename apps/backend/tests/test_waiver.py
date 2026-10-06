@@ -902,13 +902,15 @@ def test_override_replaces_xp_next_with_p_override_times_xp_started(tmp_path):
     assert untouched["xp_next"] == _by_name(table).loc["Streamer", "xp_next"]
 
 
-def test_override_in_a_double_gameweek_scales_by_the_fixture_count(tmp_path):
-    gw_xp = _gw_xp([(200, 12.0)]).assign(xp_started=7.0, xp_cameo=1.5, num_fixtures=2)
+def test_override_in_a_double_gameweek_uses_the_summed_conditional(tmp_path):
+    """The frame's xp_started is already the sum over both fixtures (7.5 + 4.5):
+    it is used as is, never multiplied by num_fixtures again."""
+    gw_xp = _gw_xp([(200, 10.0)]).assign(xp_started=12.0, xp_cameo=2.5, num_fixtures=2)
     table = _xp_table(tmp_path, gw_xp)
-    assert _by_name(table).loc["SeasonStar", "xp_started"] == 14.0
+    assert _by_name(table).loc["SeasonStar", "xp_started"] == 12.0
     out, _ = wv.apply_role_overrides(
         table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.5, **FRESH}], target_gw=1)
-    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(7.0)
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(6.0)
 
 
 def test_override_on_a_heuristic_player_uses_the_full_availability_heuristic(tmp_path):

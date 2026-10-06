@@ -401,8 +401,8 @@ changed club). Three signals, all in `backend/ml/waiver.py`, used by
   hand-maintained). An entry matches one player by `player` (web name) +
   `team` (short name), or by `code` when given. `p_start` replaces the
   model's: `xp_next = p_start x xp_started`, where `xp_started` is the
-  Stage-2 points-if-he-starts now carried in `xp_gw<N>.parquet` (first
-  fixture x fixture count; the heuristic at full availability for a player
+  Stage-2 points-if-he-starts now carried in `xp_gw<N>.parquet` (summed
+  over the GW's fixtures, so a double counts each opponent; the heuristic at full availability for a player
   the model does not cover). The substitute-cameo term is dropped on
   purpose. `return_gw > N` forces 0; once `return_gw <= N` the entry is
   expired and ignored. A player whose availability factor is 0 (status

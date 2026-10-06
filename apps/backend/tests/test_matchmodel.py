@@ -523,17 +523,31 @@ def test_served_frame_carries_the_stage_two_conditionals():
     assert {"panel_max_gw", "gw", "season"} <= set(scored.columns)   # stamps intact
 
 
-def test_double_gameweek_conditionals_describe_the_first_fixture():
-    """In a double, xp sums both fixtures but xp_started is one fixture's."""
-    panel = _panel()
-    gw = N_GWS + 1
-    bootstrap = _bootstrap(panel, gw, doubles=(3,))
-    scored = mm.build_gw_xp(panel, bootstrap, gw, SEASON, min_train_rows=SMALL_FIT)
-    doubled = scored[scored["num_fixtures"] == 2]
-    assert not doubled.empty
-    one_fixture = (doubled["p_start"] * doubled["xp_started"]
-                   + (doubled["p_appear"] - doubled["p_start"]) * doubled["xp_cameo"])
-    assert (doubled["xp"] > one_fixture + 1e-9).any()
+class _FixedModel:
+    """Stand-in for MatchModel.predict: fixed per-fixture outputs."""
+
+    def __init__(self, per_fixture: pd.DataFrame):
+        self.per_fixture = per_fixture
+
+    def predict(self, rows, availability=None):
+        return self.per_fixture.copy()
+
+
+def test_double_gameweek_conditionals_sum_over_the_fixtures():
+    """Regression: xp_started took the first fixture only (and waiver scaled it
+    by the fixture count), so a double against one easy and one hard opponent
+    was valued as two easy games. Each fixture now contributes its own."""
+    rows = pd.DataFrame({"code": [1, 1, 2], "element_type": [3, 3, 4], "team_id": [10, 10, 11],
+                         "opponent_team": [5, 6, 7], "was_home": [True, False, True]})
+    per_fixture = pd.DataFrame({
+        "xp_fixture": [3.0, 5.0, 2.0], "p_start": [0.8, 0.8, 0.5], "p_appear": [0.9, 0.9, 0.6],
+        "xp_spread": [1.0, 1.0, 1.0], "xp_started": [3.5, 6.0, 3.0],
+        "xp_cameo": [1.0, 1.5, 0.5], "drivers": ["a", "b", "c"]})
+    scored = mm.score_fixtures(_FixedModel(per_fixture), rows).set_index("code")
+    assert scored.loc[1, "num_fixtures"] == 2 and scored.loc[1, "xp"] == pytest.approx(8.0)
+    assert scored.loc[1, "xp_started"] == pytest.approx(3.5 + 6.0)    # not 3.5 x 2
+    assert scored.loc[1, "xp_cameo"] == pytest.approx(1.0 + 1.5)
+    assert scored.loc[2, "xp_started"] == pytest.approx(3.0)           # single fixture unchanged
 
 
 def test_blank_gameweek_scores_zero():

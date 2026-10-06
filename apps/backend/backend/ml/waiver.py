@@ -406,8 +406,9 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     (see the module docstring). Without it every factor is 1.0 and
     ``ros_adj == ros_points``, except departed (status "u") players, whose
     ``ros_adj`` is always 0. ``xp_started`` is the next-GW value if the player
-    starts every fixture: the model's Stage-2 conditional x fixture count
-    when the xP frame carries it, else the heuristic at full availability.
+    starts every fixture: the model's Stage-2 conditional summed over the
+    gameweek's fixtures when the xP frame carries it, else the heuristic at
+    full availability.
     """
     strengths = team_strengths(seasons, bootstrap.get("teams", []))
     if fixtures_by_event is None:
@@ -456,7 +457,7 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
         reconciled = False
         xp_started = full_load1
         if model is not None and pd.notna(model.get("xp_started")):
-            xp_started = float(model["xp_started"]) * int(model.get("num_fixtures") or 1)
+            xp_started = float(model["xp_started"])
         if model is not None:
             xp_next, xp_source = float(model["xp"]), "model"
             xp_extra = {"p_start": float(model["p_start"]), "xp_floor": float(model["xp_floor"]),
