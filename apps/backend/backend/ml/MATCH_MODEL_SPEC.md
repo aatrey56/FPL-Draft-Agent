@@ -10,12 +10,16 @@ availability-gated structure, fixture-aware per-position stage 2, the
 walk-forward backtest with a held-out alpha-selection window, and the
 `xp_gw{gw}.parquet` artifact. It beats every naive baseline in all four
 positions on held-out gameweeks (numbers in `docs/MODEL_ROADMAP.md`).
+**Status (2026-10-06): weekly tools and horizons built.** `waiver_plan` and
+`my_week` read `xp_gw{gw}.parquet` (`--scorer model`, the default), and
+`matchmodel.build_horizon_xp` writes `xp_horizon_gw{gw}.parquet` — the 1 GW /
+3 GW view described under "Horizons and outputs" below — which `waiver_plan`
+ranks on (`--horizon {1,3,ros}`, default 3) with ROS from the season model.
 **Not yet built:** the per-component decomposition and the explicit
 position × opponent buy matrix (both described below), the venue-split team
-environment, the `fixture_targets` view, the 3-GW/ROS horizons, and the
-rewiring of `waiver_plan` / `my_week` / `trade_check` onto this model — they
-still run the per-GW heuristic. The sections below remain the contract for
-that work.
+environment, the `fixture_targets` view, and the rewiring of `trade_check`
+onto this model (it still runs the heuristic). The sections below remain the
+contract for that work.
 
 Depends on `player_gameweeks.parquet` (GAMEWEEK_INGEST_SPEC). This is where the
 user's "how do I know a player will have a good game" mental model is encoded:
@@ -176,8 +180,38 @@ bonus proxy) so tools can explain *which* component the fixture inflates.
 - Score the FA pool + current roster over **1 GW / next 3 GWs / ROS** (CLAUDE.md
   §5.2 horizons). A pickup for this week's fixture is a different product than
   a run-of-fixtures hold — surface both.
+- **Built (2026-10-06): `build_horizon_xp` → `xp_horizon_gw{N}.parquet`.**
+  One fit (the one `build_gw_xp` makes for GW N), then GW N, N+1, N+2 are
+  each scored with **feature-freeze**: player form and the carried team form
+  are the as-of-N values (GW N's outcomes are unknown, so form cannot be
+  rolled forward); only the fixture columns — opponent, venue, fixture count
+  and the opponent's `opp_*_pg` as of N — are that event's own. It is a
+  schedule view: form drift over the three gameweeks is ignored by design,
+  and early in a season the opponent strengths for N+2 are the same carried
+  values as for N. Assumptions:
+  - **Availability** — the bootstrap's factor (`availability_factor`) is
+    applied unchanged to all three events: a doubt or injury flagged for N is
+    assumed to last the horizon, and a departed (`u`) player is 0 throughout.
+    Conservative for a short-term knock (his 3-GW value is understated).
+  - **Blanks and doubles** — a team with no fixture in an event scores an
+    explicit 0.0 row (`num_fixtures` 0); a double is one row summing both
+    fixtures, each scored against its own opponent.
+  - **Coverage** — the events scored are the ones the bootstrap fixture map
+    holds; if it holds fewer than three, `events_covered` says so, a WARNING
+    is logged and `xp_h3` sums what there is.
+  - **Output** — one row per (code, event): `xp`, `p_start`, `xp_started`,
+    `opponents`, `num_fixtures`, `fitted` (False = a position too thin to
+    fit; its 0.0 is "no opinion"), plus the per-code `xp_h1`, `xp_h3`,
+    `events_covered`. `xp_h1` equals `xp_gw{N}.xp` bit for bit (shared fit
+    and features), and `waiver` rejects a horizon file that disagrees with
+    `xp_gw{N}` or fails its freshness rule (`gw` = N, `panel_max_gw` = last
+    finished GW).
+  - **ROS** is not a match-model output: it is the season projection's
+    role-adjusted `ros_adj` (PROJECTION_MODEL_SPEC + the club-move factor).
 - `waiver_plan` consumes fixture-adjusted xP and stays roster-aware (marginal
   value over my worst startable at that position, league_size=12 scarcity).
+  Every rec carries `gains = {gw1, gw3, ros}`; `--horizon` picks the one that
+  ranks (see `waiver.py`'s module docstring for labels and fallbacks).
 - New derived view `fixture_targets`: per position, top FA-pool players ranked
   by fixture-adjusted xP over the chosen horizon, with the component driver
   ("home vs SUN, CS 48%") — this is the "make the most of the market" scan.

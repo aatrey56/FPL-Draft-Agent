@@ -18,7 +18,7 @@ start/sit) → Go MCP server (:8080, 14 tools) → Claude Desktop / Claude Code
 |---|---|
 | `draft_board` | Who do I draft? Tiered, VOR-ranked projections per position |
 | `player_card` | Who is this player? Projection + 7-season history + live news (falls back to history for unprojected players) |
-| `waiver_plan` | Who do I add/drop? Roster-aware, labeled `upgrade` / `stream` / `hold` over two horizons |
+| `waiver_plan` | Who do I add/drop? Roster-aware, labeled `upgrade` / `stream` / `hold`, with gains over three horizons (next GW / next 3 GWs / rest of season) |
 | `my_week` | Who starts this GW? Best XI, bench, and attention flags (injuries, blanks, unknowns) |
 | `trade_check` | Is this trade good? Give vs get on season value + starter scarcity (VOR) |
 | `league_pulse` | What's happening? Standings, named transactions, game clock + this week's deadlines (trades/waivers/lineup lock, in EST) |
@@ -60,12 +60,21 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   file (the JSON's `scorer` then reads `heuristic`, with `xp_fallback: true`
   and an `xp_fallback_reason`). A model row for a player whose *current*
   availability is 0 (ruled out after the xP file was built) is zeroed
-  (`xp_next`/`p_start` 0, `xp_reconciled: true`; the JSON's
-  `xp_reconciled` counts them). Waiver recommendations rank by `next1_gain` (next-GW xP of the add
-  minus the drop); `hold` recs (no next-GW gain, better ROS) come last.
-  A free agent with model xP but no ROS projection (promoted club) is ranked
-  as a `stream` with `season_gain: null` and `season_unknown: true`; his
-  `next3_gain` is null too (the 3-GW value is built from the projection).
+  (`xp_next`/`p_start` 0, and a model 3-GW `next3_xp` 0; `xp_reconciled:
+  true`, and the JSON's `xp_reconciled` counts them). Every waiver recommendation carries
+  `gains: {gw1, gw3, ros}` — next-GW xP, 3-GW xP and rest-of-season, each the
+  add minus the drop (also as the flat `next1_gain` / `next3_gain` /
+  `season_gain`). The 3-GW value is the match model's horizon
+  (`xp_horizon_gw<N>.parquet`: GW N..N+2 scored with form frozen at GW N, so
+  it is a schedule view; a blank adds 0, a double both fixtures, and today's
+  availability is applied to all three), with `add_next3_source` saying
+  `model` or `heuristic`. `--horizon {1,3,ros}` (default `3`) picks the gain
+  that ranks and `rank_by` in the JSON records it; `hold` recs (no short-term
+  gain, better ROS) come last except under `ros`. Without a usable horizon
+  file the JSON says `horizon_fallback: true` with a reason, 3-GW values are
+  heuristic and `--horizon 3` ranks on the next GW. A free agent with model
+  xP but no ROS projection (promoted club) is ranked as a `stream` with
+  `season_gain: null` and `season_unknown: true`.
   `--scorer model` is the default (the 2026-27 GW2-5 live check in
   `docs/MODEL_ROADMAP.md` found the model ahead of every baseline in all
   four positions); `--scorer heuristic` reproduces the pre-xP output exactly
@@ -209,7 +218,7 @@ make autopilot-off
 ```
 
 Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
-derive: ownership, then season panel && next-GW xP (`-`-prefixed: a failure warns and waiver/my_week fall back to the heuristic), then waiver and my_week with `SCORER={heuristic,model}`, then the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
+derive: ownership, then season panel && next-GW xP && 3-GW horizon (`-`-prefixed: a failure warns and waiver/my_week fall back — to the heuristic without the xP file, to the next-GW ranking without the horizon file), then waiver and my_week with `SCORER={heuristic,model}` (waiver also `HORIZON={1,3,ros}`, default 3), then the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW's xP and horizon files) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
 Non-Mac or cron fans: schedule `scripts/autorefresh.sh` (crontab example inline).
 
 Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):
