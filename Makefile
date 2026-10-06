@@ -1,4 +1,6 @@
 SEASON ?= 2026-27
+RAW_SEASON := ../../data/raw/$(SEASON)
+DERIVED_SEASON := ../../data/derived/$(SEASON)
 GO_ROOTS := --raw-root ../../data/raw --derived-root ../../data/derived
 
 .PHONY: serve fetch derive weekly matchday preflight backtest xp
@@ -11,9 +13,20 @@ serve:
 fetch:
 	cd apps/mcp-server && go run ./cmd/dev --season $(SEASON) $(GO_ROOTS) --refresh-now
 
-## derive: rebuild the weekly decision artifacts (ownership -> waiver -> my_week)
+## derive: rebuild the weekly artifacts for SEASON (ownership -> waiver -> my_week, then panel -> next-GW xP)
+## Decision artifacts run first and are chained, so a panel/xP failure (e.g. a missing
+## archive panel) cannot block them; it still fails `make derive` afterwards so it stays visible.
+## Reads/writes season-nested paths only; the flat data/ layout is the 2025-26 archive.
 derive:
-	cd apps/backend && uv run python -m backend.ml.ownership && uv run python -m backend.ml.waiver && uv run python -m backend.ml.myweek
+	cd apps/backend && uv run python -m backend.ml.ownership --season $(SEASON) \
+		&& uv run python -m backend.ml.waiver --season $(SEASON) \
+		&& uv run python -m backend.ml.myweek --season $(SEASON)
+	cd apps/backend && uv run python -m backend.ml.gameweeks --season $(SEASON) \
+		--out $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
+		--gw-root $(RAW_SEASON)/gw --bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json
+	cd apps/backend && uv run python -m backend.ml.matchmodel --gw next --season $(SEASON) \
+		--panel ../../data/derived/ml/player_gameweeks.parquet $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
+		--bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json
 
 ## weekly: the whole weekly loop (fetch + derive)
 weekly: fetch derive
@@ -22,10 +35,10 @@ weekly: fetch derive
 backtest:
 	cd apps/backend && uv run python -m backend.ml.matcheval && uv run python -m backend.ml.matchmodel --backtest
 
-## xp: build xp_gw$(GW).parquet for an upcoming gameweek (needs GW= and SEASON=)
+## xp: build xp_gw$(GW).parquet for a specific gameweek (SEASON defaults to 2026-27; derive does the next GW)
 xp:
-	@test -n "$(GW)" || (echo "usage: make xp GW=2 SEASON=2026-27"; exit 1)
-	@test -n "$(SEASON)" || (echo "usage: make xp GW=2 SEASON=2026-27"; exit 1)
+	@test -n "$(GW)" || (echo "usage: make xp GW=2 [SEASON=2026-27]"; exit 1)
+	@test -n "$(SEASON)" || (echo "usage: make xp GW=2 [SEASON=2026-27]"; exit 1)
 	cd apps/backend && uv run python -m backend.ml.matchmodel \
 		--panel ../../data/derived/ml/player_gameweeks.parquet \
 		        ../../data/derived/$(SEASON)/ml/player_gameweeks.parquet \

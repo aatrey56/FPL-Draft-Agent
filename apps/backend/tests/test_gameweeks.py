@@ -5,7 +5,10 @@ parse/build functions. Covers the acceptance criteria in
 ``backend/ml/GAMEWEEK_INGEST_SPEC.md``.
 """
 
+import json
+
 import pandas as pd
+import pytest
 
 from backend.ml import gameweeks
 
@@ -106,3 +109,91 @@ def test_unmappable_element_dropped():
     }
     rows = gameweeks.parse_gw_live(live, 1, "2025-26", _maps())
     assert rows == []
+
+
+def test_guard_blocks_new_season_write_to_flat_archive(tmp_path):
+    flat = tmp_path / "data/derived/ml/player_gameweeks.parquet"
+    with pytest.raises(ValueError, match="archive"):
+        gameweeks.guard_archive_write(flat, "2026-27", flat)
+
+
+def test_guard_allows_archive_season_and_nested_path(tmp_path):
+    flat = tmp_path / "data/derived/ml/player_gameweeks.parquet"
+    gameweeks.guard_archive_write(flat, "2025-26", flat)
+    nested = tmp_path / "data/derived/2026-27/ml/p.parquet"
+    gameweeks.guard_archive_write(nested, "2026-27", flat)
+
+
+def test_guard_blocks_case_variant_of_existing_archive(tmp_path):
+    flat = tmp_path / "data/derived/ml/player_gameweeks.parquet"
+    flat.parent.mkdir(parents=True)
+    flat.write_bytes(b"x")
+    variant = tmp_path / "DATA/derived/ml/Player_Gameweeks.parquet"
+    if not variant.exists():  # case-sensitive filesystem: nothing to alias
+        variant = flat
+    with pytest.raises(ValueError, match="archive"):
+        gameweeks.guard_archive_write(variant, "2026-27", flat)
+
+
+def test_guard_blocks_case_variant_of_missing_archive(tmp_path):
+    flat = tmp_path / "data/derived/ml/player_gameweeks.parquet"
+    variant = tmp_path / "DATA/derived/ml/PLAYER_gameweeks.parquet"
+    with pytest.raises(ValueError, match="archive"):
+        gameweeks.guard_archive_write(variant, "2026-27", flat)
+
+
+def _write_season(root, with_partial: bool):
+    """Raw tree: GW1 finished, GW2 in progress (live.json optionally present)."""
+    bootstrap = dict(BOOTSTRAP)
+    bootstrap["events"] = {"current": 2, "next": 3, "data": [
+        {"id": 1, "finished": True}, {"id": 2, "finished": False}]}
+    (root / "bootstrap").mkdir(parents=True)
+    (root / "bootstrap/bootstrap-static.json").write_text(json.dumps(bootstrap))
+    live = {"elements": {"430": {"stats": {"minutes": 90}, "explain": _explain(1, 90)}}}
+    for gw in (1, 2) if with_partial else (1,):
+        (root / "gw" / str(gw)).mkdir(parents=True)
+        (root / "gw" / str(gw) / "live.json").write_text(json.dumps(live))
+
+
+def test_unfinished_gameweek_is_excluded_from_panel(tmp_path):
+    """Regression: a partial in-progress GW must not enter the panel."""
+    with_partial, clean = tmp_path / "a", tmp_path / "b"
+    _write_season(with_partial, True)
+    _write_season(clean, False)
+    args = ("2026-27", 38)
+    got = gameweeks.ingest_local(with_partial / "gw",
+                                 with_partial / "bootstrap/bootstrap-static.json", *args)
+    want = gameweeks.ingest_local(clean / "gw",
+                                  clean / "bootstrap/bootstrap-static.json", *args)
+    assert set(got["gw"]) == {1}
+    pd.testing.assert_frame_equal(got, want)
+
+
+def test_main_calls_guard_and_defaults_to_nested_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(gameweeks, "_repo_root", lambda: tmp_path)
+    flat = tmp_path / "data/derived/ml/player_gameweeks.parquet"
+    with pytest.raises(ValueError, match="archive"):
+        gameweeks.main(["--season", "2026-27", "--out", str(flat)])
+    _write_season(tmp_path / "data/raw/2026-27", False)
+    assert gameweeks.main(["--season", "2026-27"]) == 0
+    assert (tmp_path / "data/derived/2026-27/ml/player_gameweeks.parquet").exists()
+    assert not flat.exists()
+
+
+def test_no_finished_gameweek_writes_empty_panel_and_exits_zero(tmp_path, monkeypatch):
+    """Regression: pre-GW1 (live.json present, nothing finished) must not crash."""
+    monkeypatch.setattr(gameweeks, "_repo_root", lambda: tmp_path)
+    root = tmp_path / "data/raw/2026-27"
+    _write_season(root, False)
+    bootstrap = json.loads((root / "bootstrap/bootstrap-static.json").read_text())
+    bootstrap["events"]["data"] = [{"id": 1, "finished": False}]
+    (root / "bootstrap/bootstrap-static.json").write_text(json.dumps(bootstrap))
+    assert gameweeks.main(["--season", "2026-27"]) == 0
+    panel = pd.read_parquet(tmp_path / "data/derived/2026-27/ml/player_gameweeks.parquet")
+    assert panel.empty
+    assert list(panel.columns) == gameweeks.CANONICAL_COLUMNS
+
+
+def test_summarize_empty_frame():
+    summary = gameweeks.summarize(gameweeks.build_dataframe([]))
+    assert summary["rows"] == 0 and summary["pct_played"] is None

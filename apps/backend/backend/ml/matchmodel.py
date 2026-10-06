@@ -43,6 +43,7 @@ import argparse
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -533,6 +534,75 @@ def build_gw_xp(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
     return scored.sort_values("xp", ascending=False).reset_index(drop=True)
 
 
+def next_gameweek(bootstrap: dict, now: datetime | None = None) -> int:
+    """The gameweek to forecast.
+
+    Order: (1) ``events.current`` if it is unfinished and its deadline is still
+    in the future (not started, e.g. before the GW1 deadline); (2) ``events.next``;
+    (3) the first unfinished event with a future deadline. Mid-GW (past deadline, unfinished) therefore
+    yields current+1. Assumption, unverified against a real pre-GW1 draft
+    bootstrap: before the first deadline the API may report current=1 with
+    next=2, which rule (1) corrects. Accepts the draft shape (``events`` =
+    {"current", "next", "data"}) or a plain list. ``now`` is injectable for
+    tests. Raises ValueError when none apply (season over, or only locked events).
+    """
+    now = now or datetime.now(timezone.utc)
+    events = bootstrap.get("events") or []
+    current = nxt = None
+    is_list_shape = not isinstance(events, dict)
+    if isinstance(events, dict):
+        current, nxt = events.get("current"), events.get("next")
+        events = events.get("data") or []
+    if current is not None:
+        event = next((e for e in events if int(e["id"]) == int(current)), None)
+        deadline = _parse_deadline(event.get("deadline_time")) if event else None
+        if event and not event.get("finished") and deadline and deadline > now:
+            return int(current)
+    if nxt is not None:
+        return int(nxt)
+    unfinished = [e for e in events if not e.get("finished")]
+    if not unfinished:
+        raise ValueError("no next gameweek in the bootstrap (season over?)")
+    if is_list_shape:
+        # Plain-list shape has no current/next: prefer the is_next flag, then the
+        # first unfinished event that has not yet passed its deadline.
+        flagged = [int(e["id"]) for e in unfinished if e.get("is_next")]
+        if flagged:
+            return min(flagged)
+        upcoming = [int(e["id"]) for e in unfinished
+                    if (d := _parse_deadline(e.get("deadline_time"))) and d > now]
+        if upcoming:
+            return min(upcoming)
+    # Final fallback: an unfinished event past its deadline is locked, not actionable.
+    actionable = [int(e["id"]) for e in unfinished
+                  if (d := _parse_deadline(e.get("deadline_time"))) and d > now]
+    if not actionable:
+        raise ValueError("no actionable next gameweek in the bootstrap")
+    return min(actionable)
+
+
+def _parse_deadline(value: str | None) -> datetime | None:
+    """Parse an ISO deadline like 2026-10-10T10:00:00Z; None if absent/invalid."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _gw_arg(value: str) -> str:
+    """argparse type for --gw: a positive integer or the literal 'next'."""
+    if value == "next":
+        return value
+    try:
+        if int(value) > 0:
+            return value
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError(f"--gw must be a positive integer or 'next', got {value!r}")
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3].parent
 
@@ -651,16 +721,27 @@ def main(argv: list[str] | None = None) -> int:
                         help="run the walk-forward evaluation and print the report")
     parser.add_argument("--selection-max-gw", type=int, default=SELECTION_MAX_GW,
                         help="last gameweek used to select alpha; later ones are held out")
-    parser.add_argument("--gw", type=int, default=None,
-                        help="build xp_gw{N}.parquet for this upcoming gameweek")
+    parser.add_argument("--gw", type=_gw_arg, default=None,
+                        help="build xp_gw{N}.parquet for this upcoming gameweek; "
+                             "'next' picks the first unfinished one from the bootstrap")
     parser.add_argument("--season", type=str, default=None,
                         help="season for --gw, e.g. 2026-27 (also picks the data root)")
     parser.add_argument("--bootstrap", type=Path, default=None)
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
 
-    panel = pd.concat([pd.read_parquet(path) for path in args.panel],
-                      ignore_index=True)
+    # A missing or empty panel (new season, no finished GW yet) is skipped, not concatenated.
+    panels = []
+    for path in args.panel:
+        if not path.exists():
+            logger.warning("panel %s not found; skipping", path)
+            continue
+        frame = pd.read_parquet(path)
+        if not frame.empty:
+            panels.append(frame)
+    if not panels:
+        parser.error("no usable --panel (all missing or empty); nothing to train on")
+    panel = pd.concat(panels, ignore_index=True)
 
     if args.backtest:
         frame = build_match_frame(panel)
@@ -681,9 +762,10 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_path = args.bootstrap or (
         root / f"data/raw/{season}/bootstrap/bootstrap-static.json")
     bootstrap = json.loads(Path(bootstrap_path).read_text(encoding="utf-8"))
-    scored = build_gw_xp(panel, bootstrap, args.gw, season,
+    gw = next_gameweek(bootstrap) if args.gw == "next" else int(args.gw)
+    scored = build_gw_xp(panel, bootstrap, gw, season,
                          alpha=args.alpha or dict(SELECTED_ALPHAS))
-    out = args.out or root / f"data/derived/{season}/ml/xp_gw{args.gw}.parquet"
+    out = args.out or root / f"data/derived/{season}/ml/xp_gw{gw}.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     scored.to_parquet(out, index=False)
     logger.info("wrote %s (%d players)", out, len(scored))

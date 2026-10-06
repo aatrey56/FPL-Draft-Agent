@@ -10,6 +10,8 @@ real data are recorded in ``docs/MODEL_ROADMAP.md`` and reproduced by
 ``python -m backend.ml.matchmodel --backtest``.
 """
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -368,3 +370,148 @@ def test_model_is_deterministic(frame):
     first = mm.score_panel(mm.MatchModel(alpha=100.0, min_train_rows=SMALL_FIT).fit(train), target)
     second = mm.score_panel(mm.MatchModel(alpha=100.0, min_train_rows=SMALL_FIT).fit(train), target)
     pd.testing.assert_frame_equal(first, second)
+
+
+def test_next_gameweek_normal_draft_shape():
+    events = {"data": [{"id": 1, "finished": True}, {"id": 2, "finished": True},
+                       {"id": 3, "finished": False, "deadline_time": "2099-01-01T00:00:00Z"},
+                       {"id": 4, "finished": False, "deadline_time": "2099-02-01T00:00:00Z"}]}
+    assert mm.next_gameweek({"events": events}, now=NOW) == 3
+
+
+def test_next_gameweek_mid_gw_returns_current_plus_one():
+    events = {"current": 2, "next": 3,
+              "data": [{"id": 1, "finished": True}, {"id": 2, "finished": False},
+                       {"id": 3, "finished": False}]}
+    assert mm.next_gameweek({"events": events}) == 3
+
+
+def test_next_gameweek_falls_back_to_first_unfinished():
+    events = {"current": 1, "next": None,
+              "data": [{"id": 1, "finished": True},
+                       {"id": 2, "finished": False,
+                        "deadline_time": "2099-01-01T00:00:00Z"}]}
+    assert mm.next_gameweek({"events": events}, now=NOW) == 2
+
+
+def test_next_gameweek_season_over_raises():
+    with pytest.raises(ValueError, match="season over"):
+        mm.next_gameweek({"events": {"next": None, "data": [{"id": 38, "finished": True}]}})
+
+
+def test_gw_arg_rejects_garbage_and_accepts_int_or_next():
+    assert mm._gw_arg("next") == "next"
+    assert mm._gw_arg("6") == "6"
+    for bad in ("abc", "0", "-2"):
+        with pytest.raises(mm.argparse.ArgumentTypeError):
+            mm._gw_arg(bad)
+
+
+def test_cli_gw_next_resolves_end_to_end(tmp_path):
+    panel = _panel()
+    panel_path = tmp_path / "panel.parquet"
+    panel.to_parquet(panel_path)
+    bootstrap = _bootstrap(panel, N_GWS + 1)
+    bootstrap["events"] = {"current": N_GWS, "next": N_GWS + 1, "data": []}
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text(json.dumps(bootstrap), encoding="utf-8")
+    out = tmp_path / "xp.parquet"
+    code = mm.main(["--gw", "next", "--season", SEASON, "--panel", str(panel_path),
+                    "--bootstrap", str(bootstrap_path), "--out", str(out)])
+    assert code == 0
+    assert out.exists()
+    assert len(pd.read_parquet(out)) > 0
+
+
+def _events(current, nxt, current_finished, deadline):
+    data = [{"id": 4, "finished": True, "deadline_time": "2026-09-01T10:00:00Z"},
+            {"id": current, "finished": current_finished, "deadline_time": deadline},
+            {"id": current + 1, "finished": False,
+             "deadline_time": "2099-01-01T00:00:00Z"}]
+    return {"events": {"current": current, "next": nxt, "data": data}}
+
+
+NOW = datetime(2026, 10, 3, tzinfo=timezone.utc)
+
+
+def test_next_gameweek_pre_deadline_current_is_the_target():
+    boot = _events(1, 2, False, "2026-10-10T10:00:00Z")
+    assert mm.next_gameweek(boot, now=NOW) == 1
+
+
+def test_next_gameweek_mid_gw_past_deadline_is_current_plus_one():
+    boot = _events(5, 6, False, "2026-09-18T17:30:00Z")
+    assert mm.next_gameweek(boot, now=NOW) == 6
+
+
+def test_next_gameweek_between_gws_uses_next():
+    boot = _events(5, 6, True, "2026-09-18T17:30:00Z")
+    assert mm.next_gameweek(boot, now=NOW) == 6
+
+
+def test_cli_tolerates_empty_season_panel_beside_archive(tmp_path):
+    panel = _panel()
+    archive = tmp_path / "archive.parquet"
+    panel.to_parquet(archive)
+    empty = tmp_path / "empty.parquet"
+    panel.iloc[0:0].to_parquet(empty)
+    bootstrap = _bootstrap(panel, N_GWS + 1)
+    bootstrap["events"] = {"current": N_GWS, "next": N_GWS + 1, "data": []}
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text(json.dumps(bootstrap), encoding="utf-8")
+    out = tmp_path / "xp.parquet"
+    assert mm.main(["--gw", "next", "--season", SEASON, "--panel", str(archive),
+                    str(empty), "--bootstrap", str(bootstrap_path), "--out", str(out)]) == 0
+    assert out.exists()
+
+
+def test_next_gameweek_list_shape_mid_gw_prefers_is_next():
+    events = [{"id": 5, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"},
+              {"id": 6, "finished": False, "is_next": True,
+               "deadline_time": "2099-01-01T00:00:00Z"},
+              {"id": 7, "finished": False, "deadline_time": "2099-02-01T00:00:00Z"}]
+    assert mm.next_gameweek({"events": events}, now=NOW) == 6
+
+
+def test_next_gameweek_list_shape_mid_gw_without_flags_uses_future_deadline():
+    events = [{"id": 5, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"},
+              {"id": 6, "finished": False, "deadline_time": "2099-01-01T00:00:00Z"}]
+    assert mm.next_gameweek({"events": events}, now=NOW) == 6
+
+
+def test_next_gameweek_dict_mid_gw_next_null_uses_future_deadline_event():
+    events = {"current": 5, "next": None, "data": [
+        {"id": 5, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"},
+        {"id": 6, "finished": False, "deadline_time": "2099-01-01T00:00:00Z"}]}
+    assert mm.next_gameweek({"events": events}, now=NOW) == 6
+
+
+def test_next_gameweek_mid_final_gw_has_no_actionable_next():
+    events = {"current": 38, "next": None, "data": [
+        {"id": 38, "finished": False, "deadline_time": "2026-09-18T17:30:00Z"}]}
+    with pytest.raises(ValueError, match="no actionable next gameweek"):
+        mm.next_gameweek({"events": events}, now=NOW)
+
+
+def test_cli_skips_missing_archive_panel_with_warning(tmp_path, caplog):
+    panel = _panel()
+    season_panel = tmp_path / "season.parquet"
+    panel.to_parquet(season_panel)
+    bootstrap = _bootstrap(panel, N_GWS + 1)
+    bootstrap["events"] = {"current": N_GWS, "next": N_GWS + 1, "data": []}
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text(json.dumps(bootstrap), encoding="utf-8")
+    out = tmp_path / "xp.parquet"
+    missing = tmp_path / "no_archive.parquet"
+    with caplog.at_level("WARNING"):
+        code = mm.main(["--gw", "next", "--season", SEASON, "--panel", str(missing),
+                        str(season_panel), "--bootstrap", str(bootstrap_path),
+                        "--out", str(out)])
+    assert code == 0 and out.exists()
+    assert "not found; skipping" in caplog.text
+
+
+def test_cli_errors_when_no_usable_panel(tmp_path):
+    with pytest.raises(SystemExit):
+        mm.main(["--gw", "next", "--season", SEASON,
+                 "--panel", str(tmp_path / "nope.parquet")])

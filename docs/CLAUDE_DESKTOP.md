@@ -68,7 +68,7 @@ The decision tools serve files the pipeline writes. Before waivers each week
 (ids come from `.env` — nothing to type):
 
 ```bash
-make weekly     # fetch + ownership + waiver + my_week
+make weekly     # fetch + ownership + waiver + my_week + season panel + next-GW xP
 ```
 
 During matches, `make tui` is self-feeding (auto-fetches live points every
