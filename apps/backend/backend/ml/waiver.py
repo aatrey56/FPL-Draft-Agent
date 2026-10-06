@@ -938,8 +938,8 @@ def main(argv: list[str] | None = None) -> int:
     def _moved(x):
         return "?" if x is None else ("yes" if x else "no")
 
-    print(f"\n== DROP CANDIDATES (top {DROP_CANDIDATES_PER_POSITION} per position; "
-          f"minutes through GW{minutes_through_gw}) ==")
+    print(f"\n== DROP CANDIDATES (drop_candidates: top {DROP_CANDIDATES_PER_POSITION} per "
+          f"position; minutes through GW{minutes_through_gw}) ==")
     print("   pos  player               team st  ros_adj    ROS xp_next moved exp_min")
     for c in result["drop_candidates"]:
         print(f"  {c['position']:<4} {c['web_name']:<20} {c['team']:<4} {c['status']:<2} "
