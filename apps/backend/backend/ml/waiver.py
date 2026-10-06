@@ -652,6 +652,11 @@ def _none_if_nan(value: Any) -> Any:
     return None if pd.isna(value) else value
 
 
+def _flag_or_none(value: Any) -> bool | None:
+    """A plain bool (JSON-safe, never a numpy scalar), or None when unknown."""
+    return None if pd.isna(value) else bool(value)
+
+
 def _drop_tiebreak(rank_by: str) -> str:
     """Third drop-order key: the short-horizon value the ranking is built on."""
     return "next3_xp" if rank_by == "legacy" else "xp_next"
@@ -684,7 +689,7 @@ def drop_candidates(squad: pd.DataFrame, tiebreak: str = "xp_next",
                 "status": p["status"],
                 "ros_points": _none_if_nan(p["ros_points"]), "ros_adj": _none_if_nan(p["ros_adj"]),
                 "xp_next": _none_if_nan(p["xp_next"]),
-                "club_moved": _none_if_nan(p["club_moved"]),
+                "club_moved": _flag_or_none(p["club_moved"]),
                 "expected_minutes": _none_if_nan(p["expected_minutes"]),
             })
     return rows
@@ -775,9 +780,10 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             "add_ros_adj": _none_if_nan(fa["ros_adj"]),
             "drop_ros_adj": _none_if_nan(drop["ros_adj"]),
             "drop_status": drop["status"],
-            "club_moved": _none_if_nan(fa["club_moved"]),
+            "club_moved": _flag_or_none(fa["club_moved"]),
             "add_expected_minutes": _none_if_nan(fa["expected_minutes"]),
-            "add_minutes_season": _none_if_nan(fa["minutes_season"]),
+            "add_minutes_season": (None if pd.isna(fa["minutes_season"])
+                                   else int(fa["minutes_season"])),
             "add_role_factor": float(fa["role_factor"]),
             "add_role_override": fa.get("role_override"),
             "availability": fa["status"], "news": fa["news"],

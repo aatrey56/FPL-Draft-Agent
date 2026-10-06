@@ -798,6 +798,28 @@ def test_season_gain_and_rec_fields_use_the_role_adjusted_projection(tmp_path):
     json.loads(jsonutil.dumps_strict(recs))
 
 
+def test_rec_role_fields_are_plain_json_types_when_every_flag_is_known(tmp_path):
+    """Edge: with a prior club for everyone, club_moved is a bool column
+    (numpy scalars) — the artifact must still be strict JSON."""
+    seasons = pd.concat([ROLE_SEASONS, pd.DataFrame([
+        {"season": "2025-26", "code": code, "team_name": "Arsenal", "total_points": 0}
+        for code in (400, 401, 402, 403, 410, 411)])], ignore_index=True)
+    proj_path = tmp_path / "projections.json"
+    proj_path.write_text(json.dumps([{"code": 402, "projected_points": 70.0},
+                                     {"code": 410, "projected_points": 110.0}]))
+    bootstrap = {"teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]}, "elements": [
+        {"id": 42, "code": 402, "web_name": "Weak", "element_type": 2, "team": 2, "status": "a"},
+        {"id": 50, "code": 410, "web_name": "FreeA", "element_type": 2, "team": 1, "status": "a"}]}
+    status = {"element_status": [{"element": 42, "owner": 42}, {"element": 50, "owner": None}]}
+    result = wv.plan(bootstrap, status, seasons, proj_path, 42,
+                     season_panel=_panel({402: [90], 410: [45]}))
+    assert result["players"]["club_moved"].dtype == bool
+    rec = result["recommendations"][0]
+    assert rec["club_moved"] is False and type(rec["add_minutes_season"]) is int
+    assert result["drop_candidates"][0]["club_moved"] is True       # Weak: Arsenal -> Wolves
+    json.loads(jsonutil.dumps_strict({k: result[k] for k in ("recommendations", "drop_candidates")}))
+
+
 def test_heuristic_ranking_no_longer_leads_with_a_benched_club_mover(tmp_path):
     """Regression (the Senesi case): on the heuristic scorer a transferred
     player with a big projection and no minutes was the rank-1 add."""
