@@ -353,8 +353,8 @@ def test_output_has_no_ids_and_prints_five_rows_per_gw(tmp_path):
 # ---- scorer=model ---------------------------------------------------------
 
 def _panel(season, gws):
-    return pd.DataFrame([{"code": 1020, "season": season, "gw": gw, "total_points": 2}
-                         for gw in gws])
+    return pd.DataFrame([{"code": 1020, "season": season, "gw": gw, "total_points": 2,
+                          "minutes": 90} for gw in gws])
 
 
 def _model_world(tmp_path, monkeypatch, captured):
@@ -468,6 +468,47 @@ def test_replay_excludes_an_unfinished_previous_gw_from_panel_and_history(tmp_pa
     assert event == 3
     assert panel.loc[panel["season"] == "2026-27", "gw"].tolist() == [1]
     assert seen == [(3, [1]), (3, [1])]
+
+
+def _capture_plan_panels(monkeypatch):
+    """Record the ``season_panel`` each ``waiver.plan`` call receives, by deadline."""
+    seen: dict[int, pd.DataFrame | None] = {}
+    real_plan = rp.wv.plan
+
+    def spy(*args, **kwargs):
+        seen[min(int(k) for k in kwargs["fixtures_by_event"])] = kwargs.get("season_panel")
+        return real_plan(*args, **kwargs)
+
+    monkeypatch.setattr(rp.wv, "plan", spy)
+    return seen
+
+
+def test_model_scorer_passes_only_pre_deadline_minutes_to_the_role_signals(tmp_path, monkeypatch):
+    world = _model_world(tmp_path, monkeypatch, [])
+    seen = _capture_plan_panels(monkeypatch)
+    rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "model")
+    assert set(seen) == {2, 3}
+    for event, panel in seen.items():
+        assert set(panel["season"]) == {"2026-27"}
+        assert sorted(panel["gw"]) == list(range(1, event))      # gw < deadline only
+
+
+def test_heuristic_scorer_stays_the_frozen_baseline_without_role_signals(tmp_path, monkeypatch):
+    """Regression guard for the replay 'before' number: the heuristic scorer
+    must not see the season panel, so its picks cannot move with S3."""
+    world = _model_world(tmp_path, monkeypatch, [])
+    seen = _capture_plan_panels(monkeypatch)
+    rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "heuristic")
+    assert seen == {2: None, 3: None}
+
+
+def test_asof_season_panel_keeps_only_the_season_before_the_deadline():
+    panel = pd.concat([_panel("2025-26", [1, 2, 3]), _panel("2026-27", [1, 2, 3])])
+    asof = rp.asof_season_panel(panel, "2026-27", {1, 2})
+    assert asof[["season", "gw"]].values.tolist() == [["2026-27", 1], ["2026-27", 2]]
+    assert rp.asof_season_panel(panel, "2026-27", set()).empty   # GW1 deadline: nothing yet
+    # GW2 not completed by the GW3 cutoff (congested midweek): GW1 only
+    assert rp.asof_season_panel(panel, "2026-27", {1})["gw"].tolist() == [1]
 
 
 def test_unknown_scorer_rejected(tmp_path):
