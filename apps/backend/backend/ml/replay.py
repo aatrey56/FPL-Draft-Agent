@@ -15,7 +15,16 @@ As-of contract (nothing after T_N may influence a recommendation):
 * Fixtures: schedule for GW N..N+2 from ``gw/<k>/live.json["fixtures"]`` (or
   the bootstrap fixtures for events it holds, which are 6-8 only). The
   schedule is known in advance, so this is not leakage.
-* Player stats: ``gw/<k>/live.json`` for k <= N-1 only, and only by the
+* Completed gameweeks: only gameweeks fully completed by T_N feed the
+  as-of data (model panel, baseline history, departed-rule minutes). GW k
+  counts as completed when its last fixture's ``kickoff_time`` + 2.5h <= T_N
+  (``RESULT_LAG``: 90 min + stoppage + the results/bonus feed), with the
+  fixtures read from ``gw/<k>/live.json`` or else the bootstrap fixtures.
+  Usually that is every GW < N, but in a congested midweek GW N's waivers
+  can close before GW N-1's last match, and then N-1 is excluded. A GW with
+  no kickoff times at all falls back to the old ``k < N`` rule with a
+  WARNING.
+* Player stats: ``gw/<k>/live.json`` for completed k only, and only by the
   baselines. Realized GW N..N+2 points are read after the picks are made.
 * Projections / ``player_seasons.parquet`` are the pre-GW1 artifacts; the
   harness refuses to run if the season table has 2026-27 rows.
@@ -50,9 +59,9 @@ the harness runs; it is not evidence about the model.
 
 Scorers (``--scorer``): ``heuristic`` ranks on the ros/38 next-GW value;
 ``model`` builds the match xP for deadline N from ``archive panel UNION season
-panel[gw < N]`` (Stage 1 sees the same neutral availability as the heuristic)
-and passes it to ``waiver.plan`` as ``gw_xp``. A leak guard raises if the
-as-of season panel holds any gameweek >= N. The other four strategies do not
+panel[gw completed by T_N]`` (Stage 1 sees the same neutral availability as the
+heuristic) and passes it to ``waiver.plan`` as ``gw_xp``. A leak guard raises if
+the as-of season panel holds any gameweek not completed by T_N. The other four strategies do not
 depend on the scorer, so their rows are identical between scorers.
 
 CLI (reads only; writes ``derived/<season>/ml/waiver_replay_<scorer>.json``):
@@ -71,7 +80,7 @@ import argparse
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +96,8 @@ logger = logging.getLogger(__name__)
 STRATEGIES = ("no_change", "std_points", "form3", "waiver_plan", "me")
 MAX_CANDIDATES = 10
 STALE_SNAPSHOT_HOURS = 24
+# A gameweek's outcomes count as known this long after its last kickoff.
+RESULT_LAG = timedelta(hours=2.5)
 AVAILABILITY_MODE = "neutral+departed"
 CAVEAT = ("Caveat: n=4 deadlines, one league, availability neutral+departed (today's "
           "status 'u' with no prior minutes stays out), raw player points. Harness "
@@ -149,42 +160,91 @@ def asof_fixtures(bootstrap: dict, raw_root: Path, event: int,
     return out
 
 
-def asof_panel(archive: pd.DataFrame, season_panel: pd.DataFrame, event: int) -> pd.DataFrame:
-    """Training panel as of the deadline of ``event``: archive + season rows with gw < event."""
-    return pd.concat([archive, season_panel[season_panel["gw"] < event]], ignore_index=True)
+def last_kickoff(bootstrap: dict, raw_root: Path, event: int) -> datetime | None:
+    """Latest fixture kickoff of ``event``, or None when no time is known.
+
+    Fixtures come from ``gw/<event>/live.json`` when fetched, else from the
+    bootstrap fixtures for that event. Fixtures without a ``kickoff_time``
+    (unscheduled) are ignored.
+    """
+    live = read_live(raw_root, event)
+    fixtures = (live or {}).get("fixtures") or (bootstrap.get("fixtures") or {}).get(str(event)) or []
+    kickoffs = [datetime.fromisoformat(f["kickoff_time"].replace("Z", "+00:00"))
+                for f in fixtures if f.get("kickoff_time")]
+    return max(kickoffs, default=None)
 
 
-def assert_no_panel_leak(panel: pd.DataFrame, season: str, event: int) -> None:
-    """Raise if the panel holds any ``season`` gameweek >= event (future data)."""
-    in_season = panel.loc[panel["season"] == season, "gw"]
-    if not in_season.empty and int(in_season.max()) >= event:
-        raise ValueError(f"as-of panel for {season} holds gw {int(in_season.max())} "
-                         f">= deadline gw {event} (leak)")
+def completed_gameweeks(bootstrap: dict, raw_root: Path, event: int) -> set[int]:
+    """Gameweeks before ``event`` fully completed by its waiver cutoff.
+
+    GW k < event is completed when its last kickoff + ``RESULT_LAG`` <=
+    ``events[event].waivers_time``. A GW with no known kickoff time is
+    assumed completed (the pre-cutoff ``k < event`` rule) with a WARNING.
+    """
+    events = {e["id"]: e for e in bootstrap["events"]["data"]}
+    cutoff = _parse_iso(events[event]["waivers_time"])
+    completed: set[int] = set()
+    for k in range(1, event):
+        last = last_kickoff(bootstrap, raw_root, k)
+        if last is None:
+            logger.warning("GW%d has no fixture kickoff times; assumed completed before "
+                           "the GW%d waiver cutoff", k, event)
+            completed.add(k)
+        elif last + RESULT_LAG <= cutoff:
+            completed.add(k)
+        else:
+            logger.warning("GW%d's last kickoff %s + %s is after the GW%d waiver cutoff %s: "
+                           "excluded from the as-of data", k, last.isoformat(), RESULT_LAG,
+                           event, cutoff.isoformat())
+    return completed
+
+
+def asof_panel(archive: pd.DataFrame, season_panel: pd.DataFrame,
+               completed: set[int]) -> pd.DataFrame:
+    """Training panel as of a deadline: archive + season rows of the
+    ``completed`` gameweeks (``completed_gameweeks``)."""
+    return pd.concat([archive, season_panel[season_panel["gw"].isin(completed)]],
+                     ignore_index=True)
+
+
+def assert_no_panel_leak(panel: pd.DataFrame, season: str, event: int,
+                         completed: set[int]) -> None:
+    """Raise if the panel holds any ``season`` gameweek not completed by the
+    deadline of ``event`` (future data)."""
+    in_season = set(int(g) for g in panel.loc[panel["season"] == season, "gw"].unique())
+    leaked = sorted(in_season - set(completed))
+    if leaked:
+        raise ValueError(f"as-of panel for {season} holds gw {leaked} not completed by "
+                         f"the gw {event} waiver cutoff (leak)")
 
 
 def model_gw_xp(archive: pd.DataFrame, season_panel: pd.DataFrame, neutral: dict,
-                fixtures: dict[str, list[dict]], season: str, event: int) -> pd.DataFrame:
+                fixtures: dict[str, list[dict]], season: str, event: int,
+                completed: set[int]) -> pd.DataFrame:
     """Match xP for the deadline of ``event`` using only data before it.
 
     ``neutral`` is the neutralised bootstrap (so Stage 1 sees neutral
     availability exactly like the heuristic); ``fixtures`` is the as-of
-    schedule from ``asof_fixtures``, of which only ``event`` is scored.
+    schedule from ``asof_fixtures``, of which only ``event`` is scored;
+    ``completed`` is ``completed_gameweeks`` for ``event``.
     """
-    panel = asof_panel(archive, season_panel, event)
-    assert_no_panel_leak(panel, season, event)
+    panel = asof_panel(archive, season_panel, completed)
+    assert_no_panel_leak(panel, season, event, completed)
     bootstrap = {**neutral, "fixtures": {str(event): fixtures[str(event)]}}
     return matchmodel.build_gw_xp(panel, bootstrap, event, season)
 
 
-def departed_before(bootstrap: dict, raw_root: Path, event: int) -> set[int]:
+def departed_before(bootstrap: dict, raw_root: Path, event: int,
+                    completed: set[int] | None = None) -> set[int]:
     """Elements with current status "u" and 0 minutes in every GW < event.
 
     Uses today's status (deliberate small leak, see module docstring); the
-    minutes come from live.json for GW1..event-1 only. A "u" player with any
-    prior minutes left later and stays eligible.
+    minutes come from live.json for the ``completed`` gameweeks (default
+    GW1..event-1). A "u" player with any prior minutes left later and stays
+    eligible.
     """
     played: set[int] = set()
-    for k in range(1, event):
+    for k in sorted(completed) if completed is not None else range(1, event):
         minutes = gw_points(raw_root, k, "minutes") or {}
         played.update(e for e, m in minutes.items() if m > 0)
     return {el["id"] for el in bootstrap.get("elements", [])
@@ -398,7 +458,8 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
     for event in gws:
         if event < 2:
             raise ValueError("replay needs GW >= 2 (GW1 has no prior gameweek)")
-        departed = departed_before(bootstrap, raw, event)
+        completed = completed_gameweeks(bootstrap, raw, event)
+        departed = departed_before(bootstrap, raw, event, completed)
         neutral = neutralize_bootstrap(bootstrap, departed)
         _, snap = asof_snapshot(inputs["history_dir"], events[event]["waivers_time"])
         status_rows = [r for r in snap.get("element_status", []) if int(r["element"]) in elements]
@@ -409,7 +470,7 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
         squad = sorted(int(r["element"]) for r in status_rows if r.get("owner") == entry)
 
         fixtures = asof_fixtures(bootstrap, raw, event)
-        gw_xp = (model_gw_xp(archive, season_panel, neutral, fixtures, season, event)
+        gw_xp = (model_gw_xp(archive, season_panel, neutral, fixtures, season, event, completed)
                  if scorer == "model" else None)
         result = wv.plan(neutral, {"element_status": status_rows}, inputs["seasons"],
                          inputs["projections"], entry, MAX_CANDIDATES,
@@ -419,7 +480,7 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
             "no_change": [],
             "waiver_plan": [(r["add_element"], r["drop_element"]) for r in result["recommendations"]],
         }
-        history = {k: pts for k in range(1, event) if (pts := gw_points(raw, k)) is not None}
+        history = {k: pts for k in sorted(completed) if (pts := gw_points(raw, k)) is not None}
         for name in ("std_points", "form3"):
             candidates[name] = baseline_pick(name, event, free, squad, elements, history)
 

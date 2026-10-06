@@ -390,11 +390,83 @@ def test_model_scorer_uses_asof_panel_and_leaves_other_rows_identical(tmp_path, 
 
 def test_asof_panel_drops_deadline_gw_and_guard_raises_on_sentinel():
     archive, season_panel = _panel("2025-26", [1]), _panel("2026-27", [1, 2, 3])
-    asof = rp.asof_panel(archive, season_panel, 3)
+    asof = rp.asof_panel(archive, season_panel, {1, 2})
     assert asof.loc[asof["season"] == "2026-27", "gw"].tolist() == [1, 2]
-    rp.assert_no_panel_leak(asof, "2026-27", 3)
+    rp.assert_no_panel_leak(asof, "2026-27", 3, {1, 2})
     with pytest.raises(ValueError, match="leak"):
-        rp.assert_no_panel_leak(pd.concat([asof, _panel("2026-27", [3])]), "2026-27", 3)
+        rp.assert_no_panel_leak(pd.concat([asof, _panel("2026-27", [3])]), "2026-27", 3, {1, 2})
+
+
+# ---- waiver cutoff vs the previous gameweek's last match --------------------
+
+T3 = "2026-09-03T17:30:00Z"            # waivers_time of GW3 in build_world
+
+
+def _with_kickoffs(world, event, kickoffs):
+    """Stamp ``kickoffs`` onto gw/<event>/live.json's fixtures (one each)."""
+    path = world / f"raw/2026-27/gw/{event}/live.json"
+    live = json.loads(path.read_text())
+    live["fixtures"] = [{"team_h": 1, "team_a": 2, "kickoff_time": k} for k in kickoffs]
+    path.write_text(json.dumps(live))
+
+
+def test_previous_gw_finishing_after_the_waiver_cutoff_is_not_completed(tmp_path):
+    """Congested midweek: GW2's last match kicks off 1h before GW3's waivers
+    close, so its outcomes were not known at the cutoff."""
+    world = build_world(tmp_path)
+    _with_kickoffs(world, 1, ["2026-08-21T19:00:00Z"])
+    _with_kickoffs(world, 2, ["2026-08-29T14:00:00Z", "2026-09-03T16:30:00Z"])
+    raw = world / "raw/2026-27"
+    bootstrap = json.loads((raw / "bootstrap/bootstrap-static.json").read_text())
+    assert rp.completed_gameweeks(bootstrap, raw, 3) == {1}
+    with pytest.raises(ValueError, match="leak"):
+        rp.assert_no_panel_leak(_panel("2026-27", [1, 2]), "2026-27", 3, {1})
+
+
+@pytest.mark.parametrize("last_kickoff,completed", [
+    ("2026-09-03T15:00:00Z", {1, 2}),      # + 2.5h lands exactly on the cutoff
+    ("2026-09-03T15:01:00Z", {1}),         # one minute later is too late
+])
+def test_completion_boundary_is_kickoff_plus_two_and_a_half_hours(tmp_path, last_kickoff,
+                                                                 completed):
+    world = build_world(tmp_path)
+    _with_kickoffs(world, 2, [last_kickoff])
+    raw = world / "raw/2026-27"
+    bootstrap = json.loads((raw / "bootstrap/bootstrap-static.json").read_text())
+    assert rp.completed_gameweeks(bootstrap, raw, 3) == completed
+
+
+def test_completion_reads_bootstrap_fixtures_when_live_is_missing(tmp_path, caplog):
+    world = build_world(tmp_path, live3=False, live4=False, bootstrap_fixtures={
+        "3": [{"team_h": 1, "team_a": 2, "kickoff_time": "2026-09-11T11:00:00Z"}]})
+    raw = world / "raw/2026-27"
+    bootstrap = json.loads((raw / "bootstrap/bootstrap-static.json").read_text())
+    with caplog.at_level("WARNING"):
+        # GW1/2 carry no kickoff times: assumed completed, loudly
+        assert rp.completed_gameweeks(bootstrap, raw, 4) == {1, 2}
+    assert "no fixture kickoff times" in caplog.text
+
+
+def test_replay_excludes_an_unfinished_previous_gw_from_panel_and_history(tmp_path,
+                                                                         monkeypatch):
+    """GW2 ends after GW3's waivers: the model panel and the baselines'
+    history at the GW3 deadline see GW1 only."""
+    captured: list = []
+    world = _model_world(tmp_path, monkeypatch, captured)
+    _with_kickoffs(world, 2, ["2026-09-03T16:30:00Z"])
+    seen: list = []
+    real_pick = rp.baseline_pick
+
+    def spy_pick(strategy, event, free, squad, elements, history):
+        seen.append((event, sorted(history)))
+        return real_pick(strategy, event, free, squad, elements, history)
+
+    monkeypatch.setattr(rp, "baseline_pick", spy_pick)
+    rp.run(world, "2026-27", LEAGUE, ME, [3], "model")
+    (panel, _, event), = captured
+    assert event == 3
+    assert panel.loc[panel["season"] == "2026-27", "gw"].tolist() == [1]
+    assert seen == [(3, [1]), (3, [1])]
 
 
 def test_unknown_scorer_rejected(tmp_path):

@@ -348,8 +348,15 @@ pick is unchanged. Known scale mismatch: model xP averages higher than the
 adds until the horizons work removes most fallbacks.
 
 `replay --scorer model` rebuilds the match xP per deadline N from
-`archive panel UNION season panel[gw < N]` with the same neutral availability
-as the heuristic (a guard raises if any season gw >= N is present). Replay
+`archive panel UNION season panel[gw completed by T_N]` with the same neutral
+availability as the heuristic (a guard raises if any other season gw is
+present). GW k counts as completed by the waiver cutoff T_N when its last
+fixture's `kickoff_time` + 2.5h <= T_N (live.json fixtures, else bootstrap
+fixtures; no kickoff times = the old `k < N` rule with a WARNING), so a
+congested midweek where GW N's waivers close before GW N-1's last match
+excludes N-1; the baselines' history and the departed rule's minutes use the
+same set. No 2026-27 GW2-5 deadline is affected (every GW N-1 ended >= 2.5
+days before T_N), so the totals below are unchanged. Replay
 `waiver_plan` rank-1 `gw_gain` totals over GW2-5 (n=4, a reported number, not
 a gate): heuristic **-15.0**, model **+8.0**; `std_points` +7.0, `form3` +7.0
 and `me` +2.0 are identical between scorers. Model history: +9.0 as first
