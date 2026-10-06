@@ -7,7 +7,7 @@ diffs consecutive snapshots into **ownership events** and ranks the current
 
 * "who just got dropped" — an ``owner -> null`` transition, timestamped;
 * "which quality players went unclaimed after waivers" — free agents sorted
-  by next-season projection (from ``projections_2627``), so the post-waiver
+  by the season's projection (``paths.projections_path``), so the post-waiver
   sweep is a ranked list instead of a scroll through 400 names.
 
 Reads local files only (no live API calls). CLI:
@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+
+from backend.ml import paths
 
 logger = logging.getLogger(__name__)
 
@@ -171,16 +173,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--season", default="2026-27")
     parser.add_argument("--league", type=int, default=int(os.getenv("LEAGUE_ID", "0") or "0"))
     parser.add_argument("--top", type=int, default=15)
-    parser.add_argument("--raw-root", type=Path, default=None)
-    parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--data-root", type=Path, default=None,
+                        help="data dir (default <repo>/data)")
+    parser.add_argument("--raw-root", type=Path, default=None,
+                        help="season raw dir (default <data-root>/raw/<season>)")
+    parser.add_argument("--out", type=Path, default=None,
+                        help="output JSON (default <data-root>/derived/<season>/ml/ownership_events.json)")
     args = parser.parse_args(argv)
     if not args.league:
         parser.error("--league required (or set LEAGUE_ID)")
 
-    raw_root = args.raw_root or _repo_root() / "data/raw" / args.season
+    raw_root = args.raw_root or paths.raw_root(args.season, args.data_root)
     history_dir = raw_root / f"league/{args.league}/element_status_history"
     bootstrap = json.loads((raw_root / "bootstrap/bootstrap-static.json").read_text(encoding="utf-8"))
-    projections_path = _repo_root() / "data/derived/ml/projections_2627.json"
+    try:
+        projections_path = paths.projections_path(args.season, args.data_root)
+    except FileNotFoundError:
+        # ownership events need no projection; the FA report degrades to
+        # unranked (``_projection_by_code`` warns with this path)
+        projections_path = paths.season_projections_path(args.season, args.data_root)
 
     snapshots = load_snapshots(history_dir)
     if not snapshots:
@@ -188,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     events = annotate_events(build_events(snapshots), bootstrap)
-    out_path = args.out or _repo_root() / "data/derived" / args.season / "ml/ownership_events.json"
+    out_path = args.out or paths.derived_root(args.season, args.data_root) / "ml/ownership_events.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(events, indent=1))
 
