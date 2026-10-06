@@ -455,9 +455,16 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
         full_load1 = per_gw * load1.get(el.get("team"), 0.0) if per_gw is not None else None
         model = model_by_code.get(el.get("code"))
         reconciled = False
-        xp_started = full_load1
-        if model is not None and pd.notna(model.get("xp_started")):
+        # The conditional "if he starts" value: the model's own when the xP file
+        # has it; for a model row from an older file without it, left missing
+        # so an override rescales the model value rather than switching to the
+        # heuristic; for a heuristic row, the heuristic at full availability.
+        if model is None:
+            xp_started = full_load1
+        elif pd.notna(model.get("xp_started")):
             xp_started = float(model["xp_started"])
+        else:
+            xp_started = None
         if model is not None:
             xp_next, xp_source = float(model["xp"]), "model"
             xp_extra = {"p_start": float(model["p_start"]), "xp_floor": float(model["xp_floor"]),

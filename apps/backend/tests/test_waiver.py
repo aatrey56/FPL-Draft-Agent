@@ -920,6 +920,22 @@ def test_override_without_xp_started_zeroes_or_rescales_the_model_value(
     assert report == _report(applied=["SeasonStar"])
 
 
+def test_legacy_xp_file_without_xp_started_rescales_the_model_value(tmp_path):
+    """Regression through the real loading path: an xP file written before
+    xp_started existed must keep the model row's conditional missing, so a
+    partial override rescales the model value (6.5 × 0.5 / 0.9) instead of
+    silently switching to the heuristic while still labelled "model"."""
+    table = _xp_table(tmp_path, _gw_xp([(200, 6.5)]))        # no xp_started column
+    star = _by_name(table).loc["SeasonStar"]
+    assert star["xp_source"] == "model" and pd.isna(star["xp_started"])
+    out, _ = wv.apply_role_overrides(
+        table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.5, **FRESH}],
+        target_gw=1)
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(
+        6.5 * 0.5 / 0.9, abs=0.006)
+    assert _by_name(out).loc["SeasonStar", "xp_source"] == "model"
+
+
 def test_override_in_a_double_gameweek_uses_the_summed_conditional(tmp_path):
     """The frame's xp_started is already the sum over both fixtures (7.5 + 4.5):
     it is used as is, never multiplied by num_fixtures again."""
