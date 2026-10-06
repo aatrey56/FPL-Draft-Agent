@@ -20,7 +20,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from backend.ml import matchmodel as mm
-from backend.ml.matchfeatures import build_match_frame
+from backend.ml.matchfeatures import build_match_frame, player_form_columns
 
 SEASON = "2025-26"
 N_TEAMS = 10
@@ -1200,3 +1200,53 @@ def test_completed_before_keeps_other_seasons_and_earlier_gameweeks():
                                        {"season": "2025-26", "gw": 6},
                                        {"season": "2026-27", "gw": 5}]
     assert mm.completed_before(kept, "2026-27", 6) is kept      # nothing to drop: untouched
+
+
+def _double_bootstrap(panel: pd.DataFrame, event: int) -> dict:
+    """``_horizon_bootstrap`` with teams 3 and 6 playing twice in ``event``
+    (3 also meets 4 and 6 also meets 5, so each double has two opponents)."""
+    bootstrap = _horizon_bootstrap(panel)
+    bootstrap["fixtures"][str(event)].append({"team_h": 3, "team_a": 6})
+    return bootstrap
+
+
+def test_double_event_fixtures_share_the_single_fixture_player_form():
+    """Regression: player form was shifted/rolled over a double's two stub
+    rows, so the second fixture saw the first's missing outcome as its last
+    gameweek (mins_l1 NaN, one observation short in every window). Both
+    fixtures must carry the form a one-fixture stub gets — rebuilt here
+    straight from build_match_frame, not through stub_frame."""
+    panel = _panel()
+    bootstrap = _double_bootstrap(panel, FIRST)
+    stubs = mm.upcoming_fixture_rows(bootstrap, FIRST, SEASON)
+    _, target = mm.stub_frame(panel, stubs, SEASON, FIRST)
+    doubled = panel.loc[panel["team_id"].isin([3, 6]), "code"].unique()
+    assert target[target["code"].isin(doubled)].groupby("code").size().eq(2).all()
+
+    one_each = stubs.drop_duplicates(["code", "season", "gw"])
+    independent = build_match_frame(pd.concat([panel, one_each], ignore_index=True))
+    independent = independent[independent["gw"] == FIRST].set_index("code")
+    form = [*player_form_columns(), "is_startable", "has_history"]
+    for code in doubled:
+        rows = target[target["code"] == code]
+        expected = independent.loc[code, form]
+        for _, row in rows.iterrows():
+            pd.testing.assert_series_equal(row[form], expected, check_names=False,
+                                           check_dtype=False)
+    assert target.loc[target["code"].isin(doubled), "mins_l1"].notna().all()
+    # the fixture columns still differ: two opponents, each with its own strength
+    first = target[target["code"] == doubled[0]]
+    assert first["opponent_team"].nunique() == 2
+    assert first["opp_conceded_pg"].nunique() == 2
+
+
+def test_double_at_gw_n_keeps_xp_h1_equal_to_the_gameweek_forecast():
+    panel = _panel()
+    bootstrap = _double_bootstrap(panel, FIRST)
+    horizon = mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    served = mm.build_gw_xp(panel, bootstrap, FIRST, SEASON,
+                            min_train_rows=SMALL_FIT).set_index("code")
+    first = horizon[horizon["event"] == FIRST].set_index("code").loc[served.index]
+    assert (first["xp_h1"] == served["xp"]).all() and (first["xp"] == served["xp"]).all()
+    doubled = panel.loc[panel["team_id"].isin([3, 6]), "code"].unique()
+    assert (served.loc[doubled, "num_fixtures"] == 2).all()

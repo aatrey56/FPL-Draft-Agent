@@ -52,7 +52,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from backend.ml import matcheval as me
-from backend.ml.matchfeatures import build_match_frame
+from backend.ml.matchfeatures import build_match_frame, player_form_columns
 from backend.ml.projection import Ridge
 from backend.ml.waiver import availability_factor
 
@@ -542,10 +542,27 @@ def stub_frame(history: pd.DataFrame, stubs: pd.DataFrame, season: str,
     consistent: the same shift-and-roll code path produces both, so a feature
     can never mean one thing in the backtest and another on Sunday morning.
     ``train`` is every labelled row, ``target`` the stub rows with features.
+
+    A double is two stub rows for one player in one gameweek, and player form
+    is built by shifting and rolling over a player's rows — so the second stub
+    would see the first's missing outcome as its "last gameweek" (``mins_l1``
+    NaN, one observation short in every window). Player form is therefore
+    computed from one stub per (player, gameweek) and attached to each of its
+    fixtures; only the fixture columns (opponent, venue, opponent strength)
+    differ between a double's rows.
     """
-    frame = build_match_frame(pd.concat([history, stubs], ignore_index=True))
-    target = frame[(frame["season"] == season) & (frame["gw"] == gw)]
-    return frame[frame["label_points"].notna()], target
+    key = ["code", "season", "gw"]
+    single = stubs.drop_duplicates(key)
+    frame = build_match_frame(pd.concat([history, single], ignore_index=True))
+    in_gw = (frame["season"] == season) & (frame["gw"] == gw)
+    train, target = frame[frame["label_points"].notna()], frame[in_gw]
+    if len(single) == len(stubs):
+        return train, target
+    form = [*player_form_columns(), "is_startable", "has_history"]
+    fixtures = build_match_frame(pd.concat([history, stubs], ignore_index=True))
+    fixtures = fixtures[(fixtures["season"] == season) & (fixtures["gw"] == gw)]
+    target = fixtures.drop(columns=form).merge(target[key + form], on=key, how="left")
+    return train, target[fixtures.columns]
 
 
 def completed_before(panel: pd.DataFrame, season: str, gw: int) -> pd.DataFrame:
