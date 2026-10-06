@@ -197,3 +197,97 @@ def test_injury_gates_next3_but_not_season_value(tmp_path):
     row = table.iloc[0]
     assert row["next3_xp"] == 0.0          # gated now
     assert row["ros_points"] == 140.0      # season value intact
+
+
+# ---------------------------------------------------------------------------
+# Match xP wiring (xp_next / xp_source / next1_gain)
+# ---------------------------------------------------------------------------
+
+def _gw_xp(rows, gw=1):
+    """Match-model next-GW frame with the columns build_player_table reads."""
+    return pd.DataFrame([{
+        "code": code, "xp": xp, "p_start": 0.9, "xp_floor": xp - 2.0, "xp_ceiling": xp + 3.0,
+        "drivers": "pts_std", "opponents": "vWOL", "gw": gw} for code, xp in rows])
+
+
+def _xp_table(tmp_path, gw_xp):
+    """Player table over a small world, with projections for 101/200/201 only."""
+    projections = [{"code": 101, "projected_points": 80.0},
+                   {"code": 200, "projected_points": 150.0},
+                   {"code": 201, "projected_points": 60.0}]
+    proj_path = tmp_path / "projections.json"
+    proj_path.write_text(json.dumps(projections))
+    bootstrap = {
+        "teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]},
+        "elements": [
+            {"id": 11, "code": 101, "web_name": "MyWeakFWD", "element_type": 4, "team": 2, "status": "a"},
+            {"id": 20, "code": 200, "web_name": "SeasonStar", "element_type": 4, "team": 1, "status": "a"},
+            {"id": 21, "code": 201, "web_name": "Streamer", "element_type": 4, "team": 1, "status": "a"},
+            {"id": 99, "code": 999, "web_name": "NoProj", "element_type": 4, "team": 1, "status": "a"}]}
+    return wv.build_player_table(bootstrap, SEASONS, proj_path, gw_xp=gw_xp)
+
+
+def test_covered_player_takes_model_xp_and_uncovered_falls_back(tmp_path):
+    table = _xp_table(tmp_path, _gw_xp([(200, 6.5)]))
+    star = table[table["web_name"] == "SeasonStar"].iloc[0]
+    assert star["xp_source"] == "model" and star["xp_next"] == pytest.approx(6.5)
+    assert star["p_start"] == pytest.approx(0.9) and star["opponents"] == "vWOL"
+    streamer = table[table["web_name"] == "Streamer"].iloc[0]
+    assert streamer["xp_source"] == "heuristic"
+    assert streamer["xp_next"] > 0 and pd.isna(streamer["p_start"])   # ros 60/38 x load
+    assert table[table["web_name"] == "NoProj"].iloc[0]["xp_source"] == "none"
+
+
+def test_no_gw_xp_is_all_heuristic(tmp_path):
+    table = _xp_table(tmp_path, None)
+    assert set(table["xp_source"]) <= {"heuristic", "none"}
+
+
+def test_load_gw_xp_missing_and_stale_return_none_with_warning(tmp_path, caplog):
+    assert wv.load_gw_xp(tmp_path / "xp_gw6.parquet", 6) is None
+    path = tmp_path / "xp_gw5.parquet"
+    _gw_xp([(200, 6.5)], gw=5).to_parquet(path)
+    with caplog.at_level("WARNING"):
+        assert wv.load_gw_xp(path, 6) is None
+    assert "stale" in caplog.text
+    assert wv.load_gw_xp(path, 5) is not None
+
+
+def test_scorer_gw_xp_heuristic_never_reads_the_file(tmp_path):
+    bootstrap = {"fixtures": {"6": []}}
+    _gw_xp([(200, 6.5)], gw=6).to_parquet(tmp_path / "xp_gw6.parquet")
+    assert wv.scorer_gw_xp("heuristic", bootstrap, tmp_path) is None
+    assert wv.scorer_gw_xp("model", bootstrap, tmp_path) is not None
+
+
+def test_next1_gain_ranks_and_hold_follows_stream(tmp_path):
+    players, status = _players_fixture(tmp_path)
+    # SeasonStar: next-GW worse than my FWD but far better ROS (hold);
+    # Streamer: next-GW better, ROS worse (stream).
+    players.loc[players["web_name"] == "MyWeakFWD", "xp_next"] = 2.0
+    players.loc[players["web_name"] == "SeasonStar", "xp_next"] = 1.0
+    players.loc[players["web_name"] == "Streamer", "xp_next"] = 2.5
+    squad = wv.my_squad(players, status, entry_id=42)
+    recs = wv.recommend(players, squad)
+    assert [r["add"] for r in recs] == ["Streamer", "SeasonStar"]
+    assert [r["label"] for r in recs] == ["stream", "hold"]
+    assert recs[0]["next1_gain"] == pytest.approx(0.5)
+    assert recs[1]["next1_gain"] < 0 < recs[1]["season_gain"]
+
+
+def test_hold_never_ranks_above_a_positive_next1_rec(tmp_path):
+    players, status = _players_fixture(tmp_path)
+    players.loc[players["web_name"] == "MyWeakFWD", "xp_next"] = 2.0
+    players.loc[players["web_name"] == "SeasonStar", "xp_next"] = 1.0   # hold, +70 ROS
+    players.loc[players["web_name"] == "Streamer", "xp_next"] = 2.01    # tiny positive next1
+    squad = wv.my_squad(players, status, entry_id=42)
+    labels = [r["label"] for r in wv.recommend(players, squad)]
+    assert labels.index("hold") > labels.index("stream")
+
+
+def test_legacy_ranking_orders_by_larger_of_next3_and_season_gain(tmp_path):
+    players, status = _players_fixture(tmp_path)
+    squad = wv.my_squad(players, status, entry_id=42)
+    legacy = wv.recommend(players, squad, rank_by="legacy")
+    gains = [max(r["next3_gain"], r["season_gain"]) for r in legacy]
+    assert gains == sorted(gains, reverse=True)
