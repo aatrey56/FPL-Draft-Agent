@@ -97,9 +97,11 @@ type playerValuesDoc struct {
 	Players               []playerValueRow `json:"players"`
 }
 
-// planningEvent mirrors matchmodel.next_gameweek (Python): the current event
-// while it is unfinished and its deadline is still ahead, else events.next,
-// else the first unfinished event whose deadline is ahead; 0 when none.
+// planningEvent mirrors matchmodel.next_gameweek (Python) for the draft
+// bootstrap shape: the current event while it is unfinished and its deadline
+// is still ahead, else events.next, else the lowest-id unfinished event whose
+// deadline is ahead (min over ids, not array order — the API does not promise
+// sorted events); 0 when none.
 func planningEvent(cal bootstrapCalendar, now time.Time) int {
 	ahead := func(e deadlineEvent) bool {
 		deadline, err := time.Parse(time.RFC3339, e.DeadlineTime)
@@ -113,12 +115,13 @@ func planningEvent(cal bootstrapCalendar, now time.Time) int {
 	if cal.Events.Next != 0 {
 		return cal.Events.Next
 	}
+	planning := 0
 	for _, e := range cal.Events.Data {
-		if ahead(e) {
-			return e.ID
+		if ahead(e) && (planning == 0 || e.ID < planning) {
+			planning = e.ID
 		}
 	}
-	return 0
+	return planning
 }
 
 // lastFinishedEvent is the highest finished event id in the bootstrap, 0

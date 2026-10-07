@@ -186,6 +186,38 @@ func TestLastFinishedEvent(t *testing.T) {
 	}
 }
 
+func TestPlanningEventMirrorsNextGameweek(t *testing.T) {
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	ev := func(id int, finished bool, deadline string) deadlineEvent {
+		return deadlineEvent{ID: id, Finished: finished, DeadlineTime: deadline}
+	}
+	cases := []struct {
+		name          string
+		current, next int
+		data          []deadlineEvent
+		want          int
+	}{
+		{"current not started wins", 6, 7, []deadlineEvent{
+			ev(6, false, "2026-10-10T10:00:00Z"), ev(7, false, "2026-10-17T10:00:00Z")}, 6},
+		{"events.next when current started", 6, 7, []deadlineEvent{
+			ev(6, false, "2026-10-03T10:00:00Z"), ev(7, false, "2026-10-17T10:00:00Z")}, 7},
+		// Regression: the calendar fallback took the first array member.
+		{"fallback is min id, not array order", 0, 0, []deadlineEvent{
+			ev(9, false, "2026-10-31T10:00:00Z"), ev(5, true, "2026-09-26T10:00:00Z"),
+			ev(8, false, "2026-10-24T10:00:00Z"), ev(6, false, "2026-10-03T10:00:00Z"),
+			ev(7, false, "2026-10-17T10:00:00Z")}, 7},
+		{"locked or unparseable events never qualify", 0, 0, []deadlineEvent{
+			ev(6, false, "2026-10-03T10:00:00Z"), ev(7, false, "not-a-date")}, 0},
+	}
+	for _, tc := range cases {
+		var cal bootstrapCalendar
+		cal.Events.Current, cal.Events.Next, cal.Events.Data = tc.current, tc.next, tc.data
+		if got := planningEvent(cal, now); got != tc.want {
+			t.Errorf("%s: got %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestModelVerdictBands(t *testing.T) {
 	cases := map[[2]float64]string{
 		{12, 0}:   "accept",
