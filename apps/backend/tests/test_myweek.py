@@ -454,3 +454,26 @@ def test_cli_writes_override_report_and_attention(weekly_cli_root, weekly_cli_ar
     assert doc["overrides_expired"] == []
     assert doc["attention"][0]["warning_codes"] == [mw.WARNING_ROLE_OVERRIDE]
     assert "role overrides: applied MyFWD; unmatched Ghost; expired -" in capsys.readouterr().out
+
+
+def test_my_week_reports_formation_bench_order_and_if_out(tmp_path):
+    elements, projections = [], []
+    code = 100
+    for pos_type, count in ((1, 2), (2, 5), (3, 5), (4, 3)):
+        for _ in range(count):
+            elements.append({"id": code, "code": code, "web_name": f"P{code}",
+                             "element_type": pos_type, "team": 1, "status": "a"})
+            projections.append({"code": code, "projected_points": 190.0 - code % 100})
+            code += 1
+    elements[12]["status"] = "d"                  # a starting FWD is doubtful
+    projections[12]["projected_points"] = 300.0   # ...but good enough to start
+    _, players = _world(tmp_path, elements, projections)
+    status = {"element_status": [{"element": e["id"], "owner": 42} for e in elements]}
+    week = mw.build_my_week(players, status, entry_id=42)
+
+    assert week["formation"] and sum(map(int, week["formation"].split("-"))) == 10
+    assert week["bench"][0]["position"] == "GKP"
+    assert [p["bench_slot"] for p in week["bench"]] == [1, 2, 3, 4]
+    assert week["bench_order"] == [p["web_name"] for p in week["bench"]]
+    assert "P112" in {p["web_name"] for p in week["xi"]}
+    assert [a["web_name"] for a in week["if_out"]] == ["P112"]

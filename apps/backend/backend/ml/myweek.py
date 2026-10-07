@@ -13,7 +13,11 @@ Role signals (see ``backend.ml.waiver``): ``role_overrides.json`` entries
 replace a player's next-GW start probability (an override of 0 — e.g. a
 ``return_gw`` still ahead — keeps him out of the XI like an injury does) and
 their ``fact`` is listed under ``attention``; a departed (status ``u``) squad
-player always appears there with the ``departed`` code. Rows carry
+player always appears there with the ``departed`` code.
+
+Lineup (``backend.ml.lineup``): the XI is the best of every legal formation
+(``formation``), the bench is in auto-sub order and ``if_out`` gives the
+fallback XI for each doubtful starter. Rows carry
 ``club_moved`` and ``expected_minutes`` from the season panel.
 
 Reads local files only. CLI:
@@ -35,6 +39,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from backend.ml import jsonutil, paths
+from backend.ml import lineup as lu
 from backend.ml import waiver as wv
 
 logger = logging.getLogger(__name__)
@@ -152,19 +157,34 @@ def xi_selection_value(row: pd.Series) -> float:
 
 def build_my_week(players: pd.DataFrame, element_status: dict,
                   entry_id: int) -> dict[str, Any]:
-    """XI + bench + attention list for my squad, scored on gw_xp."""
+    """XI + bench + attention list for my squad, scored on gw_xp.
+
+    The XI and formation come from ``lineup.optimal_xi`` (every legal
+    formation tried); ``bench`` is in auto-sub order (``bench_slot``,
+    ``sub_value``; names in ``bench_order``) and ``if_out`` holds the
+    fallback XI for each doubtful starter. ``formation`` is None only when
+    the squad cannot field a legal XI.
+    """
     squad = wv.my_squad(players, element_status, entry_id)
     squad["xi_value"] = squad.apply(xi_selection_value, axis=1)
-    xi, _ = wv.best_xi(squad, value_col="xi_value")
+    try:
+        lineup = lu.optimal_xi(squad, value_col="xi_value")
+    except lu.LineupError as exc:  # squad too broken for any formation
+        logger.warning("%s — taking the best 11 by value", exc)
+        xi = squad.sort_values("xi_value", ascending=False).head(11)
+        rest = squad[~squad["element"].isin(xi["element"])]
+        lineup = lu.Lineup(xi=xi, formation=None, total=0.0,
+                           bench=lu.bench_order(rest, xi))
+    xi, bench = lineup.xi, lineup.bench
     # Report real expected points, not the selection ordering (which carries
     # a -1 penalty for unavailable players).
     xi_total = round(float(pd.to_numeric(xi["gw_xp"], errors="coerce")
                            .fillna(0).clip(lower=0).sum()), 1)
-    bench = squad[~squad["element"].isin(xi["element"])]
 
-    def rows(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    def rows(frame: pd.DataFrame, keep_order: bool = False) -> list[dict[str, Any]]:
         out = []
-        order = frame.sort_values(["position", "gw_xp"], ascending=[True, False])
+        order = frame if keep_order else frame.sort_values(["position", "gw_xp"],
+                                                           ascending=[True, False])
         for _, p in order.iterrows():
             out.append({
                 "web_name": p["web_name"], "position": p["position"],
@@ -180,6 +200,9 @@ def build_my_week(players: pd.DataFrame, element_status: dict,
                 "warnings": player_warnings(p),
                 "warning_codes": [code for code, _ in player_warning_items(p)],
             })
+            if keep_order:
+                out[-1]["bench_slot"] = len(out)
+                out[-1]["sub_value"] = float(p["sub_value"])
         return out
 
     attention = [
@@ -189,7 +212,10 @@ def build_my_week(players: pd.DataFrame, element_status: dict,
         for _, p in squad.iterrows() if (items := player_warning_items(p))
     ]
     return {
-        "xi": rows(xi), "bench": rows(bench), "xi_gw_xp": xi_total,
+        "xi": rows(xi), "bench": rows(bench, keep_order=True), "xi_gw_xp": xi_total,
+        "formation": lineup.formation,
+        "bench_order": bench["web_name"].tolist(),
+        "if_out": lu.if_out(squad, lineup, value_col="xi_value"),
         "attention": attention,
         "unprojected_squad": wv.unprojected_squad(squad),
     }
@@ -246,17 +272,19 @@ def main(argv: list[str] | None = None) -> int:
     week.update(scorer_meta)
 
     fallback = f" — FALLBACK: {week['xp_fallback_reason']}" if week["xp_fallback"] else ""
-    print(f"\n== MY WEEK — GW{week['gw']} best XI (xP {week['xi_gw_xp']}, "
+    print(f"\n== MY WEEK — GW{week['gw']} best XI {week['formation']} (xP {week['xi_gw_xp']}, "
           f"scorer {week['scorer']}{fallback}) ==")
     for p in week["xi"]:
         flags = f"  !! {'; '.join(p['warnings'])}" if p["warnings"] else ""
         gw_xp = "?" if p["gw_xp"] is None else p["gw_xp"]
         print(f"  {p['position']:<4} {p['web_name']:<20} {p['team']:<4} xP {gw_xp} [{p['xp_source']}]{flags}")
-    print("-- bench --")
+    print("-- bench (auto-sub order) --")
     for p in week["bench"]:
         flags = f"  !! {'; '.join(p['warnings'])}" if p["warnings"] else ""
         gw_xp = "?" if p["gw_xp"] is None else p["gw_xp"]
         print(f"  {p['position']:<4} {p['web_name']:<20} {p['team']:<4} xP {gw_xp} [{p['xp_source']}]{flags}")
+    for alt in week["if_out"]:
+        print(f"  ?? {alt.get('text') or alt['web_name'] + ': ' + alt['error']}")
     if week["unprojected_squad"]:
         print(f"-- unprojected_squad: {len(week['unprojected_squad'])} --")
         for p in week["unprojected_squad"]:
