@@ -263,9 +263,13 @@ live-season check has to be re-earned by live rows from GW6 on.
     rather than explicit in the output.
   - **Venue-split team environment** (`lambda_for`/`lambda_against` per venue)
     and the `fixture_targets` derived view.
-  - **Wire `trade_check` onto it** — `waiver_plan` and `my_week` now consume
-    the per-GW xP (see "Weekly tools on match xP" below); `trade_check` still
-    uses the heuristic.
+  - **`trade_check` on match xP** (built 2026-10-07): `backend.ml.player_values`
+    exports every player's `xp_next` / `xp_h3` / `ros_adj` (the waiver_plan
+    table, role overrides applied) to `player_values.json`; trade_check
+    compares sides on all three, verdict led by `ros_adj` (±10) with 3-GW
+    swings (±2) flagged. Missing/stale (gw ≠ bootstrap's next GW) or
+    heuristic-built file → the old projection + VOR path with
+    `value_source: "heuristic"` and `value_source_reason`.
   - **Horizons** (built 2026-10-06, see "Horizons" below): `waiver_plan`
     carries next-GW / 3-GW / ROS gains and ranks on `--horizon`.
   - Club-move flag and `expected_minutes` surfaced (built 2026-10-06, see
