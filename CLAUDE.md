@@ -35,8 +35,8 @@ Working code is not sufficient — only correct, tested, documented code may be 
 This project is a Fantasy Premier League Draft intelligence system consisting of:
 
 - Go MCP server (tools exposed via HTTP)
-- Python backend (analytics, orchestration, reporting, scheduler)
-- Optional web interface
+- Python backend (ML derive: ingestion, match model, waiver/my_week artifacts)
+- Matchday TUI (Go, local snapshots only)
 - Cached FPL & league data
 - Analytical modules:
   - Fixture Difficulty (FDR)
@@ -532,7 +532,6 @@ These rules are non-negotiable for all agents operating in this repo:
 - **Never add a `# type: ignore`** without a comment explaining why it's unavoidable.
 - **Never use `fmt.Sscanf` for float parsing** in Go — use `strconv.ParseFloat`.
 - **Never use insertion sort** — use `sort.Slice` (Go) or sorted() (Python).
-- **Never mutate `_docs` in RAGIndex** outside of `refresh()`.
 - **Never skip `--force-with-lease`** when force-pushing a rebased branch.
 - **Never open more than one PR per issue.**
 - **Never merge a PR without explicit user approval.** Present the PR for review; do not merge autonomously.
