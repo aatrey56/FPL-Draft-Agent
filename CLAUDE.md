@@ -444,7 +444,7 @@ Fetcher (Go, cmd/dev — the only component that hits live APIs:
   ▼
 Derive (Python, backend/ml/*)
   │  projections, player_history, ownership_events,
-  │  waiver_plan, my_week → data/derived[/<season>]/ml/
+  │  waiver_plan, my_week, xp_gw<N>, track_record → data/derived[/<season>]/ml/
   ▼
 Go MCP Server (:8080)
   │  reads raw + derived (local JSON only)

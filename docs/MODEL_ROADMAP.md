@@ -198,6 +198,50 @@ The same gap reaches 8 single-fixture rows of 2026-27 GW2-5
 features where serving would know the opponent. Fixing both needs
 per-fixture rows in `GAMEWEEK_INGEST`.
 
+## Live track record — scored weekly
+
+The live check above is a one-off. The standing answer is
+`backend.ml.trackrecord` (#178: the model's own output is the accountability
+log), run by `make derive` after the xP step:
+
+```
+uv run python -m backend.ml.trackrecord --season 2026-27 [--data-root ../../data] [--gws 3-5] [--rescore]
+```
+
+For every finished gameweek of the season it scores `model_xp` and the five
+baselines per position, on the startable and full pools, plus Stage-1 Brier,
+and upserts `derived/<season>/ml/track_record.csv` (one row per
+`gw, pool, position, predictor, source`; 4 GWs × 2 pools × 4 positions × 6
+predictors = 192 rows at GW5) and rewrites `track_record.md`.
+
+- **`live`** — `xp_gw{N}.parquet` exists and predates the GW-N deadline: the
+  forecast actually served. Derive only writes the *next* GW, so a past file is
+  a pre-deadline forecast. A file built after the deadline (by its
+  `generated_at` parquet stamp, else its mtime; e.g. a manual `make xp GW=n`),
+  or one whose `gw` column is not N, is ignored with a warning; live rows
+  already in the CSV are kept even if the file later disappears.
+- **`replay`** — otherwise: rebuilt as it would have been served, through
+  `matchmodel.served_walk_forward` (the live-season check's path: earlier
+  seasons + earlier GWs of this one, features from outcome-free stubs via
+  `stub_frame`; today's code, no availability gate). Not live evidence, and
+  the markdown labels every replay row as such.
+- GW1 is skipped (no in-season history, so no trailing predictor can rank it).
+  Each predictor is scored on the players the model covered that week. A re-run
+  with unchanged inputs leaves the CSV byte-identical. No `ep_next` column: the
+  draft API leaves it null.
+- Gameweeks already in the CSV are not scored again (a replay re-fit takes
+  ~70s and the autopilot derives every 15 minutes) unless `--rescore` is
+  passed, they are named in `--gws`, or a recorded `replay` week has since
+  gained a usable live file.
+
+First record (2026-10-06, GW2 live, GW3-5 replay; re-run on the serving path the
+same day — every replayed score unchanged), startable pool, mean Spearman:
+GKP 0.289 vs 0.223 (mean l5), DEF 0.345 vs 0.226 (minutes), MID 0.305 vs 0.291
+(minutes), FWD 0.406 vs 0.356 (minutes). The one live week is the warning: the
+served GW2 forecast scored GKP −0.021 and MID 0.188, where the GW2 replay
+scores 0.388 and 0.346. Replay flatters the model — the edge claimed in the
+live-season check has to be re-earned by live rows from GW6 on.
+
 ## Phases
 
 ### Phase A — Match xP model  *(core built 2026-08-24)*
@@ -241,7 +285,8 @@ per-fixture rows in `GAMEWEEK_INGEST`.
   risk setting (chase ceiling vs protect floor) and 12-team scarcity.
 
 ### Phase D — Track record and writeup
-- Accumulate backtested and live predictions.
+- ~~Accumulate backtested and live predictions.~~ Built: `trackrecord.py`
+  (see "Live track record" above); live rows accrue from GW6.
 - Calibration plots, edge-vs-baseline charts, and a written account of what
   worked, what did not, and why.
 
