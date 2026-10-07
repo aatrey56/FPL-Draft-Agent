@@ -1,6 +1,7 @@
 """Tests for waiver_plan (backend.ml.waiver). No network — fixtures only."""
 
 import json
+import os
 
 import pandas as pd
 import pytest
@@ -9,6 +10,7 @@ from test_matchmodel import SEASON as PANEL_SEASON
 from test_matchmodel import _bootstrap as _panel_bootstrap
 from test_matchmodel import _panel as _synthetic_panel
 
+from backend.ml import jsonutil
 from backend.ml import matchmodel as mm
 from backend.ml import waiver as wv
 
@@ -375,7 +377,7 @@ def test_unknown_season_gain_orders_like_zero_among_equal_next1(tmp_path):
     """Ranking is unchanged by the null: an unknown season gain sorts as 0,
     below an equal-next1 add with a positive season gain."""
     table, squad = _model_only_world(tmp_path, [(999, 6.0), (201, 6.0)])
-    table.loc[table["web_name"] == "Streamer", "ros_points"] = 200.0
+    table.loc[table["web_name"] == "Streamer", ["ros_points", "ros_adj"]] = 200.0
     recs = wv.recommend(table, squad)
     assert [r["add"] for r in recs][:2] == ["Streamer", "NoProj"]
     assert recs[1]["season_gain"] is None and recs[0]["season_gain"] > 0
@@ -582,6 +584,621 @@ def test_usable_gw_xp_keeps_a_predicted_blank_and_drops_no_opinion_rows():
     frame.loc[frame["code"] == 201, "xp"] = float("nan")        # no xP at all
     frame.loc[frame["code"] == 999, "p_start"] = float("nan")   # unfitted position
     assert list(wv.usable_gw_xp(frame)["code"]) == [200]        # xp 0 with a p_start stays
+
+
+# ---------------------------------------------------------------------------
+# Role signals: club_moved / expected_minutes / ros_adj
+# ---------------------------------------------------------------------------
+
+ROLE_SEASONS = pd.DataFrame([
+    {"season": "2025-26", "code": 300, "team_name": "Wolves", "total_points": 1200},
+    {"season": "2025-26", "code": 301, "team_name": "Arsenal", "total_points": 2000},
+    {"season": "2024-25", "code": 302, "team_name": "Wolves", "total_points": 900},
+])
+
+
+def _panel(minutes_by_code: dict[int, list[int]]) -> pd.DataFrame:
+    """Season panel: one row per (code, gw); ``None`` minutes = no row that GW."""
+    return pd.DataFrame([
+        {"season": "2026-27", "code": code, "gw": gw, "minutes": minutes}
+        for code, per_gw in minutes_by_code.items()
+        for gw, minutes in enumerate(per_gw, start=1) if minutes is not None])
+
+
+def _role_table(tmp_path, season_panel, *, gw_xp=None, extra_elements=()):
+    """ClubMover (Wolves -> Arsenal, proj 175), Stayer (Arsenal), Newcomer."""
+    projections = [{"code": 300, "projected_points": 175.0},
+                   {"code": 301, "projected_points": 100.0},
+                   {"code": 302, "projected_points": 90.0}]
+    proj_path = tmp_path / "projections.json"
+    proj_path.write_text(json.dumps(projections))
+    bootstrap = {
+        "teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]},
+        "elements": [
+            {"id": 30, "code": 300, "web_name": "ClubMover", "element_type": 2, "team": 1, "status": "a"},
+            {"id": 31, "code": 301, "web_name": "Stayer", "element_type": 2, "team": 1, "status": "a"},
+            {"id": 32, "code": 302, "web_name": "Newcomer", "element_type": 2, "team": 2, "status": "a"},
+            *extra_elements]}
+    table = wv.build_player_table(bootstrap, ROLE_SEASONS, proj_path, gw_xp=gw_xp,
+                                  season_panel=season_panel)
+    return table.set_index("web_name")
+
+
+def test_role_factor_math():
+    assert wv.role_factor(True, 0.0) == wv.ROLE_FLOOR            # 0 min -> floor
+    assert wv.role_factor(True, 30.0) == pytest.approx(0.5)      # linear in between
+    assert wv.role_factor(True, 60.0) == 1.0
+    assert wv.role_factor(True, 90.0) == 1.0                     # 60+ min -> full
+    assert wv.role_factor(False, 0.0) == 1.0                     # not moved: never scaled
+    assert wv.role_factor(None, 0.0) == 1.0                      # no prior club: unknown
+    assert wv.role_factor(True, None) == 1.0                     # no minutes yet: unknown
+    assert wv.role_factor(True, 0.0, "a") == wv.ROLE_FLOOR       # available: scaled
+    for status in ("d", "i", "s", None):                         # absence explains the minutes
+        assert wv.role_factor(True, 0.0, status) == 1.0, status
+
+
+def test_injured_or_doubtful_club_mover_keeps_his_full_projection(tmp_path):
+    """Regression (live GW6): flagged club-movers were scaled for minutes
+    their injury cost them (Struijk ROS 108 -> 35, Wilson 105 -> 51)."""
+    panel = _panel({300: [0, 0, 0, 0, 0], 303: [0, 0, 0, 0, 0]})
+    hurt = [{"id": 33, "code": 303, "web_name": "HurtMover", "element_type": 2, "team": 1,
+             "status": "d", "chance_of_playing_next_round": 50, "news": "Knock"}]
+    seasons = pd.concat([ROLE_SEASONS, pd.DataFrame([
+        {"season": "2025-26", "code": 303, "team_name": "Wolves", "total_points": 140}])],
+        ignore_index=True)
+    projections = tmp_path / "projections.json"
+    projections.write_text(json.dumps([{"code": 300, "projected_points": 175.0},
+                                       {"code": 303, "projected_points": 140.0}]))
+    bootstrap = {"teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]}, "elements": [
+        {"id": 30, "code": 300, "web_name": "ClubMover", "element_type": 2, "team": 1, "status": "a"},
+        *hurt]}
+    table = wv.build_player_table(bootstrap, seasons, projections,
+                                  season_panel=panel).set_index("web_name")
+    assert bool(table.loc["HurtMover", "club_moved"]) is True
+    assert table.loc["HurtMover", "role_factor"] == 1.0
+    assert table.loc["HurtMover", "ros_adj"] == 140.0
+    assert table.loc["HurtMover", "availability"] == 0.5          # the gate still applies
+    assert table.loc["ClubMover", "role_factor"] == wv.ROLE_FLOOR  # available: unchanged rule
+
+
+def test_club_mover_with_no_minutes_gets_the_floor(tmp_path):
+    """The synthetic check from the spec: proj 175, 0 minutes -> ros_adj 26.2."""
+    table = _role_table(tmp_path, _panel({300: [0, 0, 0, 0, 0], 301: [0, 0, 0, 0, 0]}))
+    mover = table.loc["ClubMover"]
+    assert bool(mover["club_moved"]) is True
+    assert mover["expected_minutes"] == 0.0 and mover["minutes_season"] == 0
+    assert mover["role_factor"] == wv.ROLE_FLOOR
+    assert mover["ros_adj"] == 26.2 and mover["ros_points"] == 175.0   # raw ROS kept
+    stayer = table.loc["Stayer"]                                       # benched, not moved
+    assert bool(stayer["club_moved"]) is False
+    assert stayer["role_factor"] == 1.0 and stayer["ros_adj"] == 100.0
+
+
+def test_club_mover_playing_sixty_plus_keeps_his_projection(tmp_path):
+    table = _role_table(tmp_path, _panel({300: [90, 90, 60, 90, 75]}))
+    mover = table.loc["ClubMover"]
+    assert mover["role_factor"] == 1.0 and mover["ros_adj"] == 175.0
+    assert mover["minutes_season"] == 405
+
+
+def test_club_moved_is_none_without_a_prior_season_row(tmp_path):
+    table = _role_table(tmp_path, _panel({302: [0, 0]}))
+    newcomer = table.loc["Newcomer"]             # only a 2024-25 row: no prior club
+    assert newcomer["club_moved"] is None
+    assert newcomer["role_factor"] == 1.0 and newcomer["ros_adj"] == 90.0
+
+
+def test_expected_minutes_uses_the_last_five_gameweeks_and_missing_rows_are_zero(tmp_path):
+    # ClubMover: no row in GW2 and GW6; 7 gameweeks in the panel -> window GW3-7.
+    panel = _panel({300: [90, None, 90, 90, 30, None, 90], 301: [90] * 7})
+    table = _role_table(tmp_path, panel)
+    mover = table.loc["ClubMover"]
+    assert mover["expected_minutes"] == pytest.approx((90 + 90 + 30 + 0 + 90) / 5)
+    assert mover["minutes_season"] == 390
+    assert table.loc["Newcomer", "expected_minutes"] == 0.0   # no row at all = 0 minutes
+    assert table.loc["Newcomer", "minutes_season"] == 0
+
+
+def test_no_panel_rows_means_unknown_minutes_and_factor_one(tmp_path):
+    for season_panel in (None, _panel({})):
+        mover = _role_table(tmp_path, season_panel).loc["ClubMover"]
+        assert pd.isna(mover["expected_minutes"]) and pd.isna(mover["minutes_season"])
+        assert mover["role_factor"] == 1.0 and mover["ros_adj"] == 175.0
+
+
+def test_heuristic_per_gw_baseline_uses_the_role_adjusted_projection(tmp_path):
+    benched = _role_table(tmp_path, _panel({300: [0, 0, 0]})).loc["ClubMover"]
+    unknown = _role_table(tmp_path, None).loc["ClubMover"]
+    assert benched["xp_source"] == "heuristic"
+    assert benched["xp_next"] == pytest.approx(unknown["xp_next"] * wv.ROLE_FLOOR, abs=0.01)
+    assert benched["next3_xp"] < unknown["next3_xp"]
+
+
+def test_departed_player_has_zero_ros_adj_even_without_a_projection(tmp_path):
+    gone = [{"id": 33, "code": 303, "web_name": "GoneNoProj", "element_type": 2, "team": 1, "status": "u"},
+            {"id": 34, "code": 301, "web_name": "GoneStayer", "element_type": 2, "team": 1, "status": "u"}]
+    table = _role_table(tmp_path, None, extra_elements=gone)
+    assert table.loc["GoneNoProj", "ros_adj"] == 0.0 and pd.isna(table.loc["GoneNoProj", "ros_points"])
+    assert table.loc["GoneNoProj", "xp_source"] == "none"       # still not "valued"
+    assert table.loc["GoneStayer", "ros_adj"] == 0.0 and table.loc["GoneStayer", "ros_points"] == 100.0
+
+
+def test_seasons_table_without_codes_flags_nobody(tmp_path):
+    proj_path = tmp_path / "projections.json"
+    proj_path.write_text("[]")
+    bootstrap = {"teams": TEAMS, "fixtures": {}, "elements": [
+        {"id": 1, "code": 300, "web_name": "A", "element_type": 2, "team": 1, "status": "a"}]}
+    table = wv.build_player_table(bootstrap, SEASONS, proj_path)   # SEASONS has no code column
+    assert table.loc[0, "club_moved"] is None
+    # a table mixing coded and code-less rows flags only the coded player
+    mixed = pd.concat([SEASONS, ROLE_SEASONS], ignore_index=True)
+    assert wv.club_moves(bootstrap, mixed) == {300: True}
+
+
+# ---------------------------------------------------------------------------
+# Drop pick: departed first, then role-adjusted ROS
+# ---------------------------------------------------------------------------
+
+def _drop_world(tmp_path, *, departed_status="u", season_panel=None, gw_xp=None,
+                departed_projection=160.0):
+    """My DEFs: Departed (high ROS), Solid, Weak, plus an unprojected Unknown.
+    Free DEFs: FreeA, FreeB and FreeMover (moved clubs, big projection)."""
+    projections = [{"code": 400, "projected_points": departed_projection},
+                   {"code": 401, "projected_points": 120.0},
+                   {"code": 402, "projected_points": 70.0},
+                   {"code": 410, "projected_points": 110.0},
+                   {"code": 411, "projected_points": 90.0},
+                   {"code": 300, "projected_points": 175.0}]
+    projections = [p for p in projections if p["projected_points"] is not None]
+    proj_path = tmp_path / "projections.json"
+    proj_path.write_text(json.dumps(projections))
+    bootstrap = {
+        "teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]},
+        "elements": [
+            {"id": 40, "code": 400, "web_name": "Departed", "element_type": 2, "team": 1,
+             "status": departed_status},
+            {"id": 41, "code": 401, "web_name": "Solid", "element_type": 2, "team": 1, "status": "a"},
+            {"id": 42, "code": 402, "web_name": "Weak", "element_type": 2, "team": 2, "status": "a"},
+            {"id": 43, "code": 403, "web_name": "Unknown", "element_type": 2, "team": 2, "status": "a"},
+            {"id": 50, "code": 410, "web_name": "FreeA", "element_type": 2, "team": 1, "status": "a"},
+            {"id": 51, "code": 411, "web_name": "FreeB", "element_type": 2, "team": 2, "status": "a"},
+            {"id": 52, "code": 300, "web_name": "FreeMover", "element_type": 2, "team": 1, "status": "a"}]}
+    status = {"element_status": [
+        *({"element": e, "owner": 42} for e in (40, 41, 42, 43)),
+        *({"element": e, "owner": None} for e in (50, 51, 52))]}
+    return wv.plan(bootstrap, status, ROLE_SEASONS, proj_path, 42, gw_xp=gw_xp,
+                   season_panel=season_panel)
+
+
+@pytest.mark.parametrize("gw_xp", [None, _gw_xp([(410, 5.0), (411, 4.0), (300, 3.0), (402, 1.0)])],
+                         ids=["heuristic", "model"])
+def test_departed_squad_player_is_the_drop_for_every_rec_at_his_position(tmp_path, gw_xp):
+    """Regression: the drop was the lowest raw ROS, so a departed player with a
+    big projection was kept and a playing teammate dropped instead."""
+    result = _drop_world(tmp_path, gw_xp=gw_xp)
+    recs = result["recommendations"]
+    assert len(recs) == 3
+    assert {r["drop"] for r in recs} == {"Departed"}
+    assert all(r["drop_status"] == "u" and r["drop_ros_adj"] == 0.0 for r in recs)
+    # dropping a departed player for anyone projected is a season gain, not a "stream"
+    free_a = next(r for r in recs if r["add"] == "FreeA")
+    assert free_a["season_gain"] == pytest.approx(110.0) and free_a["label"] == "upgrade"
+    assert free_a["drop_ros"] == 160.0                       # raw projection still shown
+
+
+def test_departed_squad_player_without_a_projection_is_still_the_drop(tmp_path):
+    result = _drop_world(tmp_path, departed_projection=None)
+    assert {r["drop"] for r in result["recommendations"]} == {"Departed"}
+    assert "Unknown" not in {c["web_name"] for c in result["drop_candidates"]}
+
+
+def test_without_a_departed_player_the_drop_is_the_lowest_ros_adj(tmp_path):
+    result = _drop_world(tmp_path, departed_status="a")
+    assert {r["drop"] for r in result["recommendations"]} == {"Weak"}
+
+
+def test_drop_candidates_lists_three_per_position_in_drop_order(tmp_path):
+    result = _drop_world(tmp_path)
+    candidates = [c for c in result["drop_candidates"] if c["position"] == "DEF"]
+    assert [c["web_name"] for c in candidates] == ["Departed", "Weak", "Solid"]
+    assert candidates[0] == {
+        "web_name": "Departed", "position": "DEF", "team": "ARS", "status": "u",
+        "ros_points": 160.0, "ros_adj": 0.0, "xp_next": 0.0,
+        "club_moved": None, "expected_minutes": None}
+    json.loads(jsonutil.dumps_strict(result["drop_candidates"]))     # strict-JSON safe
+
+
+def test_season_gain_and_rec_fields_use_the_role_adjusted_projection(tmp_path):
+    """A club-mover with a 175 projection and no minutes is not a season upgrade."""
+    panel = _panel({300: [0, 0, 0], 410: [90, 90, 90]})
+    gw_xp = _gw_xp([(410, 5.0), (411, 4.0), (300, 3.0), (402, 1.0)])
+    recs = _drop_world(tmp_path, departed_status="a", season_panel=panel,
+                       gw_xp=gw_xp)["recommendations"]
+    mover = next(r for r in recs if r["add"] == "FreeMover")
+    assert mover["club_moved"] is True and mover["add_expected_minutes"] == 0.0
+    assert mover["add_minutes_season"] == 0 and mover["add_role_factor"] == wv.ROLE_FLOOR
+    assert mover["add_ros"] == 175.0 and mover["add_ros_adj"] == 26.2
+    assert mover["season_gain"] == pytest.approx(26.2 - 70.0, abs=0.05)
+    assert mover["label"] == "stream"                # was an "upgrade" on raw ROS
+    newcomer = next(r for r in recs if r["add"] == "FreeA")     # no prior-season row
+    assert newcomer["club_moved"] is None and newcomer["add_expected_minutes"] == 90.0
+    assert newcomer["add_role_factor"] == 1.0 and newcomer["add_ros_adj"] == 110.0
+    json.loads(jsonutil.dumps_strict(recs))
+
+
+def test_rec_role_fields_are_plain_json_types_when_every_flag_is_known(tmp_path):
+    """Edge: with a prior club for everyone, club_moved is a bool column
+    (numpy scalars) — the artifact must still be strict JSON."""
+    seasons = pd.concat([ROLE_SEASONS, pd.DataFrame([
+        {"season": "2025-26", "code": code, "team_name": "Arsenal", "total_points": 0}
+        for code in (400, 401, 402, 403, 410, 411)])], ignore_index=True)
+    proj_path = tmp_path / "projections.json"
+    proj_path.write_text(json.dumps([{"code": 402, "projected_points": 70.0},
+                                     {"code": 410, "projected_points": 110.0}]))
+    bootstrap = {"teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]}, "elements": [
+        {"id": 42, "code": 402, "web_name": "Weak", "element_type": 2, "team": 2, "status": "a"},
+        {"id": 50, "code": 410, "web_name": "FreeA", "element_type": 2, "team": 1, "status": "a"}]}
+    status = {"element_status": [{"element": 42, "owner": 42}, {"element": 50, "owner": None}]}
+    result = wv.plan(bootstrap, status, seasons, proj_path, 42,
+                     season_panel=_panel({402: [90], 410: [45]}))
+    assert result["players"]["club_moved"].dtype == bool
+    rec = result["recommendations"][0]
+    assert rec["club_moved"] is False and type(rec["add_minutes_season"]) is int
+    assert result["drop_candidates"][0]["club_moved"] is True       # Weak: Arsenal -> Wolves
+    json.loads(jsonutil.dumps_strict({k: result[k] for k in ("recommendations", "drop_candidates")}))
+
+
+def test_heuristic_ranking_no_longer_leads_with_a_benched_club_mover(tmp_path):
+    """Regression (the Senesi case): on the heuristic scorer a transferred
+    player with a big projection and no minutes was the rank-1 add."""
+    blind = _drop_world(tmp_path, departed_status="a")["recommendations"]
+    assert blind[0]["add"] == "FreeMover"            # no panel: club-move blind
+    panel = _panel({300: [0, 0, 0], 410: [90, 90, 90]})
+    seen = _drop_world(tmp_path, departed_status="a", season_panel=panel)["recommendations"]
+    assert seen[0]["add"] == "FreeA"
+    assert "FreeMover" not in [r["add"] for r in seen]   # 26.2 ROS: no gain on any horizon
+
+
+# ---------------------------------------------------------------------------
+# role_overrides.json
+# ---------------------------------------------------------------------------
+
+def _override_table(tmp_path):
+    """SeasonStar: model xp 6.5 (p_start 0.9, xp_started 7.0). Streamer: heuristic."""
+    gw_xp = _gw_xp([(200, 6.5)]).assign(xp_started=7.0, xp_cameo=1.5, num_fixtures=1)
+    return _xp_table(tmp_path, gw_xp)
+
+
+def _by_name(table):
+    return table.set_index("web_name")
+
+
+# An explicit lifetime for entries whose test is not about staleness (an
+# undated entry with no calendar is stale — see the staleness tests below).
+FRESH = {"valid_through_gw": 38}
+
+
+def _report(**names):
+    """An ``apply_role_overrides`` report: every key empty except ``names``."""
+    return {key: names.get(key.removeprefix("overrides_"), [])
+            for key in wv.OVERRIDE_REPORT_KEYS}
+
+
+def test_override_replaces_xp_next_with_p_override_times_xp_started(tmp_path):
+    table = _override_table(tmp_path)
+    assert _by_name(table).loc["SeasonStar", "xp_started"] == 7.0
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.4, "fact": "rotation risk", **FRESH}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
+    star = _by_name(out).loc["SeasonStar"]
+    assert star["xp_next"] == pytest.approx(0.4 * 7.0)        # cameo term dropped
+    assert star["p_start"] == 0.4 and star["role_override_p_start"] == 0.4
+    assert star["role_override"] == "rotation risk"
+    assert pd.isna(star["xp_floor"]) and pd.isna(star["xp_ceiling"])   # stale band cleared
+    assert report == _report(applied=["SeasonStar"])
+    # the input table is not mutated, and nobody else moves
+    assert _by_name(table).loc["SeasonStar", "xp_next"] == pytest.approx(6.5)
+    untouched = _by_name(out).loc["Streamer"]
+    assert untouched["role_override"] is None
+    assert untouched["xp_next"] == _by_name(table).loc["Streamer", "xp_next"]
+
+
+@pytest.mark.parametrize("p_override, expected", [(0.0, 0.0), (0.5, 0.5 * 6.5 / 0.8)])
+def test_override_without_xp_started_zeroes_or_rescales_the_model_value(
+        tmp_path, p_override, expected):
+    """A pre-S3 xP file has no xp_started: a ruled-out player must still be
+    worth 0 (regression: he kept his model xP and could be recommended), and a
+    partial override rescales the model value by p_override / model p_start."""
+    table = _override_table(tmp_path).assign(xp_started=float("nan"))
+    star = _by_name(table).loc["SeasonStar"]
+    assert star["xp_next"] == pytest.approx(6.5)
+    table.loc[table["web_name"] == "SeasonStar", "p_start"] = 0.8
+    out, report = wv.apply_role_overrides(
+        table, [{"player": "SeasonStar", "team": "ARS", "p_start": p_override, **FRESH}],
+        target_gw=1)
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(expected, abs=0.006)
+    assert _by_name(out).loc["SeasonStar", "p_start"] == p_override
+    assert report == _report(applied=["SeasonStar"])
+
+
+def test_legacy_xp_file_without_xp_started_rescales_the_model_value(tmp_path):
+    """Regression through the real loading path: an xP file written before
+    xp_started existed must keep the model row's conditional missing, so a
+    partial override rescales the model value (6.5 × 0.5 / 0.9) instead of
+    silently switching to the heuristic while still labelled "model"."""
+    table = _xp_table(tmp_path, _gw_xp([(200, 6.5)]))        # no xp_started column
+    star = _by_name(table).loc["SeasonStar"]
+    assert star["xp_source"] == "model" and pd.isna(star["xp_started"])
+    out, _ = wv.apply_role_overrides(
+        table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.5, **FRESH}],
+        target_gw=1)
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(
+        6.5 * 0.5 / 0.9, abs=0.006)
+    assert _by_name(out).loc["SeasonStar", "xp_source"] == "model"
+
+
+def test_override_in_a_double_gameweek_uses_the_summed_conditional(tmp_path):
+    """The frame's xp_started is already the sum over both fixtures (7.5 + 4.5):
+    it is used as is, never multiplied by num_fixtures again."""
+    gw_xp = _gw_xp([(200, 10.0)]).assign(xp_started=12.0, xp_cameo=2.5, num_fixtures=2)
+    table = _xp_table(tmp_path, gw_xp)
+    assert _by_name(table).loc["SeasonStar", "xp_started"] == 12.0
+    out, _ = wv.apply_role_overrides(
+        table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.5, **FRESH}], target_gw=1)
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(6.0)
+
+
+def test_override_on_a_heuristic_player_uses_the_full_availability_heuristic(tmp_path):
+    table = _override_table(tmp_path)
+    streamer = _by_name(table).loc["Streamer"]
+    assert streamer["xp_source"] == "heuristic"
+    assert streamer["xp_started"] == pytest.approx(streamer["xp_next"])   # status "a"
+    out, _ = wv.apply_role_overrides(
+        table, [{"player": "Streamer", "team": "ARS", "p_start": 0.5, **FRESH}], target_gw=1)
+    assert _by_name(out).loc["Streamer", "xp_next"] == pytest.approx(
+        0.5 * streamer["xp_started"], abs=0.006)
+
+
+def test_unmatched_override_is_reported_without_raising(tmp_path):
+    table = _override_table(tmp_path)
+    overrides = [{"player": "Nobody", "team": "ARS", "p_start": 0.1, **FRESH},
+                 {"player": "SeasonStar", "team": "WOL", "p_start": 0.1, **FRESH},   # wrong team
+                 {"player": "Streamer", "team": "ARS", "p_start": "soon", **FRESH}]  # not a number
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
+    assert report["overrides_unmatched"] == ["Nobody", "SeasonStar", "Streamer"]
+    assert report["overrides_applied"] == []
+    assert out["role_override"].isna().all()
+    assert out["xp_next"].equals(table["xp_next"])
+
+
+def test_return_gw_in_the_future_zeroes_xp_next(tmp_path):
+    table = _override_table(tmp_path)
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.8, "return_gw": 9,
+                  "fact": "out until GW9"}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=6)
+    star = _by_name(out).loc["SeasonStar"]
+    assert star["xp_next"] == 0.0 and star["p_start"] == 0.0
+    assert report["overrides_applied"] == ["SeasonStar"]
+
+
+@pytest.mark.parametrize("return_gw", [6, 4])
+def test_override_expires_once_the_return_gameweek_arrives(tmp_path, return_gw):
+    """The Maddison case: ``p_start 0, return_gw 4`` must not zero him in GW6."""
+    table = _override_table(tmp_path)
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.0, "return_gw": return_gw}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=6)
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(6.5)
+    assert report == _report(expired=["SeasonStar"])
+
+
+@pytest.mark.parametrize("status, chance", [("i", None), ("u", None), ("s", None), ("d", 0)])
+def test_override_never_lifts_the_availability_gate(tmp_path, status, chance):
+    """Regression (live GW6): Mateta, status i with a stale p_start 0.60, went
+    0.00 -> 1.87; Watkins (status u) 0 -> 0.09. An availability-0 player is
+    blocked: xp_next and p_start stay as the gate left them."""
+    projections = tmp_path / "projections.json"
+    projections.write_text(json.dumps([{"code": 200, "projected_points": 150.0}]))
+    bootstrap = {"teams": TEAMS, "fixtures": {"1": [{"team_h": 1, "team_a": 2}]}, "elements": [
+        {"id": 20, "code": 200, "web_name": "Crocked", "element_type": 4, "team": 1,
+         "status": status, "chance_of_playing_next_round": chance}]}
+    gw_xp = _gw_xp([(200, 0.0)]).assign(p_start=0.0, xp_started=3.1, xp_cameo=1.0,
+                                         num_fixtures=1)
+    table = wv.build_player_table(bootstrap, SEASONS, projections, gw_xp=gw_xp)
+    assert table.loc[0, "availability"] == 0.0
+    overrides = [{"player": "Crocked", "team": "ARS", "p_start": 0.6, "fact": "contract war", **FRESH}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
+    assert report == _report(blocked=["Crocked"])
+    row = out.iloc[0]
+    assert row["xp_next"] == 0.0 and row["p_start"] == 0.0
+    assert row["role_override"] is None and pd.isna(row["role_override_p_start"])
+
+
+def test_doubtful_player_with_a_nonzero_chance_is_still_overridden(tmp_path):
+    table = _override_table(tmp_path)
+    table.loc[table["web_name"] == "SeasonStar", "availability"] = 0.25
+    out, report = wv.apply_role_overrides(
+        table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.5, **FRESH}], target_gw=1)
+    assert report == _report(applied=["SeasonStar"])
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(3.5)
+
+
+def test_override_prefers_code_over_name_when_names_collide(tmp_path):
+    table = _override_table(tmp_path)
+    table.loc[table["web_name"] == "Streamer", "web_name"] = "SeasonStar"   # same name + team
+    by_name = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.2, **FRESH}]
+    _, report = wv.apply_role_overrides(table, by_name, target_gw=1)
+    assert report["overrides_unmatched"] == ["SeasonStar"]                  # ambiguous: skipped
+    by_code = [{**by_name[0], "code": 200}]
+    out, report = wv.apply_role_overrides(table, by_code, target_gw=1)
+    assert report["overrides_applied"] == ["SeasonStar"]
+    assert out.loc[out["code"] == 200, "xp_next"].iloc[0] == pytest.approx(0.2 * 7.0)
+    assert out.loc[out["code"] == 201, "role_override"].iloc[0] is None
+
+
+@pytest.mark.parametrize("code", ["200", " 200 ", 200.0])
+def test_override_code_given_as_a_string_still_matches(tmp_path, code):
+    table = _override_table(tmp_path)
+    entry = {"player": "Renamed", "team": "XXX", "code": code, "p_start": 0.2, **FRESH}
+    out, report = wv.apply_role_overrides(table, [entry], target_gw=1)
+    assert report == _report(applied=["Renamed"])
+    assert out.loc[out["code"] == 200, "xp_next"].iloc[0] == pytest.approx(0.2 * 7.0)
+
+
+def test_override_with_a_non_numeric_code_is_unmatched(tmp_path):
+    table = _override_table(tmp_path)
+    entry = {"player": "SeasonStar", "team": "ARS", "code": "abc", "p_start": 0.2, **FRESH}
+    out, report = wv.apply_role_overrides(table, [entry], target_gw=1)
+    assert report == _report(unmatched=["SeasonStar"])
+    assert out["role_override"].isna().all()
+
+
+def test_fact_only_override_and_unvalued_player_keep_their_xp(tmp_path):
+    table = _override_table(tmp_path)
+    overrides = [{"player": "SeasonStar", "team": "ARS", "fact": "new manager", **FRESH},
+                 {"player": "NoProj", "team": "ARS", "p_start": 0.0, **FRESH}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=1)
+    rows = _by_name(out)
+    assert rows.loc["SeasonStar", "xp_next"] == pytest.approx(6.5)
+    assert rows.loc["SeasonStar", "role_override"] == "new manager"
+    assert pd.isna(rows.loc["NoProj", "xp_next"])            # no value to scale
+    assert rows.loc["NoProj", "role_override_p_start"] == 0.0
+    assert report["overrides_applied"] == ["SeasonStar", "NoProj"]
+
+
+# Staleness: live role_overrides.json written around GW2 (``updated``
+# 2026-08-27, no per-entry dates) kept changing GW6 xP every week.
+DEADLINES = {gw: pd.Timestamp(day, tz="UTC").to_pydatetime() for gw, day in
+             {2: "2026-08-28 17:30", 3: "2026-09-04 17:30", 4: "2026-09-12 12:30",
+              5: "2026-09-18 17:30", 6: "2026-10-10 10:00"}.items()}
+
+
+def test_event_deadlines_reads_the_draft_bootstrap_shape():
+    bootstrap = {"events": {"current": 5, "next": 6, "data": [
+        {"id": 5, "deadline_time": "2026-09-18T17:30:00Z"},
+        {"id": 6, "deadline_time": "2026-10-10T10:00:00Z"},
+        {"id": 7, "deadline_time": None}]}}
+    assert wv.event_deadlines(bootstrap) == {5: DEADLINES[5], 6: DEADLINES[6]}
+    assert wv.event_deadlines({}) == {}
+
+
+@pytest.mark.parametrize("as_of, window_end", [
+    ("2026-08-27", 2),                    # written before the GW2 deadline -> GW2 only
+    ("2026-08-28", 2),                    # date only = 00:00 UTC: the deadline-day fact counts
+    ("2026-08-28T18:00:00Z", 3),          # after the GW2 deadline -> describes GW3
+    ("2026-10-11", None),                 # no later deadline in the calendar
+    ("not a date", None), (None, None),
+])
+def test_override_window_end_is_the_first_deadline_after_as_of(as_of, window_end):
+    assert wv.override_window_end(as_of, DEADLINES) == window_end
+
+
+def test_undated_entry_written_before_an_earlier_deadline_is_stale(tmp_path):
+    """Regression: an undated GW2 entry must not touch GW6 (the live file)."""
+    table = _override_table(tmp_path)
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.6, "as_of": "2026-08-27"}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=6, deadlines=DEADLINES)
+    assert report == _report(stale=["SeasonStar"])
+    star = _by_name(out).loc["SeasonStar"]
+    assert star["xp_next"] == pytest.approx(6.5) and star["role_override"] is None
+
+
+def test_fresh_undated_entry_applies_to_the_next_deadline_only(tmp_path):
+    table = _override_table(tmp_path)
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.4,
+                  "as_of": "2026-10-06T09:00:00Z"}]
+    out, report = wv.apply_role_overrides(table, overrides, target_gw=6, deadlines=DEADLINES)
+    assert report == _report(applied=["SeasonStar"])
+    assert _by_name(out).loc["SeasonStar", "xp_next"] == pytest.approx(0.4 * 7.0)
+    _, report = wv.apply_role_overrides(table, overrides, target_gw=7, deadlines=DEADLINES)
+    assert report == _report(stale=["SeasonStar"])
+    # no calendar or no as_of: the entry cannot be shown to be current
+    _, report = wv.apply_role_overrides(table, overrides, target_gw=6)
+    assert report == _report(stale=["SeasonStar"])
+
+
+def test_valid_through_gw_is_honoured_whatever_the_as_of(tmp_path):
+    table = _override_table(tmp_path)
+    entry = {"player": "SeasonStar", "team": "ARS", "p_start": 0.4, "as_of": "2026-08-27",
+             "valid_through_gw": 8}
+    for target_gw, expected in ((6, _report(applied=["SeasonStar"])),
+                                (8, _report(applied=["SeasonStar"])),
+                                (9, _report(stale=["SeasonStar"]))):
+        _, report = wv.apply_role_overrides(table, [entry], target_gw, deadlines=DEADLINES)
+        assert report == expected, target_gw
+    _, report = wv.apply_role_overrides(table, [{**entry, "valid_through_gw": "soon"}], 6)
+    assert report == _report(unmatched=["SeasonStar"])
+
+
+def test_return_gw_entries_are_not_aged_by_their_as_of(tmp_path):
+    """A dated absence keeps its own lifetime: out until return_gw, then expired."""
+    table = _override_table(tmp_path)
+    entry = {"player": "SeasonStar", "team": "ARS", "p_start": 0.0, "return_gw": 9,
+             "as_of": "2026-08-27"}
+    _, report = wv.apply_role_overrides(table, [entry], target_gw=6, deadlines=DEADLINES)
+    assert report == _report(applied=["SeasonStar"])
+
+
+def test_load_role_overrides_dates_entries_from_the_file(tmp_path):
+    path = tmp_path / "role_overrides.json"
+    path.write_text(json.dumps({"updated": "2026-08-27", "overrides": [
+        {"player": "A", "team": "ARS"}, {"player": "B", "team": "ARS", "as_of": "2026-10-05"}]}))
+    assert [e["as_of"] for e in wv.load_role_overrides(path)] == ["2026-08-27", "2026-10-05"]
+    path.write_text(json.dumps({"as_of": "2026-09-01", "updated": "2026-08-27",
+                                "overrides": [{"player": "A", "team": "ARS"}]}))
+    assert wv.load_role_overrides(path)[0]["as_of"] == "2026-09-01"     # as_of beats updated
+    path.write_text(json.dumps({"overrides": [{"player": "A", "team": "ARS"}]}))
+    os.utime(path, (1790000000, 1790000000))                             # 2026-09-21 UTC
+    as_of = wv.load_role_overrides(path)[0]["as_of"]
+    assert wv._parse_as_of(as_of) == pd.Timestamp(1790000000, unit="s", tz="UTC")
+    assert wv.override_window_end(as_of, DEADLINES) == 6
+
+
+def test_load_role_overrides_tolerates_missing_and_malformed_files(tmp_path, caplog):
+    assert wv.load_role_overrides(tmp_path / "absent.json") == []
+    good = tmp_path / "role_overrides.json"
+    good.write_text(json.dumps({"updated": "x", "overrides": [{"player": "A", "team": "ARS"}, "junk"]}))
+    assert wv.load_role_overrides(good) == [{"player": "A", "team": "ARS", "as_of": "x"}]
+    for content in ("{not json", "[1, 2]", '{"overrides": {"player": "A"}}'):
+        bad = tmp_path / "bad.json"
+        bad.write_text(content)
+        with caplog.at_level("WARNING"):
+            assert wv.load_role_overrides(bad) == []
+    assert "ignored" in caplog.text
+
+
+def test_cli_prints_the_three_sections_and_writes_role_fields(weekly_cli_root, weekly_cli_argv,
+                                                              tmp_path, capsys):
+    ml_dir = weekly_cli_root / "derived/2026-27/ml"
+    ml_dir.mkdir(parents=True, exist_ok=True)
+    (ml_dir / "role_overrides.json").write_text(json.dumps({"overrides": [
+        {"player": "FreeFWD", "team": "ARS", "p_start": 0.0, "return_gw": 9, "fact": "out"},
+        {"player": "Ghost", "team": "ARS", "p_start": 0.5},
+        {"player": "MyFWD", "team": "WOL", "p_start": 0.0, "return_gw": 3},
+        {"player": "FreeFWD", "team": "ARS", "p_start": 0.9, "as_of": "2026-08-27"}]}))
+    pd.DataFrame([{"season": "2026-27", "code": 101, "gw": gw, "minutes": 90}
+                  for gw in (4, 5)]).to_parquet(ml_dir / "player_gameweeks.parquet")
+    out = tmp_path / "waiver_plan.json"
+    assert wv.main(weekly_cli_argv(out, "heuristic")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["overrides_applied"] == ["FreeFWD"]
+    assert doc["overrides_unmatched"] == ["Ghost"] and doc["overrides_expired"] == ["MyFWD"]
+    assert doc["overrides_stale"] == ["FreeFWD"] and doc["overrides_blocked"] == []
+    assert doc["minutes_through_gw"] == 5
+    assert [c["web_name"] for c in doc["drop_candidates"]] == ["MyFWD"]
+    assert doc["drop_candidates"][0]["expected_minutes"] == 90.0
+    printed = capsys.readouterr().out
+    assert printed.index("overrides_applied: FreeFWD") < printed.index("== DROP CANDIDATES") \
+        < printed.index("== WAIVER RECOMMENDATIONS")
+
+
+def test_cli_runs_without_a_season_panel_or_overrides_file(weekly_cli_root, weekly_cli_argv,
+                                                           tmp_path, caplog):
+    out = tmp_path / "waiver_plan.json"
+    with caplog.at_level("WARNING"):
+        assert wv.main(weekly_cli_argv(out, "heuristic")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["minutes_through_gw"] is None and doc["overrides_applied"] == []
+    assert doc["drop_candidates"][0]["expected_minutes"] is None
+    assert "club-move role signals off" in caplog.text
 
 
 def _ruled_out_world(tmp_path, status, chance=None):

@@ -268,8 +268,9 @@ live-season check has to be re-earned by live rows from GW6 on.
     uses the heuristic.
   - **Horizons**: xP is produced for one gameweek; the 3-GW and ROS horizons
     in CLAUDE.md §5.2 are not built.
-  - Club-move flag and `expected_minutes` surfaced (fixes the case where
-    persistence carries a departed starter's role into a new season).
+  - Club-move flag and `expected_minutes` surfaced (built 2026-10-06, see
+    "Role signals": fixes the case where persistence carries a departed
+    starter's role into a new season).
 
 ### Phase B — Underlying-metrics and breakout detection
 - Trend detection on xG / xA / xGI / minutes: flag players whose underlying
@@ -278,6 +279,9 @@ live-season check has to be re-earned by live rows from GW6 on.
   variance). The correlation study shows finishing luck does not repeat
   year over year — turn that into explicit regression-to-mean signals.
 - Feeds `fixture_targets` and `waiver_plan` with a stated reason per pick.
+- **General bench factor**: the role factor applies to club-movers only; a
+  player who lost his place at the same club still carries his full
+  projection (the heuristic scorer can rank a 0-minute non-mover first).
 
 ### Phase C — Distributions and portfolio optimisation
 - Quantile or simulation output: floor, ceiling, `P(haul ≥ 10)`. Start/sit and
@@ -342,8 +346,8 @@ by `next1_gain`; a free agent with no ROS projection but a model `xp_next`
 (promoted clubs) is ranked too, with `season_gain` null and `season_unknown`
 true (it counts as 0 for the label and ordering, so at most a `stream`);
 `next3_xp` is still heuristic (horizons are a later section), so that free
-agent's `add_next3_xp` and `next3_gain` are null (unknown), and the drop
-pick is unchanged. Known scale mismatch: model xP averages higher than the
+agent's `add_next3_xp` and `next3_gain` are null (unknown); the drop pick is
+described under "Role signals" below. Known scale mismatch: model xP averages higher than the
 `ros/38` heuristic fallback, so a heuristic-valued drop flatters model-valued
 adds until the horizons work removes most fallbacks.
 
@@ -364,6 +368,68 @@ wired, +10.0 after the carried team-form fix, +8.0 once model-valued free
 agents without a ROS projection are ranked (they become the rank-1 pick at
 GW3-5: Slater, McAtee, McAtee). Outputs go to
 `waiver_replay_<scorer>.json`.
+
+## Role signals
+
+The season projection is club-move blind: it rates a transferred player on
+his old club's role (2026-27: 65 of the 480 players with a 2025-26 row
+changed club). Three signals, all in `backend/ml/waiver.py`, used by
+`waiver_plan` and `my_week` on either scorer:
+
+- **Club-move factor.** `club_moved` = bootstrap club != prior-season club
+  (`None` with no prior row). `expected_minutes` = mean minutes over the last
+  `ROLE_MINUTES_WINDOW` (5) finished GWs of the season panel, a missing row
+  counting as 0; `None` when the panel has no rows. For club-movers only,
+  `ros_adj = ros_points x clip(expected_minutes / ROLE_MINUTES_FULL (60),
+  ROLE_FLOOR (0.15), 1.0)`. `season_gain`, the drop pick and the heuristic
+  per-GW baseline (`ros_adj / 38`, so `next3_xp` and the heuristic `xp_next`)
+  use it; `ros_points` is still emitted. Example from the live data: a
+  175-point defender who moved and has played one match in five (the
+  heuristic replay's rank-1 add at the GW4 and GW5 deadlines, for -1 and 0
+  points) now carries `ros_adj` 52.5 and drops out of the list. Scope is
+  club-movers only, the measured failure: a player benched at the same club
+  keeps factor 1.0 (a general bench factor is Phase B). A club-mover whose
+  status is not `a` also keeps 1.0 — injured or doubtful, his low minutes
+  are the absence, not a lost role (live: Struijk ROS 108 was scaled to 35
+  and Wilson 105 to 51 while flagged); the availability gate handles his
+  next gameweek.
+- **Departed drop pick.** Sort key `(status != "u", ros_adj, xp_next)`, with
+  `ros_adj` 0 for a departed player (projected or not), so he is always the
+  drop at his position and replacing him counts as a season gain.
+  `drop_candidates` in `waiver_plan.json` lists the top 3 per position.
+- **`role_overrides.json`** (optional, `data/derived/<season>/ml/`,
+  hand-maintained). An entry matches one player by `player` (web name) +
+  `team` (short name), or by `code` when given. `p_start` replaces the
+  model's: `xp_next = p_start x xp_started`, where `xp_started` is the
+  Stage-2 points-if-he-starts now carried in `xp_gw<N>.parquet` (summed
+  over the GW's fixtures, so a double counts each opponent; the heuristic at full availability for a player
+  the model does not cover). The substitute-cameo term is dropped on
+  purpose. `return_gw > N` forces 0; once `return_gw <= N` the entry is
+  expired and ignored. A player whose availability factor is 0 (status
+  u/i/s or a 0% chance) is never overridden: the entry is `overrides_blocked`
+  and his row keeps the gate's 0 (live data: Mateta, status i, would
+  otherwise have gone 0.00 -> 1.87 on a stale p_start 0.60). The output lists
+  every entry under `overrides_applied`, `overrides_unmatched`,
+  `overrides_expired`, `overrides_stale` or `overrides_blocked`. Staleness:
+  `valid_through_gw` bounds an entry explicitly; an entry with neither
+  `return_gw` nor `valid_through_gw` describes only the first GW whose
+  deadline falls after its `as_of` (fallback: the file's `as_of`/`updated`,
+  then its mtime) and is `overrides_stale` after that. On the live file
+  (`updated` 2026-08-27, no per-entry dates) every undated entry was written
+  for GW2 and is stale for GW6.
+  Overrides touch the next GW only (not `next3_xp`, not ROS).
+
+Replay (GW2-5, rank-1 `gw_gain`): `--scorer model` passes the as-of season
+panel (gw < N) to the role signals and scores **+8.0**, the same picks as
+before them (next-GW xP already ranks low-minute players down; the factor
+changes labels, `season_gain` and the heuristic fallback values).
+`--scorer heuristic` is kept as the pre-xP baseline: it runs without a
+season panel and still scores **-15.0** with the same rank-1 rows. It is
+not strictly frozen: the replay's departed rule (today's status `u` + 0
+minutes before N keeps a player `u` in the neutral bootstrap) now also
+forces that player to be the drop pick in the heuristic run, as in the
+model run. On GW2-5 that changes no rank-1 pick, so the totals are equal.
+`role_overrides.json` is never replayed (it is knowledge as of today).
 
 ## Working rules
 

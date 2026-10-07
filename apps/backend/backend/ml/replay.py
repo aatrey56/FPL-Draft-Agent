@@ -64,6 +64,21 @@ heuristic) and passes it to ``waiver.plan`` as ``gw_xp``. A leak guard raises if
 the as-of season panel holds any gameweek not completed by T_N. The other four strategies do not
 depend on the scorer, so their rows are identical between scorers.
 
+Role signals: ``model`` also passes the as-of season panel (the gameweeks
+completed by T_N) to
+``waiver.plan`` so club-movers are valued on the minutes they had played by
+the deadline (``club_moved`` itself reads today's club — the same accepted
+``team`` leak as above). ``heuristic`` deliberately does NOT: it is the
+pre-xP baseline the model is compared against, so it runs without a season
+panel (every role factor 1.0). It is not strictly frozen, though: the
+departed rule above (status "u" today + 0 minutes before N) leaves such a
+player status "u" in the neutral bootstrap, and ``waiver``'s drop pick
+always drops a status-"u" squad player first at his position — in BOTH
+scorers. On 2026-27 GW2-5 the heuristic rank-1 rows and totals are
+unchanged by it (waiver_plan -15.0). ``role_overrides.json`` is never
+applied in replay — it is hand-written knowledge as of today, not as of the
+deadline.
+
 CLI (reads only; writes ``derived/<season>/ml/waiver_replay_<scorer>.json``):
 
     uv run python -m backend.ml.replay --season 2026-27 --gws 2-5 \\
@@ -205,6 +220,14 @@ def asof_panel(archive: pd.DataFrame, season_panel: pd.DataFrame,
     ``completed`` gameweeks (``completed_gameweeks``)."""
     return pd.concat([archive, season_panel[season_panel["gw"].isin(completed)]],
                      ignore_index=True)
+
+
+def asof_season_panel(season_panel: pd.DataFrame, season: str,
+                      completed: set[int]) -> pd.DataFrame:
+    """``season`` rows of the gameweeks completed by a deadline
+    (``completed_gameweeks``): the minutes the role signals may see as of it."""
+    return season_panel[(season_panel["season"] == season)
+                        & season_panel["gw"].isin(completed)]
 
 
 def assert_no_panel_leak(panel: pd.DataFrame, season: str, event: int,
@@ -470,12 +493,17 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
         squad = sorted(int(r["element"]) for r in status_rows if r.get("owner") == entry)
 
         fixtures = asof_fixtures(bootstrap, raw, event)
-        gw_xp = (model_gw_xp(archive, season_panel, neutral, fixtures, season, event, completed)
-                 if scorer == "model" else None)
+        gw_xp, minutes_panel = None, None
+        if scorer == "model":
+            gw_xp = model_gw_xp(archive, season_panel, neutral, fixtures, season, event,
+                                completed)
+            minutes_panel = asof_season_panel(season_panel, season, completed)
+            assert_no_panel_leak(minutes_panel, season, event, completed)
         result = wv.plan(neutral, {"element_status": status_rows}, inputs["seasons"],
                          inputs["projections"], entry, MAX_CANDIDATES,
                          fixtures_by_event=fixtures,
-                         neutral_availability=True, gw_xp=gw_xp)
+                         neutral_availability=True, gw_xp=gw_xp,
+                         season_panel=minutes_panel)
         candidates = {
             "no_change": [],
             "waiver_plan": [(r["add_element"], r["drop_element"]) for r in result["recommendations"]],

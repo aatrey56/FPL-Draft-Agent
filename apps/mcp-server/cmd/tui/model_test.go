@@ -431,6 +431,10 @@ func TestAttentionItemMatchesStableCodes(t *testing.T) {
 		{"coded blank", []string{"blank gameweek: no fixture"}, []string{"blank_gw"}, "◇", "blank GW"},
 		{"coded availability", []string{"availability [d] — Knock"}, []string{"availability"}, "⚠", "[d] — Knock"},
 		{"coded heuristic", []string{"no model xP — heuristic"}, []string{"heuristic_xp"}, "⚠", "heuristic xP"},
+		{"coded departed", []string{"departed — no longer in the league, drop him — Has joined Elsewhere FC"}, []string{"departed"}, "✗", "departed — drop"},
+		{"coded override", []string{"role override: p_start 0 — shoulder fracture"}, []string{"role_override"}, "⚠", "p_start 0 — shoulder fracture"},
+		// one rail line per player: an unprojected player leads with that, not an override fact
+		{"no value before override", []string{"no value — judge manually (player_card)", "role override: p_start 0.7 — new signing"}, []string{"no_value", "role_override"}, "?", "unprojected"},
 		// one rail line per player: the scoring-source note never hides a blank GW or an injury
 		{"blank beats heuristic", []string{"blank gameweek: no fixture", "no model xP — heuristic"}, []string{"blank_gw", "heuristic_xp"}, "◇", "blank GW"},
 		{"old order: heuristic first", []string{"no model xP — heuristic", "blank gameweek: no fixture"}, []string{"heuristic_xp", "blank_gw"}, "◇", "blank GW"},
@@ -524,6 +528,66 @@ func TestWireRecWithUnknownNext3Gain(t *testing.T) {
 	}
 }
 
+// A stream can lose ground over 3 GWs and the season: negative gains carry
+// one sign ("-1.8"), never "+-1.8".
+func TestWireRecNegativeGainsAreSignedOnce(t *testing.T) {
+	derived := t.TempDir()
+	write(t, filepath.Join(derived, "ml/waiver_plan.json"), map[string]any{
+		"recommendations": []map[string]any{
+			{"add": "Streamer", "add_team": "ARS", "drop": "Weak", "label": "stream",
+				"season_gain": -3.2, "add_ros": 36.8, "drop_ros": 40.0,
+				"next3_gain": -1.8, "add_next3_xp": 2.2},
+		},
+	})
+	m := newModel(fixtureDir(t), derived, 5, 501, 0)
+	m.w = 160
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	for _, it := range m.snap.NeedsYou {
+		if strings.HasPrefix(it.Note, "wire") {
+			notes = append(notes, it.Note)
+		}
+	}
+	if got := strings.Join(notes, "|"); got != "wire · stream -3" {
+		t.Fatalf("rail note %q", got)
+	}
+	m.sugSel = 0
+	body := m.sugDetailBody(120)
+	for _, want := range []string{"Streamer projects 2.2 xP, -1.8 over Weak", "the -3 is that gap"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "+-") {
+		t.Errorf("double sign in:\n%s", body)
+	}
+}
+
+// A club-mover's season gain is the gap between role-adjusted projections, so
+// the detail view must quote those, not the raw ROS pair.
+func TestWireRecDetailQuotesRoleAdjustedROS(t *testing.T) {
+	derived := t.TempDir()
+	write(t, filepath.Join(derived, "ml/waiver_plan.json"), map[string]any{
+		"recommendations": []map[string]any{
+			{"add": "Mover", "add_team": "ARS", "drop": "Weak", "label": "upgrade",
+				"season_gain": 12.0, "add_ros": 175.0, "drop_ros": 40.0,
+				"add_ros_adj": 52.0, "drop_ros_adj": 40.0},
+		},
+	})
+	m := newModel(fixtureDir(t), derived, 5, 501, 0)
+	m.w = 160
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	m.sugSel = 0
+	body := m.sugDetailBody(120)
+	if !strings.Contains(body, "Mover 52 pts vs Weak 40 pts") || strings.Contains(body, "175") {
+		t.Fatalf("detail should quote the role-adjusted pair:\n%s", body)
+	}
+}
+
 // sharedWarningCodes reads the my_week warning-code contract that the Python
 // suite (apps/backend/tests/test_myweek.py) pins too.
 func sharedWarningCodes(t *testing.T) []string {
@@ -542,7 +606,7 @@ func sharedWarningCodes(t *testing.T) []string {
 }
 
 func TestWarningCodesMatchSharedFixture(t *testing.T) {
-	got := []string{warnNoValue, warnBlankGW, warnAvailability, warnHeuristicXP}
+	got := []string{warnDeparted, warnNoValue, warnRoleOverride, warnBlankGW, warnAvailability, warnHeuristicXP}
 	if want := sharedWarningCodes(t); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("TUI warning codes %v, shared fixture %v", got, want)
 	}

@@ -367,6 +367,13 @@ def score_fixtures(model: MatchModel, rows: pd.DataFrame,
 
     Used for serving, where a double gameweek is two rows with *different*
     opponents — each scored against its own fixture, then added.
+
+    ``xp_started`` / ``xp_cameo`` are the Stage-2 conditionals (points given a
+    start / given a substitute appearance) summed over the gameweek's
+    fixtures, like ``xp``, so a consumer can re-weight them with its own start
+    probability (``waiver.apply_role_overrides``). In a double each fixture
+    contributes its own conditional (different opponent and venue), not the
+    first fixture's twice.
     """
     scored = model.predict(rows, availability)
     scored = pd.concat([rows.reset_index(drop=True), scored.reset_index(drop=True)], axis=1)
@@ -377,6 +384,8 @@ def score_fixtures(model: MatchModel, rows: pd.DataFrame,
         p_start=("p_start", "max"),
         p_appear=("p_appear", "max"),
         xp_spread=("xp_spread", "first"),
+        xp_started=("xp_started", "sum"),
+        xp_cameo=("xp_cameo", "sum"),
         element_type=("element_type", "first"),
         team_id=("team_id", "first"),
         drivers=("drivers", "first"),

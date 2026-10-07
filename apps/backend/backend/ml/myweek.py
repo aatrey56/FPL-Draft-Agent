@@ -9,6 +9,13 @@ A missing, unreadable or stale xP file falls back to the heuristic with a WARNIN
 the JSON records it: ``scorer`` is the scorer actually used, with
 ``scorer_requested``, ``xp_fallback`` and ``xp_fallback_reason`` beside it.
 
+Role signals (see ``backend.ml.waiver``): ``role_overrides.json`` entries
+replace a player's next-GW start probability (an override of 0 — e.g. a
+``return_gw`` still ahead — keeps him out of the XI like an injury does) and
+their ``fact`` is listed under ``attention``; a departed (status ``u``) squad
+player always appears there with the ``departed`` code. Rows carry
+``club_moved`` and ``expected_minutes`` from the season panel.
+
 Reads local files only. CLI:
     python -m backend.ml.myweek --league <id> --entry <id> [--scorer {heuristic,model}]
 (env fallback LEAGUE_ID / ENTRY_ID; writes data/derived/<season>/ml/my_week.json,
@@ -38,16 +45,19 @@ next_event = wv.next_event
 
 def gw_xp_table(bootstrap: dict, seasons: pd.DataFrame,
                 projections_path: Path, *,
-                gw_xp: pd.DataFrame | None = None) -> pd.DataFrame:
+                gw_xp: pd.DataFrame | None = None,
+                season_panel: pd.DataFrame | None = None) -> pd.DataFrame:
     """Player table scored over the next single gameweek (gw_xp column).
 
     ``gw_xp`` is the match model's next-GW frame (see ``waiver.load_gw_xp``);
     covered players take its value (``xp_source`` "model"), the rest the
     heuristic ("heuristic") or nothing ("none", no projection either).
     ``expects_model`` records whether a model frame was supplied, so the
-    heuristic scorer does not warn on every player.
+    heuristic scorer does not warn on every player. ``season_panel`` feeds
+    the role signals (``waiver.build_player_table``).
     """
-    players = wv.build_player_table(bootstrap, seasons, projections_path, gw_xp=gw_xp)
+    players = wv.build_player_table(bootstrap, seasons, projections_path, gw_xp=gw_xp,
+                                    season_panel=season_panel)
     strengths = wv.team_strengths(seasons, bootstrap.get("teams", []))
     load1 = wv.next_fixture_load(bootstrap, strengths, n_events=1,
                                  fixtures_by_event=wv.upcoming_fixtures(bootstrap))
@@ -60,6 +70,17 @@ def gw_xp_table(bootstrap: dict, seasons: pd.DataFrame,
     return players
 
 
+def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
+                         target_gw: int | None, deadlines: dict | None = None,
+                         ) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+    """``waiver.apply_role_overrides`` on a ``gw_xp_table`` frame, keeping
+    ``gw_xp`` in step with the overridden ``xp_next``. Returns the new frame
+    and the ``waiver.OVERRIDE_REPORT_KEYS`` report."""
+    out, report = wv.apply_role_overrides(players, overrides, target_gw, deadlines)
+    out["gw_xp"] = pd.to_numeric(out["xp_next"], errors="coerce").round(1)
+    return out, report
+
+
 # Stable machine-readable codes for each warning, index-aligned with the
 # human-readable ``warnings`` text (consumers such as the TUI match on these,
 # never on the prose, which is free to change). The full set is pinned in
@@ -67,7 +88,9 @@ def gw_xp_table(bootstrap: dict, seasons: pd.DataFrame,
 # Declared, and emitted, most actionable first: a consumer that shows one
 # warning per player (the TUI rail) must lead with "he cannot play", not with
 # a note about where his number came from.
+WARNING_DEPARTED = "departed"
 WARNING_NO_VALUE = "no_value"
+WARNING_ROLE_OVERRIDE = "role_override"
 WARNING_BLANK_GW = "blank_gw"
 WARNING_AVAILABILITY = "availability"
 WARNING_HEURISTIC_XP = "heuristic_xp"
@@ -78,12 +101,22 @@ def player_warning_items(row: pd.Series) -> list[tuple[str, str]]:
     most actionable first; the scoring-source note (``heuristic_xp``) is
     always last."""
     items = []
+    news = f" — {row['news']}" if row["news"] else ""
+    if row["status"] == "u":
+        items.append((WARNING_DEPARTED, f"departed — no longer in the league, drop him{news}"))
+    # "unprojected" outranks an override's fact: with no value at all the
+    # override has nothing to re-weight, and the human call is the headline.
     if row["xp_source"] == "none":
         items.append((WARNING_NO_VALUE, "no value — judge manually (player_card)"))
+    override = row.get("role_override")
+    if override is not None and not pd.isna(override):
+        p_start = row.get("role_override_p_start")
+        chance = "" if pd.isna(p_start) else f"p_start {float(p_start):g}"
+        detail = " — ".join(part for part in (chance, override) if part)
+        items.append((WARNING_ROLE_OVERRIDE, f"role override: {detail or 'no detail given'}"))
     if row["gw_fixture_load"] == 0:
         items.append((WARNING_BLANK_GW, "blank gameweek: no fixture"))
-    if row["status"] != "a":
-        news = f" — {row['news']}" if row["news"] else ""
+    if row["status"] not in ("a", "u"):
         items.append((WARNING_AVAILABILITY, f"availability [{row['status']}]{news}"))
     if row["xp_source"] == "heuristic" and row["expects_model"]:
         items.append((WARNING_HEURISTIC_XP, "no model xP — heuristic"))
@@ -106,8 +139,10 @@ def xi_selection_value(row: pd.Series) -> float:
       unprojected + available -> 0.0  (unknown, but CAN play)
       availability 0          -> -1.0 (cannot play — never start over anyone
                                        who can, projected or not)
+      role override p_start 0 -> -1.0 (team news says he is out, whatever the
+                                       bootstrap flag says)
     """
-    if row["availability"] == 0:
+    if row["availability"] == 0 or row.get("role_override_p_start") == 0:
         return -1.0
     if pd.isna(row["gw_xp"]):
         return 0.0
@@ -137,6 +172,10 @@ def build_my_week(players: pd.DataFrame, element_status: dict,
                 "ros_points": None if pd.isna(p["ros_points"]) else float(p["ros_points"]),
                 "xp_source": p["xp_source"],
                 "p_start": None if pd.isna(p["p_start"]) else float(p["p_start"]),
+                "club_moved": None if pd.isna(p["club_moved"]) else bool(p["club_moved"]),
+                "expected_minutes": (None if pd.isna(p["expected_minutes"])
+                                     else float(p["expected_minutes"])),
+                "role_override": p.get("role_override"),
                 "warnings": player_warnings(p),
                 "warning_codes": [code for code, _ in player_warning_items(p)],
             })
@@ -188,9 +227,14 @@ def main(argv: list[str] | None = None) -> int:
     gw_xp, scorer_meta = wv.resolve_scorer(args.scorer, bootstrap, ml_dir)
     players = gw_xp_table(
         bootstrap, seasons, args.data_root / "derived/ml/projections_2627.json",
-        gw_xp=gw_xp)
+        gw_xp=gw_xp,
+        season_panel=wv.load_season_panel(ml_dir / "player_gameweeks.parquet", args.season))
+    players, override_report = apply_role_overrides(
+        players, wv.load_role_overrides(ml_dir / "role_overrides.json"), next_event(bootstrap),
+        wv.event_deadlines(bootstrap))
     week = build_my_week(players, element_status, entry)
     week["gw"] = next_event(bootstrap)
+    week.update(override_report)
     # scorer = what actually ran; xp_fallback/_reason say why model was not used
     week.update(scorer_meta)
 
@@ -210,6 +254,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"-- unprojected_squad: {len(week['unprojected_squad'])} --")
         for p in week["unprojected_squad"]:
             print(f"  {p['position']:<4} {p['web_name']:<20} {p['team']}")
+    print("-- role overrides: " + "; ".join(
+        f"{key.removeprefix('overrides_')} {', '.join(week[key]) or '-'}"
+        for key in override_report) + " --")
     if week["attention"]:
         print("-- needs attention --")
         for p in week["attention"]:

@@ -44,6 +44,31 @@ Design (v1, pre-GW1-honest):
   heuristic scorer) ``recommend`` keeps its original ranking (``rank_by=
   "legacy"``: labels from ``next3_gain``, ordered by the larger gain) so the
   heuristic output is unchanged.
+* **Role signals** — a season projection only knows last season's role at
+  last season's club, so a transfer silently breaks it. ``club_moved`` =
+  bootstrap club != the prior-season club in ``player_seasons`` (None when
+  there is no prior row: new to the league). ``expected_minutes`` = mean
+  minutes over the last ``ROLE_MINUTES_WINDOW`` finished gameweeks of the
+  season panel (a missing row is 0 minutes; None before any gameweek is
+  finished), ``minutes_season`` = their sum. For club-movers ONLY,
+  ``ros_adj = ros_points x role_factor`` with ``role_factor =
+  clip(expected_minutes / ROLE_MINUTES_FULL, ROLE_FLOOR, 1.0)``; everyone
+  else — and any club-mover whose status is not "a" (injured, doubtful,
+  suspended: the absence explains the minutes) — has factor 1.0. ``season_gain``, the drop pick and the heuristic
+  per-GW baseline (``ros_adj / 38``) use ``ros_adj``; ``ros_points`` stays in
+  the output. A general "benched at his old club too" factor is Phase B.
+* **Departed squad players** (status ``u``) have ``ros_adj`` 0 and are
+  always the drop at their position — sort key ``(status != "u", ros_adj,
+  xp_next)`` — with or without a projection. ``drop_candidates`` lists the
+  top ``DROP_CANDIDATES_PER_POSITION`` per position so the pick is auditable.
+* **Role overrides** — ``data/derived/<season>/ml/role_overrides.json``
+  (hand-maintained team news, optional) is applied to the next GW only: see
+  ``apply_role_overrides``. An entry with neither ``return_gw`` nor
+  ``valid_through_gw`` goes stale after the first deadline following its
+  ``as_of`` (file ``updated`` / mtime fallback). An override never lifts the availability gate: a
+  player the live feed rules out (availability 0) is ``overrides_blocked``.
+  ``overrides_applied`` / ``overrides_unmatched`` / ``overrides_expired`` /
+  ``overrides_stale`` / ``overrides_blocked`` in the output say what happened to every entry.
 
 CLI: python -m backend.ml.waiver --league <id> --entry <id> [--scorer {heuristic,model}]
 (env fallback: LEAGUE_ID / ENTRY_ID; ``--data-root`` and ``--out`` override the
@@ -56,7 +81,7 @@ import argparse
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +102,20 @@ FIXTURE_MULT_MIN, FIXTURE_MULT_MAX = 0.85, 1.15
 HOME_NUDGE = 1.03
 # Valid draft formations: (DEF, MID, FWD) with exactly 1 GKP, 10 outfielders.
 FORMATIONS = [(3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2), (4, 5, 1), (5, 3, 2), (5, 4, 1)]
+# The season the projections and team strengths were measured on.
+PRIOR_SEASON = "2025-26"
+# Role signals for club-movers (see module docstring). A player averaging
+# ROLE_MINUTES_FULL minutes over the last ROLE_MINUTES_WINDOW finished GWs
+# keeps his full projection; below that it scales down linearly, never under
+# ROLE_FLOOR (a 0-minute signing still has some chance of winning the role).
+ROLE_MINUTES_WINDOW = 5
+ROLE_MINUTES_FULL = 60.0
+ROLE_FLOOR = 0.15
+DROP_CANDIDATES_PER_POSITION = 3
+# What ``apply_role_overrides`` did with each role_overrides.json entry, in
+# the order the output JSON and CLI list them.
+OVERRIDE_REPORT_KEYS = ("overrides_applied", "overrides_unmatched", "overrides_expired",
+                        "overrides_stale", "overrides_blocked")
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +125,7 @@ FORMATIONS = [(3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2), (4, 5, 1), (5, 3, 2), 
 def team_strengths(seasons: pd.DataFrame, teams: list[dict]) -> dict[int, float]:
     """26/27 team id -> strength score (sum of that club's player points in
     25/26). Promoted/unseen clubs get a weak prior: 90% of the minimum."""
-    last = seasons[seasons["season"] == "2025-26"]
+    last = seasons[seasons["season"] == PRIOR_SEASON]
     by_name = last.groupby("team_name")["total_points"].sum().to_dict()
     floor = 0.9 * min(by_name.values()) if by_name else 0.0
     return {t["id"]: float(by_name.get(t["name"], floor)) for t in teams}
@@ -141,6 +180,62 @@ def availability_factor(element: dict) -> float:
     if chance is not None:
         return max(0.0, min(1.0, float(chance) / 100.0))
     return 0.75 if status == "d" else 0.0
+
+
+def club_moves(bootstrap: dict, seasons: pd.DataFrame,
+               prior_season: str = PRIOR_SEASON) -> dict[int, bool]:
+    """code -> True when the player's current club differs from his club in
+    ``prior_season`` (bootstrap team name vs ``player_seasons.team_name``).
+
+    Codes without a prior-season row are absent — callers read that as None
+    (new to the league, nothing to compare). A seasons table without a
+    ``code`` column yields no flags at all; rows with a null code are skipped.
+    """
+    if "code" not in seasons.columns:
+        return {}
+    last = seasons[(seasons["season"] == prior_season) & seasons["code"].notna()]
+    prior_club = dict(zip(last["code"].astype(int), last["team_name"]))
+    club_names = {t["id"]: t.get("name") for t in bootstrap.get("teams", [])}
+    return {int(el["code"]): prior_club[el["code"]] != club_names.get(el.get("team"))
+            for el in bootstrap.get("elements", []) if el.get("code") in prior_club}
+
+
+def minutes_profile(season_panel: pd.DataFrame | None,
+                    window: int = ROLE_MINUTES_WINDOW) -> dict[int, tuple[float, int]] | None:
+    """code -> ``(expected_minutes, minutes_season)`` from one season's panel.
+
+    ``expected_minutes`` is the mean over the last ``window`` gameweeks present
+    in the panel (fewer early in the season); a gameweek with no row for the
+    player counts as 0 minutes. Returns None when there is no panel or it has
+    no rows yet (pre-GW1) — "unknown", which is not the same as 0 minutes.
+    Players with no row at all are absent; callers treat them as ``(0.0, 0)``.
+    """
+    if season_panel is None or season_panel.empty:
+        return None
+    minutes = pd.to_numeric(season_panel["minutes"], errors="coerce").fillna(0.0)
+    recent_gws = sorted(int(gw) for gw in season_panel["gw"].unique())[-window:]
+    in_window = season_panel["gw"].isin(recent_gws)
+    season_total = minutes.groupby(season_panel["code"]).sum()
+    recent_total = minutes[in_window].groupby(season_panel.loc[in_window, "code"]).sum()
+    return {int(code): (float(recent_total.get(code, 0.0)) / len(recent_gws), int(total))
+            for code, total in season_total.items()}
+
+
+def role_factor(club_moved: bool | None, expected_minutes: float | None,
+                status: str | None = "a") -> float:
+    """Multiplier on a season projection for a player whose role is unproven.
+
+    1.0 unless the player changed clubs, his minutes are known AND he is
+    available (status "a"); then
+    ``clip(expected_minutes / ROLE_MINUTES_FULL, ROLE_FLOOR, 1.0)``. An
+    injured, doubtful or suspended club-mover's low minutes are explained by
+    the absence, not by a lost role, so his projection is not scaled down
+    (the availability gate already handles the next gameweek).
+    """
+    if (club_moved is not True or status != "a"
+            or expected_minutes is None or pd.isna(expected_minutes)):
+        return 1.0
+    return max(ROLE_FLOOR, min(1.0, float(expected_minutes) / ROLE_MINUTES_FULL))
 
 
 def next_event(bootstrap: dict, now: datetime | None = None) -> int | None:
@@ -279,7 +374,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
                        projections_path: Path, *,
                        fixtures_by_event: dict | None = None,
                        neutral_availability: bool = False,
-                       gw_xp: pd.DataFrame | None = None) -> pd.DataFrame:
+                       gw_xp: pd.DataFrame | None = None,
+                       season_panel: pd.DataFrame | None = None) -> pd.DataFrame:
     """One row per 26/27 element: identity, availability, xP, ROS value.
 
     ``fixtures_by_event`` overrides the bootstrap schedule (default:
@@ -303,6 +399,16 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     ``xp_next``, ``p_start``, ``xp_floor`` and ``xp_ceiling`` are set to 0
     and ``xp_reconciled`` is True (False on every other row). Partial
     availability changes (e.g. a new 50% doubt) are not reconciled.
+
+    ``season_panel`` is the current season's ``player_gameweeks`` panel
+    (finished gameweeks only). It feeds ``expected_minutes`` /
+    ``minutes_season`` and, for club-movers, ``role_factor`` and ``ros_adj``
+    (see the module docstring). Without it every factor is 1.0 and
+    ``ros_adj == ros_points``, except departed (status "u") players, whose
+    ``ros_adj`` is always 0. ``xp_started`` is the next-GW value if the player
+    starts every fixture: the model's Stage-2 conditional summed over the
+    gameweek's fixtures when the xP frame carries it, else the heuristic at
+    full availability.
     """
     strengths = team_strengths(seasons, bootstrap.get("teams", []))
     if fixtures_by_event is None:
@@ -326,19 +432,39 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
 
     team_names = {t["id"]: t.get("short_name") or t.get("name")
                   for t in bootstrap.get("teams", [])}
+    moves = club_moves(bootstrap, seasons)
+    profile = minutes_profile(season_panel)
     rows = []
     for el in bootstrap.get("elements", []):
         projection = projections.get(el.get("code"), {})
         ros = projection.get("projected_points")
+        club_moved = moves.get(el.get("code"))
+        expected_minutes, minutes_season = (
+            (None, None) if profile is None else profile.get(el.get("code"), (0.0, 0)))
+        factor = role_factor(club_moved, expected_minutes, el.get("status"))
+        ros_role = ros * factor if ros is not None else None
+        # A departed player scores nothing from here on, projection or not.
+        ros_adj = 0.0 if el.get("status") == "u" else ros_role
         if neutral_availability:
             # replay mode: everyone available except departed ("u") players
             avail = 0.0 if el.get("status") == "u" else 1.0
         else:
             avail = availability_factor(el)
-        per_gw = (ros / TOTAL_GWS) if ros is not None else None
+        per_gw = (ros_role / TOTAL_GWS) if ros_role is not None else None
         next3 = (per_gw * load.get(el.get("team"), 0.0) * avail) if per_gw is not None else None
+        full_load1 = per_gw * load1.get(el.get("team"), 0.0) if per_gw is not None else None
         model = model_by_code.get(el.get("code"))
         reconciled = False
+        # The conditional "if he starts" value: the model's own when the xP file
+        # has it; for a model row from an older file without it, left missing
+        # so an override rescales the model value rather than switching to the
+        # heuristic; for a heuristic row, the heuristic at full availability.
+        if model is None:
+            xp_started = full_load1
+        elif pd.notna(model.get("xp_started")):
+            xp_started = float(model["xp_started"])
+        else:
+            xp_started = None
         if model is not None:
             xp_next, xp_source = float(model["xp"]), "model"
             xp_extra = {"p_start": float(model["p_start"]), "xp_floor": float(model["xp_floor"]),
@@ -353,8 +479,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
         else:
             xp_extra = {"p_start": None, "xp_floor": None, "xp_ceiling": None,
                         "drivers": None, "opponents": None}
-            if per_gw is not None:
-                xp_next = per_gw * load1.get(el.get("team"), 0.0) * avail
+            if full_load1 is not None:
+                xp_next = full_load1 * avail
                 xp_source = "heuristic"
             else:
                 xp_next, xp_source = None, "none"
@@ -368,13 +494,271 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
             "next3_xp": round(next3, 1) if next3 is not None else None,
             "xp_next": round(xp_next, 2) if xp_next is not None else None,
             "xp_source": xp_source, "xp_reconciled": reconciled, **xp_extra,
+            "xp_started": round(xp_started, 2) if xp_started is not None else None,
             # ROS is deliberately NOT availability-gated: an injury gates the
             # next-3 horizon, not the season (status "u" = departed is the
-            # exception and is filtered out of recommendations entirely).
+            # exception: ros_adj 0, never recommended, always the drop).
             "ros_points": round(ros, 1) if ros is not None else None,
+            "ros_adj": round(ros_adj, 1) if ros_adj is not None else None,
+            "club_moved": club_moved,
+            "expected_minutes": (round(expected_minutes, 1)
+                                 if expected_minutes is not None else None),
+            "minutes_season": minutes_season,
+            "role_factor": round(factor, 3),
             "tier": projection.get("tier"), "confidence": projection.get("confidence"),
         })
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Role overrides (hand-maintained team news)
+# ---------------------------------------------------------------------------
+
+def load_season_panel(path: Path, season: str) -> pd.DataFrame | None:
+    """The season's ``player_gameweeks`` panel for the role signals, or None
+    (with a WARNING — club-move factors are then off) when it is missing or
+    unreadable. Rows of other seasons are dropped."""
+    path = Path(path)
+    if not path.exists():
+        logger.warning("season panel %s missing — club-move role signals off", path.name)
+        return None
+    try:
+        panel = pd.read_parquet(path)
+    except (OSError, ValueError) as exc:   # pyarrow's ArrowInvalid is a ValueError
+        logger.warning("season panel %s unreadable (%s) — club-move role signals off",
+                       path.name, type(exc).__name__)
+        return None
+    return panel[panel["season"] == season] if "season" in panel.columns else panel
+
+
+def load_role_overrides(path: Path) -> list[dict]:
+    """Entries of ``role_overrides.json`` (``{"overrides": [...]}``).
+
+    The file is optional: absent -> ``[]`` silently; unparseable or the wrong
+    shape -> ``[]`` with a WARNING, so a typo never blocks the weekly run.
+
+    Every returned entry carries an ``as_of`` (when the fact was written, for
+    the staleness rule in ``apply_role_overrides``): its own if it has one,
+    else the file's top-level ``as_of`` or ``updated``, else the file's
+    modification time (UTC, ISO). Entries are copies; the file is not touched.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        entries = doc.get("overrides", [])
+        file_as_of = (doc.get("as_of") or doc.get("updated")
+                      or datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat())
+    except (OSError, ValueError, AttributeError) as exc:
+        logger.warning("role overrides %s unreadable (%s) — ignored", path.name, exc)
+        return []
+    if not isinstance(entries, list):
+        logger.warning("role overrides %s: 'overrides' is not a list — ignored", path.name)
+        return []
+    return [{**entry, "as_of": entry.get("as_of") or file_as_of}
+            for entry in entries if isinstance(entry, dict)]
+
+
+def event_deadlines(bootstrap: dict) -> dict[int, datetime]:
+    """Gameweek -> deadline (UTC) from the bootstrap ``events`` (draft
+    ``{"data": [...]}`` shape or a plain list); events without a parseable
+    ``deadline_time`` are left out."""
+    from backend.ml import matchmodel   # local import: matchmodel imports this module
+    events = bootstrap.get("events") or []
+    if isinstance(events, dict):
+        events = events.get("data") or []
+    deadlines = {int(e["id"]): matchmodel._parse_deadline(e.get("deadline_time"))
+                 for e in events if "id" in e}
+    return {gw: deadline for gw, deadline in deadlines.items() if deadline is not None}
+
+
+def _parse_as_of(value: Any) -> datetime | None:
+    """``as_of`` as an aware UTC datetime: an ISO date (read as 00:00 UTC that
+    day, so a fact written on a deadline day counts for that gameweek) or an
+    ISO datetime (naive = UTC). None when absent or unparseable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def override_window_end(as_of: Any, deadlines: dict[int, datetime]) -> int | None:
+    """The last gameweek an undated override entry may describe: the first
+    gameweek whose deadline falls after ``as_of``. None when ``as_of`` is
+    unknown or no deadline in ``deadlines`` follows it."""
+    written = _parse_as_of(as_of)
+    if written is None:
+        return None
+    after = [gw for gw, deadline in deadlines.items() if deadline > written]
+    return min(after) if after else None
+
+
+def _override_lifetime(entry: dict, target_gw: int | None,
+                       deadlines: dict[int, datetime] | None) -> str:
+    """``"live"``, ``"expired"`` or ``"stale"`` for ``entry`` at ``target_gw``.
+
+    * ``valid_through_gw`` (explicit): stale once ``target_gw`` is past it.
+    * ``return_gw``: expired once ``return_gw <= target_gw`` (the absence it
+      described is over).
+    * Neither: the fact describes the gameweek it was written for and no
+      other — live only while ``target_gw <= override_window_end(as_of)``.
+      Unknown ``as_of``, no calendar, or no ``target_gw`` -> stale (an entry
+      that cannot be shown to be current is not applied).
+
+    Raises ValueError/TypeError on a non-numeric ``valid_through_gw`` /
+    ``return_gw``.
+    """
+    valid_through = entry.get("valid_through_gw")
+    return_gw = entry.get("return_gw")
+    if valid_through is not None:
+        if target_gw is None or target_gw > int(valid_through):
+            return "stale"
+    if return_gw is not None:
+        return "expired" if target_gw is not None and int(return_gw) <= target_gw else "live"
+    if valid_through is not None:
+        return "live"
+    window_end = override_window_end(entry.get("as_of"), deadlines or {})
+    if target_gw is None or window_end is None or target_gw > window_end:
+        return "stale"
+    return "live"
+
+
+def _override_p_start(entry: dict, target_gw: int | None) -> float | None:
+    """The start probability an override entry asserts for ``target_gw``.
+
+    A ``return_gw`` after the target means "out until then": 0.0 whatever
+    ``p_start`` says. Otherwise ``p_start`` clipped to [0, 1], or None for a
+    fact-only entry. Raises ValueError/TypeError on a non-numeric value.
+    """
+    return_gw = entry.get("return_gw")
+    if return_gw is not None and target_gw is not None and int(return_gw) > target_gw:
+        return 0.0
+    if entry.get("p_start") is None:
+        return None
+    return max(0.0, min(1.0, float(entry["p_start"])))
+
+
+def _overridden_xp_next(p_override: float, xp_started, xp_next, model_p_start,
+                        name: str):
+    """Next-GW xP once ``p_start`` is overridden to ``p_override``.
+
+    A player with no value at all (no ``xp_next``, no ``xp_started``) stays
+    unvalued. Otherwise a ruled-out player (``p_override == 0``) is worth 0
+    whatever else is known, and the conditional ``xp_started`` gives
+    ``p × xp_started``. An xP file written before S3 has no ``xp_started``:
+    the model's own value is rescaled by ``p_override / model_p_start``,
+    which keeps its cameo term, so it is approximate. With no usable
+    ``p_start`` either, the value is left as it was, with a warning.
+    """
+    if pd.isna(xp_next) and pd.isna(xp_started):
+        return xp_next
+    if p_override == 0:
+        return 0.0
+    if pd.notna(xp_started):
+        return round(p_override * float(xp_started), 2)
+    if pd.notna(xp_next) and pd.notna(model_p_start) and float(model_p_start) > 0:
+        return round(float(xp_next) * p_override / float(model_p_start), 2)
+    logger.warning("role override for %s: no xp_started or model p_start to rescale "
+                   "by — xp_next left unchanged", name)
+    return xp_next
+
+
+def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
+                         target_gw: int | None,
+                         deadlines: dict[int, datetime] | None = None,
+                         ) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+    """Apply ``role_overrides.json`` entries to the next gameweek's values.
+
+    Entry: ``{"player": web_name, "team": short name, "fact": str,
+    "p_start": 0..1, "return_gw": int, "valid_through_gw": int,
+    "as_of": ISO date/datetime, "code": int}`` — only ``player`` +
+    ``team`` (or ``code``, which wins when present, for the rare same-name
+    team-mates; an int or a numeric string) are needed to match; an entry must match exactly one player.
+
+    * ``p_start`` replaces the model's: ``xp_next = p_start x xp_started``
+      (``xp_started`` = value if he starts every fixture; the substitute-cameo
+      term is dropped, a deliberate simplification — an override says "this
+      is his start chance", not how often he comes off the bench). ``p_start``
+      is set to the override and the now-stale ``xp_floor``/``xp_ceiling`` are
+      cleared. A player with no value at all (``xp_started`` null) keeps a
+      null ``xp_next``. ``next3_xp`` and ROS are not touched.
+    * ``return_gw`` after ``target_gw`` forces ``p_start`` 0 (out until then).
+      Once ``return_gw <= target_gw`` the entry has EXPIRED and is ignored —
+      its ``p_start`` described the absence, not the player after it.
+    * Staleness (team news goes off): an entry with ``valid_through_gw``
+      applies through that gameweek. An entry with neither ``return_gw`` nor
+      ``valid_through_gw`` applies only up to the first gameweek whose
+      deadline (``deadlines``, see ``event_deadlines``) falls after its
+      ``as_of`` (``load_role_overrides`` fills that from the file's
+      ``as_of``/``updated`` or mtime). Past that it is STALE and ignored — a
+      "rotation risk" note written for GW2 says nothing about GW6. Without
+      ``deadlines`` every such entry is stale.
+    * The availability gate wins: a matched player whose ``availability`` is
+      0 (status u/i/s, or a stated 0% chance) is BLOCKED — his row is left
+      untouched. A start chance written weeks ago must not resurrect a player
+      the live feed says cannot play.
+
+    Returns ``(players copy, report)``. The copy gains ``role_override`` (the
+    entry's ``fact``, None when not overridden) and ``role_override_p_start``.
+    The report lists entry names under ``overrides_applied``,
+    ``overrides_unmatched`` (no single match, or an invalid ``p_start`` /
+    gameweek), ``overrides_expired``, ``overrides_stale`` and
+    ``overrides_blocked``; nothing raises on a bad entry.
+    """
+    out = players.copy()
+    out["role_override"] = None
+    out["role_override_p_start"] = float("nan")
+    report: dict[str, list[str]] = {key: [] for key in OVERRIDE_REPORT_KEYS}
+    for entry in overrides:
+        name = str(entry.get("player") or entry.get("code") or "?")
+        try:
+            lifetime = _override_lifetime(entry, target_gw, deadlines)
+            p_override = _override_p_start(entry, target_gw) if lifetime == "live" else None
+            # A hand-edited JSON may quote the code ("123"): match on the integer.
+            code = int(entry["code"]) if entry.get("code") is not None else None
+        except (TypeError, ValueError):
+            logger.warning("role override for %s has a non-numeric p_start/return_gw/"
+                           "valid_through_gw/code — skipped", name)
+            report["overrides_unmatched"].append(name)
+            continue
+        if lifetime != "live":
+            report[f"overrides_{lifetime}"].append(name)
+            continue
+        if code is not None:
+            matched = out.index[pd.to_numeric(out["code"], errors="coerce") == code]
+        else:
+            matched = out.index[(out["web_name"] == entry.get("player"))
+                                & (out["team"] == entry.get("team"))]
+        if len(matched) != 1:
+            logger.warning("role override for %s (%s) matches %d players — skipped",
+                           name, entry.get("team"), len(matched))
+            report["overrides_unmatched"].append(name)
+            continue
+        row = matched[0]
+        if out.at[row, "availability"] == 0:
+            report["overrides_blocked"].append(name)
+            continue
+        out.at[row, "role_override"] = str(entry.get("fact") or "")
+        if p_override is not None:
+            model_p_start = out.at[row, "p_start"]
+            out.at[row, "role_override_p_start"] = p_override
+            out.at[row, "p_start"] = p_override
+            out.at[row, "xp_floor"] = out.at[row, "xp_ceiling"] = float("nan")
+            out.at[row, "xp_next"] = _overridden_xp_next(
+                p_override, out.at[row, "xp_started"], out.at[row, "xp_next"],
+                model_p_start, name)
+        report["overrides_applied"].append(name)
+    if report["overrides_stale"]:
+        logger.warning("role overrides: %d stale entr%s ignored for GW%s (no return_gw/"
+                       "valid_through_gw and written before an earlier deadline) — "
+                       "prune or re-date them: %s", len(report["overrides_stale"]),
+                       "y" if len(report["overrides_stale"]) == 1 else "ies", target_gw,
+                       ", ".join(report["overrides_stale"]))
+    return out, report
 
 
 # ---------------------------------------------------------------------------
@@ -413,13 +797,65 @@ def best_xi(squad: pd.DataFrame, value_col: str = "next3_xp") -> tuple[pd.DataFr
 # Recommendations
 # ---------------------------------------------------------------------------
 
+def _none_if_nan(value: Any) -> Any:
+    """None for a missing table cell (NaN / None), else the value unchanged."""
+    return None if pd.isna(value) else value
+
+
+def _flag_or_none(value: Any) -> bool | None:
+    """A plain bool (JSON-safe, never a numpy scalar), or None when unknown."""
+    return None if pd.isna(value) else bool(value)
+
+
+def _drop_tiebreak(rank_by: str) -> str:
+    """Third drop-order key: the short-horizon value the ranking is built on."""
+    return "next3_xp" if rank_by == "legacy" else "xp_next"
+
+
+def drop_order(squad: pd.DataFrame, tiebreak: str = "xp_next") -> pd.DataFrame:
+    """Squad players who may be dropped, most droppable first.
+
+    Sort key ``(status != "u", ros_adj, tiebreak)``: a departed player is
+    always first, then the lowest role-adjusted season value. Only players
+    with a ROS projection are droppable — an unprojected teammate is unknown,
+    not worthless — except departed ones, who are droppable regardless.
+    """
+    droppable = squad[squad["ros_points"].notna() | (squad["status"] == "u")]
+    return (droppable.assign(_kept=droppable["status"] != "u")
+            .sort_values(["_kept", "ros_adj", tiebreak])
+            .drop(columns="_kept"))
+
+
+def drop_candidates(squad: pd.DataFrame, tiebreak: str = "xp_next",
+                    per_position: int = DROP_CANDIDATES_PER_POSITION) -> list[dict[str, Any]]:
+    """The first ``per_position`` of ``drop_order`` at each position, so the
+    drop pick behind every recommendation can be audited (and overruled)."""
+    rows = []
+    for position in POSITIONS.values():
+        ordered = drop_order(squad[squad["position"] == position], tiebreak)
+        for _, p in ordered.head(per_position).iterrows():
+            rows.append({
+                "web_name": p["web_name"], "position": position, "team": p["team"],
+                "status": p["status"],
+                "ros_points": _none_if_nan(p["ros_points"]), "ros_adj": _none_if_nan(p["ros_adj"]),
+                "xp_next": _none_if_nan(p["xp_next"]),
+                "club_moved": _flag_or_none(p["club_moved"]),
+                "expected_minutes": _none_if_nan(p["expected_minutes"]),
+            })
+    return rows
+
+
 def recommend(players: pd.DataFrame, squad: pd.DataFrame,
               top_n: int = 10, *, rank_by: str = "next1") -> list[dict[str, Any]]:
     """Ranked add/drop pairs with the short-vs-long balance made explicit.
 
-    For each free agent, pair with the weakest same-position player in my
-    squad (by ROS). ``next1_gain`` = next-GW xP of the add minus the drop,
-    ``season_gain`` = ROS difference. Ranking is by ``next1_gain`` descending;
+    For each free agent, pair with the first same-position player of
+    ``drop_order`` (a departed squad player, else the lowest ``ros_adj``).
+    ``next1_gain`` = next-GW xP of the add minus the drop, ``season_gain`` =
+    ``ros_adj`` difference (role-adjusted ROS; a departed drop counts as 0).
+    Each rec carries the add's role signals (``club_moved``,
+    ``add_expected_minutes``, ``add_role_factor``, ``add_ros_adj``) next to
+    the raw ``add_ros``. Ranking is by ``next1_gain`` descending;
     ``hold`` recs (no next-GW gain, better over the season) come after every
     positive-next1 rec, ordered by ``season_gain``. The label encodes the
     balance so a streamer is never confused with a season upgrade. A free
@@ -435,15 +871,18 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
     """
     # Free agents by definition have no owner, so my squad is already excluded.
     pool = players[players["is_free_agent"] & (players["status"] != "u")]
+    # Drop candidates come only from players the model can value. An
+    # unprojected teammate (under the minutes floor last season, promoted,
+    # or newly signed) is NOT worth zero — it is unknown, and auto-dropping
+    # a returning star on missing data is the one unrecoverable mistake.
+    # Those players go in the plan's unprojected_squad section instead.
+    # (A departed teammate is the exception: see drop_order.)
+    droppable = {position: drop_order(squad[squad["position"] == position],
+                                      _drop_tiebreak(rank_by))
+                 for position in POSITIONS.values()}
     recs: list[dict[str, Any]] = []
     for _, fa in pool.iterrows():
-        # Drop candidates come only from players the model can value. An
-        # unprojected teammate (under the minutes floor last season, promoted,
-        # or newly signed) is NOT worth zero — it is unknown, and auto-dropping
-        # a returning star on missing data is the one unrecoverable mistake.
-        # Those players go in the plan's unprojected_squad section instead.
-        mine = squad[(squad["position"] == fa["position"])
-                     & squad["ros_points"].notna()]
+        mine = droppable.get(fa["position"], squad.iloc[0:0])
         # A free agent with no ROS projection (promoted club, new signing,
         # under last season's minutes floor) is still rankable on the next GW
         # when the match model values him: his season gain is unknown — it
@@ -454,7 +893,7 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
                       and fa["xp_source"] == "model")
         if mine.empty or (pd.isna(fa["ros_points"]) and not model_only):
             continue  # cannot recommend a player we cannot value
-        drop = mine.sort_values(["ros_points", "next3_xp"]).iloc[0]
+        drop = mine.iloc[0]
 
         def _v(x):
             return 0.0 if pd.isna(x) else float(x)
@@ -463,7 +902,7 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
         # next3_xp is heuristic (ros/38 based), so a model-only add has none:
         # the gain is unknown, not "0 minus the drop".
         next3_gain = None if model_only else _v(fa["next3_xp"]) - _v(drop["next3_xp"])
-        season_gain = 0.0 if model_only else _v(fa["ros_points"]) - _v(drop["ros_points"])
+        season_gain = 0.0 if model_only else _v(fa["ros_adj"]) - _v(drop["ros_adj"])
         short_gain = next3_gain if rank_by == "legacy" else next1_gain
         if short_gain <= 0 and season_gain <= 0:
             continue
@@ -488,6 +927,15 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             "drivers": fa["drivers"], "opponents": fa["opponents"],
             "add_next3_xp": fa["next3_xp"], "add_ros": fa["ros_points"],
             "drop_next3_xp": drop["next3_xp"], "drop_ros": drop["ros_points"],
+            "add_ros_adj": _none_if_nan(fa["ros_adj"]),
+            "drop_ros_adj": _none_if_nan(drop["ros_adj"]),
+            "drop_status": drop["status"],
+            "club_moved": _flag_or_none(fa["club_moved"]),
+            "add_expected_minutes": _none_if_nan(fa["expected_minutes"]),
+            "add_minutes_season": (None if pd.isna(fa["minutes_season"])
+                                   else int(fa["minutes_season"])),
+            "add_role_factor": float(fa["role_factor"]),
+            "add_role_override": fa.get("role_override"),
             "availability": fa["status"], "news": fa["news"],
             "confidence": fa["confidence"],
         })
@@ -518,33 +966,43 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
          projections_path: Path, entry_id: int, top_n: int = 10, *,
          fixtures_by_event: dict | None = None,
          neutral_availability: bool = False,
-         gw_xp: pd.DataFrame | None = None) -> dict[str, Any]:
+         gw_xp: pd.DataFrame | None = None,
+         season_panel: pd.DataFrame | None = None,
+         role_overrides: list[dict] | None = None) -> dict[str, Any]:
     """Pure waiver plan: players table, my squad, best-XI xP, ranked recs.
 
     ``gw_xp`` (optional) is the match model's next-GW frame; see
     ``build_player_table``. Without it the heuristic scorer applies and
     ``recommend`` keeps its pre-xP ranking (``rank_by="legacy"``).
+    ``season_panel`` (optional) switches on the club-move role signals.
+    ``role_overrides`` (optional, entries of ``role_overrides.json``) are
+    applied for the bootstrap's next event; see ``apply_role_overrides``.
 
     Free agents are the element-status rows with no owner. Returns
     ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``recommendations``,
-    ``unprojected_squad`` and ``xp_reconciled`` (how many model rows were
-    zeroed because the player is now ruled out; see ``build_player_table``).
-    No I/O beyond reading ``projections_path``.
+    ``drop_candidates``, ``unprojected_squad``, the ``OVERRIDE_REPORT_KEYS``
+    name lists and ``xp_reconciled`` (how many model rows were zeroed because
+    the player is now ruled out; see ``build_player_table``). No I/O beyond
+    reading ``projections_path``.
     """
     players = build_player_table(
         bootstrap, seasons, projections_path,
         fixtures_by_event=fixtures_by_event, neutral_availability=neutral_availability,
-        gw_xp=gw_xp)
+        gw_xp=gw_xp, season_panel=season_panel)
+    players, override_report = apply_role_overrides(
+        players, role_overrides or [], next_event(bootstrap), event_deadlines(bootstrap))
     free = {row["element"] for row in element_status.get("element_status", [])
             if row.get("owner") is None}
     players["is_free_agent"] = players["element"].isin(free)
     squad = my_squad(players, element_status, entry_id)
     _, xi_total = best_xi(squad)
+    rank_by = "next1" if gw_xp is not None else "legacy"
     return {
         "players": players, "squad": squad, "xi_next3_xp": xi_total,
-        "recommendations": recommend(players, squad, top_n,
-                                     rank_by="next1" if gw_xp is not None else "legacy"),
+        "recommendations": recommend(players, squad, top_n, rank_by=rank_by),
+        "drop_candidates": drop_candidates(squad, _drop_tiebreak(rank_by)),
         "unprojected_squad": unprojected_squad(squad),
+        **override_report,
         "xp_reconciled": int(players["xp_reconciled"].sum()),
     }
 
@@ -585,9 +1043,13 @@ def main(argv: list[str] | None = None) -> int:
     ml_dir = args.data_root / "derived" / args.season / "ml"
 
     gw_xp, scorer_meta = resolve_scorer(args.scorer, bootstrap, ml_dir)
+    season_panel = load_season_panel(ml_dir / "player_gameweeks.parquet", args.season)
+    minutes_through_gw = (int(season_panel["gw"].max())
+                          if season_panel is not None and not season_panel.empty else None)
     result = plan(bootstrap, element_status, seasons,
                   args.data_root / "derived/ml/projections_2627.json",
-                  entry, args.top, gw_xp=gw_xp)
+                  entry, args.top, gw_xp=gw_xp, season_panel=season_panel,
+                  role_overrides=load_role_overrides(ml_dir / "role_overrides.json"))
     squad = result["squad"]
     xi, xi_total = best_xi(squad)
     bench = squad[~squad["element"].isin(xi["element"])]
@@ -614,23 +1076,48 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {p['position']:<4} {p['web_name']:<20} {p['team']:<4}"
                   f" use player_card for their history{flag}")
 
+    overrides = {key: result[key] for key in OVERRIDE_REPORT_KEYS}
+    print("\n== ROLE OVERRIDES (role_overrides.json, next GW only) ==")
+    for key, names in overrides.items():
+        print(f"  {key}: {', '.join(names) or '-'}")
+
+    def _num(x, width=6):
+        return f"{'?':>{width}}" if x is None else f"{x:>{width}}"
+
+    def _moved(x):
+        return "?" if x is None else ("yes" if x else "no")
+
+    print(f"\n== DROP CANDIDATES (drop_candidates: top {DROP_CANDIDATES_PER_POSITION} per "
+          f"position; minutes through GW{minutes_through_gw}) ==")
+    print("   pos  player               team st  ros_adj    ROS xp_next moved exp_min")
+    for c in result["drop_candidates"]:
+        print(f"  {c['position']:<4} {c['web_name']:<20} {c['team']:<4} {c['status']:<2} "
+              f"{_num(c['ros_adj'], 8)} {_num(c['ros_points'])} {_num(c['xp_next'], 7)} "
+              f"{_moved(c['club_moved']):<5} {_num(c['expected_minutes'], 7)}")
+
     recs = result["recommendations"]
     fallback = (f" — FALLBACK: {scorer_meta['xp_fallback_reason']}"
                 if scorer_meta["xp_fallback"] else "")
     print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}, scorer {scorer_meta['scorer']}{fallback}) ==")
-    print("   label    add                    ->  drop                next1  next3   season  src")
+    print("   label    add                    ->  drop                next1  next3   season"
+          "  src        exp_min moved")
     for r in recs:
         flag = f"  [{r['availability']}] {r['news']}" if r["availability"] != "a" else ""
+        if r["add_role_override"] is not None:
+            flag += f"  (override: {r['add_role_override']})"
         season = "?" if r["season_unknown"] else f"{r['season_gain']:+.1f}"
         next3 = "?" if r["next3_gain"] is None else f"{r['next3_gain']:+.1f}"
         print(f"  {r['label']:<8} {r['add']:<18}({r['position']}) -> {r['drop']:<18} "
               f"{r['next1_gain']:>+6.2f} {next3:>6} {season:>7}"
-              f"  {r['add_xp_source']}{flag}")
+              f"  {r['add_xp_source']:<9} {_num(r['add_expected_minutes'], 8)} "
+              f"{_moved(r['club_moved'])}{flag}")
 
     out = args.out or ml_dir / "waiver_plan.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(jsonutil.dumps_strict(
         {**scorer_meta, "xi_next3_xp": xi_total, "recommendations": recs,
+         "drop_candidates": result["drop_candidates"],
+         "minutes_through_gw": minutes_through_gw, **overrides,
          "unprojected_squad": unknown, "xp_reconciled": result["xp_reconciled"]}, indent=1))
     logger.info("wrote %s", out)
     return 0
