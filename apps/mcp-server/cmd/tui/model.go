@@ -68,18 +68,24 @@ type railItem struct {
 	// Wire recommendations carry the full trade math for the detail view.
 	Drop       string
 	SeasonGain float64
-	// SeasonUnknown: the add has no rest-of-season projection (promoted
-	// club, new signing), so SeasonGain/AddROS are not numbers to quote.
-	SeasonUnknown bool
+	// SeasonUnknown: the add or the drop has no rest-of-season projection
+	// (promoted club, new signing; a drop valued by the match model only),
+	// so SeasonGain and the missing side's ROS are not numbers to quote.
+	// AddROSUnknown / DropROSUnknown say which side (see seasonUnknownSides).
+	SeasonUnknown  bool
+	AddROSUnknown  bool
+	DropROSUnknown bool
 	// RankBy: waiver_plan.json's top-level rank_by (next1 / next3 / ros /
 	// legacy; "" in files written before it existed) — the horizon a
 	// season-unknown add was recommended on.
 	RankBy    string
 	Next3Gain float64
-	// Next3Unknown: the add has no 3-GW value (no match-model horizon and no
-	// projection to build one from), so Next3Gain/AddNext3 are not numbers
-	// to quote.
-	Next3Unknown bool
+	// Next3Unknown: the add or the drop has no 3-GW value (no match-model
+	// horizon and no projection to build one from), so Next3Gain is not a
+	// number to quote. Next3DropUnknown: the drop is the missing side, and
+	// AddNext3 is still the add's real value.
+	Next3Unknown     bool
+	Next3DropUnknown bool
 	// Next3Model: the 3-GW value is the match model's horizon (fixtures of
 	// the next 3 GWs, form frozen at this one), not the projection heuristic.
 	Next3Model bool
@@ -1006,16 +1012,22 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			Label         string  `json:"label"`
 			SeasonGain    float64 `json:"season_gain"` // null when season_unknown
 			SeasonUnknown bool    `json:"season_unknown"`
-			AddROS        float64 `json:"add_ros"`
-			DropROS       float64 `json:"drop_ros"`
+			// Which side lacks a ROS projection. drop_ros_unknown is
+			// absent (false) in files written before a model-only drop
+			// existed; add_ros_unknown is absent (nil) in files written
+			// before it, where an unknown season gain is the add's.
+			AddROSUnknown  *bool   `json:"add_ros_unknown"`
+			DropROSUnknown bool    `json:"drop_ros_unknown"`
+			AddROS         float64 `json:"add_ros"`
+			DropROS        float64 `json:"drop_ros"`
 			// Role-adjusted ROS (club-move factor; 0 for a departed drop):
 			// season_gain is their gap. Absent in files written before
 			// the role signals, where the raw ROS pair is the gap.
 			AddROSAdj  *float64 `json:"add_ros_adj"`
 			DropROSAdj *float64 `json:"drop_ros_adj"`
-			// Null when the add has no 3-GW value at all — no match-model
-			// horizon and no ROS projection for the heuristic — so there
-			// is nothing to compare (not a zero).
+			// Null when the add or the drop has no 3-GW value at all — no
+			// match-model horizon and no ROS projection for the heuristic —
+			// so there is nothing to compare (not a zero).
 			Next3Gain *float64 `json:"next3_gain"`
 			AddNext3  *float64 `json:"add_next3_xp"`
 			// "model" when add_next3_xp is the match model's 3-GW horizon;
@@ -1042,16 +1054,22 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			if r.DropROSAdj != nil {
 				dropROS = *r.DropROSAdj
 			}
+			addUnknown, dropUnknown := seasonUnknownSides(r.SeasonUnknown, r.AddROSUnknown, r.DropROSUnknown)
 			item := railItem{
 				Glyph: "↑", Name: r.Add, Team: r.AddTeam, Note: note,
 				Drop: r.Drop, SeasonGain: r.SeasonGain, SeasonUnknown: r.SeasonUnknown,
-				RankBy:       plan.RankBy,
-				Next3Unknown: r.Next3Gain == nil || r.AddNext3 == nil,
-				Next3Model:   r.AddNext3Source == "model",
-				AddROS:       addROS, DropROS: dropROS,
+				AddROSUnknown: addUnknown, DropROSUnknown: dropUnknown,
+				RankBy:           plan.RankBy,
+				Next3Unknown:     r.Next3Gain == nil || r.AddNext3 == nil,
+				Next3DropUnknown: r.Next3Gain == nil && r.AddNext3 != nil,
+				Next3Model:       r.AddNext3Source == "model",
+				AddROS:           addROS, DropROS: dropROS,
 				Confidence: r.Confidence, News: r.News}
+			if r.AddNext3 != nil {
+				item.AddNext3 = *r.AddNext3
+			}
 			if !item.Next3Unknown {
-				item.Next3Gain, item.AddNext3 = *r.Next3Gain, *r.AddNext3
+				item.Next3Gain = *r.Next3Gain
 			}
 			snap.NeedsYou = append(snap.NeedsYou, item)
 		}
@@ -1435,6 +1453,25 @@ func attentionIndex(codes []string) int {
 		}
 	}
 	return 0
+}
+
+// seasonUnknownSides says which side of a season-unknown rec lacks a ROS
+// projection. A file without add_ros_unknown (addFlag nil) predates it: an
+// unknown season gain there is the add's unless drop_ros_unknown says the
+// drop's. A season-unknown rec always names at least one side.
+func seasonUnknownSides(seasonUnknown bool, addFlag *bool, dropUnknown bool) (addUnknown, dropSide bool) {
+	if !seasonUnknown {
+		return false, false
+	}
+	if addFlag != nil {
+		addUnknown = *addFlag
+	} else {
+		addUnknown = !dropUnknown
+	}
+	if !addUnknown && !dropUnknown {
+		addUnknown = true
+	}
+	return addUnknown, dropUnknown
 }
 
 // attentionItem turns one my_week attention entry into a needs-you rail item,

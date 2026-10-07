@@ -361,6 +361,7 @@ def test_model_valued_free_agent_without_ros_is_ranked_as_stream(tmp_path):
     noproj = next(r for r in recs if r["add"] == "NoProj")
     assert noproj["add_xp_source"] == "model" and pd.isna(noproj["add_ros"])
     assert noproj["season_gain"] is None and noproj["season_unknown"] is True
+    assert noproj["add_ros_unknown"] is True and noproj["drop_ros_unknown"] is False
     assert noproj["label"] == "stream"
     assert noproj["next1_gain"] > 0 and noproj["drop"] == "MyWeakFWD"
     assert recs[0]["add"] == "NoProj"          # ranked on next1_gain like anyone else
@@ -1400,6 +1401,7 @@ def test_unprojected_zero_xp_squad_player_is_now_the_drop(tmp_path):
     assert free_a["next1_gain"] == pytest.approx(5.0)
     # his season value is unknown, so the season gain is too — never "add - 0"
     assert free_a["drop_ros_unknown"] is True and free_a["season_unknown"] is True
+    assert free_a["add_ros_unknown"] is False      # FreeA is projected: the drop is the gap
     assert free_a["season_gain"] is None and free_a["label"] == "stream"
     assert free_a["drop_xp_source"] == "model"
     defs = [c["web_name"] for c in result["drop_candidates"] if c["position"] == "DEF"]

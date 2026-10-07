@@ -721,3 +721,74 @@ func TestSeasonUnknownWireRecNamesItsRankingHorizon(t *testing.T) {
 		}
 	}
 }
+
+// A ROS-projected add replacing a model-only drop is season-unknown because
+// of the drop: the detail must name the drop, not blame the add. A drop
+// without a 3-GW value leaves the add's real 3-GW value quotable but no
+// gain. A file without add_ros_unknown keeps the add-side wording.
+func TestSeasonUnknownDetailNamesTheSideWithoutROS(t *testing.T) {
+	derived := t.TempDir()
+	write(t, filepath.Join(derived, "ml/waiver_plan.json"), map[string]any{
+		"rank_by": "next1",
+		"recommendations": []map[string]any{
+			{"add": "FreeA", "add_team": "ARS", "drop": "ModelOnly", "label": "stream",
+				"season_gain": nil, "season_unknown": true, "add_ros": 110.0, "drop_ros": nil,
+				"add_ros_unknown": false, "drop_ros_unknown": true,
+				"next3_gain": nil, "add_next3_xp": 8.7, "drop_next3_xp": nil},
+			{"add": "Promoted", "add_team": "HUL", "drop": "ModelOnly", "label": "stream",
+				"season_gain": nil, "season_unknown": true, "add_ros": nil, "drop_ros": nil,
+				"add_ros_unknown": true, "drop_ros_unknown": true},
+			{"add": "OldFile", "add_team": "WOL", "drop": "Weak", "label": "stream",
+				"season_gain": nil, "season_unknown": true, "add_ros": nil, "drop_ros": 40.0},
+		},
+	})
+	m := newModel(fixtureDir(t), derived, 5, 501, 0)
+	m.w = 160
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	detail := func(sel int) string {
+		m.sugSel = sel
+		return strings.Join(strings.Fields(m.sugDetailBody(120)), " ")
+	}
+	body := detail(0)
+	if !strings.Contains(body, "No rest-of-season projection for ModelOnly (valued by the match model only)") ||
+		strings.Contains(body, "No rest-of-season projection for FreeA") {
+		t.Fatalf("drop-side season gap must name the drop:\n%s", body)
+	}
+	if !strings.Contains(body, "FreeA projects 8.7 xP, but ModelOnly has no match-model horizon") ||
+		strings.Contains(body, "Next 3 GWs: unavailable") {
+		t.Fatalf("drop-side 3-GW gap must name the drop:\n%s", body)
+	}
+	if body := detail(1); !strings.Contains(body, "for Promoted (promoted club") ||
+		!strings.Contains(body, "or for ModelOnly (valued by the match model only)") {
+		t.Fatalf("both sides without ROS:\n%s", body)
+	}
+	if body := detail(2); !strings.Contains(body, "No rest-of-season projection for OldFile (promoted club") {
+		t.Fatalf("older file keeps the add-side wording:\n%s", body)
+	}
+}
+
+func TestSeasonUnknownSides(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name                 string
+		season               bool
+		add                  *bool
+		drop                 bool
+		wantAdd, wantDropOut bool
+	}{
+		{"known season", false, nil, false, false, false},
+		{"old file", true, nil, false, true, false},
+		{"drop only, no add flag", true, nil, true, false, true},
+		{"drop only", true, &no, true, false, true},
+		{"both", true, &yes, true, true, true},
+		{"flags contradict the season flag", true, &no, false, true, false},
+	}
+	for _, c := range cases {
+		gotAdd, gotDrop := seasonUnknownSides(c.season, c.add, c.drop)
+		if gotAdd != c.wantAdd || gotDrop != c.wantDropOut {
+			t.Errorf("%s: got (%v, %v), want (%v, %v)", c.name, gotAdd, gotDrop, c.wantAdd, c.wantDropOut)
+		}
+	}
+}

@@ -1085,7 +1085,8 @@ def ranked_recs(players: pd.DataFrame, squad: pd.DataFrame,
       free agent without a ROS projection — such a player is ranked only
       when the match model values him (next GW or horizon) — or for a drop
       without one (``drop_ros_unknown``); the unknown season gain counts as
-      0 for the label and the ordering.
+      0 for the label and the ordering. ``add_ros_unknown`` /
+      ``drop_ros_unknown`` say which side lacks the projection.
 
     Each rec also carries the add's role signals (``club_moved``,
     ``add_expected_minutes``, ``add_role_factor``, ``add_ros_adj``) next to
@@ -1143,6 +1144,7 @@ def ranked_recs(players: pd.DataFrame, squad: pd.DataFrame,
         # A drop with no ROS projection (valued by the match model only) has
         # an unknown season value: the season gain is unknown, not "add - 0".
         drop_ros_unknown = bool(pd.isna(drop["ros_adj"]))
+        add_ros_unknown = bool(pd.isna(fa["ros_points"]))  # == model_only here
         season_unknown = model_only or drop_ros_unknown
         season_gain = 0.0 if season_unknown else _v(fa["ros_adj"]) - _v(drop["ros_adj"])
         short_gain = next1_gain if rank_by == "next1" else (next3_gain or 0.0)
@@ -1166,6 +1168,7 @@ def ranked_recs(players: pd.DataFrame, squad: pd.DataFrame,
                            else round(next3_gain, 1 if rank_by == "legacy" else 2)),
             "season_gain": None if season_unknown else round(season_gain, 1),
             "season_unknown": season_unknown,
+            "add_ros_unknown": add_ros_unknown,
             "drop_ros_unknown": drop_ros_unknown,
             "label": label,
             "add_xp_next": fa["xp_next"], "drop_xp_next": drop["xp_next"],
