@@ -6,8 +6,9 @@ package main
 //
 //	trade_check  <- data/derived/<season>/ml/player_values.json (match-model xP
 //	                + role-adjusted ROS; Python backend.ml.player_values), checked
-//	                fresh against the season bootstrap's next GW; falls back to
-//	                projections (season value + VOR) with value_source "heuristic"
+//	                fresh against the season bootstrap's next GW and last finished
+//	                GW (panel_max_gw); falls back to projections (season value +
+//	                VOR) with value_source "heuristic"
 //	league_pulse <- league details + transactions + game meta + ownership events
 
 import (
@@ -120,10 +121,24 @@ func planningEvent(cal bootstrapCalendar, now time.Time) int {
 	return 0
 }
 
+// lastFinishedEvent is the highest finished event id in the bootstrap, 0
+// before GW1 finishes (Python: max(finished_gameweeks(bootstrap), default=0)).
+func lastFinishedEvent(cal bootstrapCalendar) int {
+	last := 0
+	for _, e := range cal.Events.Data {
+		if e.Finished && e.ID > last {
+			last = e.ID
+		}
+	}
+	return last
+}
+
 // loadPlayerValues returns the model values for the season, or (nil, reason)
 // when trade_check must fall back to the heuristic: the file is missing or
-// unreadable, its gw is not the bootstrap's next gameweek (stale), or it was
-// itself built without the match model.
+// unreadable, its gw is not the bootstrap's next gameweek (stale), its
+// panel_max_gw is not the bootstrap's last finished gameweek (stale panel —
+// the same contract as Python waiver.read_gw_xp), or it was itself built
+// without the match model.
 func loadPlayerValues(cfg ServerConfig, season string, now time.Time) (*playerValuesDoc, string) {
 	path := filepath.Join(cfg.derivedDir(season), "ml/player_values.json")
 	var doc playerValuesDoc
@@ -140,6 +155,16 @@ func loadPlayerValues(cfg ServerConfig, season string, now time.Time) (*playerVa
 	}
 	if doc.GW != next {
 		return nil, fmt.Sprintf("player_values.json is stale: built for GW%d, bootstrap's next GW is %d — run make derive", doc.GW, next)
+	}
+	// A GW N export built mid-GW N-1 trains on a panel through N-2; once N-1
+	// finishes that panel is a gameweek behind and the values must be rebuilt.
+	lastFinished := lastFinishedEvent(cal)
+	if doc.PanelMaxGW == nil {
+		return nil, "player_values.json has no panel_max_gw (built before the panel check) — run make derive"
+	}
+	if *doc.PanelMaxGW != lastFinished {
+		return nil, fmt.Sprintf("player_values.json is stale: trained on a panel through GW%d, but the last finished GW is %d (panel not refreshed) — run make derive",
+			*doc.PanelMaxGW, lastFinished)
 	}
 	if doc.XpFallback || doc.Scorer != "model" {
 		reason := "unknown"

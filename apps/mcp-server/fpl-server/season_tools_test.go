@@ -58,6 +58,7 @@ func writeTradeFixtures(t *testing.T, cfg ServerConfig, gw int) {
 	t.Helper()
 	writeFixture(t, filepath.Join(cfg.RawRoot, "2026-27/bootstrap/bootstrap-static.json"), map[string]any{
 		"events": map[string]any{"current": 6, "next": 7, "data": []map[string]any{
+			{"id": 5, "finished": true, "deadline_time": "2026-09-26T10:00:00Z"},
 			{"id": 6, "finished": false, "deadline_time": "2026-10-03T10:00:00Z"},
 			{"id": 7, "finished": false, "deadline_time": "2026-10-17T10:00:00Z"},
 		}},
@@ -139,6 +140,49 @@ func TestTradeCheckFallsBackWhenValuesStaleOrUnverifiable(t *testing.T) {
 	res, _, _ = evaluateTrade(cfg2, TradeCheckArgs{Give: []string{"Beta"}, Get: []string{"Alpha"}}, tradeNow)
 	if text := resultText(t, res); !strings.Contains(text, "no upcoming gameweek") {
 		t.Fatalf("expected season-over fallback reason: %s", text)
+	}
+}
+
+func TestTradeCheckRejectsStalePanel(t *testing.T) {
+	cfg := fixtureConfig(t)
+	writeTradeFixtures(t, cfg, 7) // GW7 export built mid-GW6: panel_max_gw 5
+	// GW6 has since finished: the panel must reach GW6, so the file is stale.
+	writeFixture(t, filepath.Join(cfg.RawRoot, "2026-27/bootstrap/bootstrap-static.json"), map[string]any{
+		"events": map[string]any{"current": 6, "next": 7, "data": []map[string]any{
+			{"id": 5, "finished": true, "deadline_time": "2026-09-26T10:00:00Z"},
+			{"id": 6, "finished": true, "deadline_time": "2026-10-03T10:00:00Z"},
+			{"id": 7, "finished": false, "deadline_time": "2026-10-17T10:00:00Z"},
+		}},
+	})
+	res, _, err := evaluateTrade(cfg, TradeCheckArgs{Give: []string{"Beta"}, Get: []string{"Alpha"}}, tradeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := resultText(t, res)
+	for _, want := range []string{`"value_source": "heuristic"`, "panel through GW5, but the last finished GW is 6"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stale-panel fallback missing %q: %s", want, text)
+		}
+	}
+
+	// Edge: an export without panel_max_gw cannot be verified and is rejected.
+	writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/player_values.json"), map[string]any{
+		"season": "2026-27", "gw": 7, "panel_max_gw": nil, "scorer": "model", "players": []map[string]any{},
+	})
+	res, _, _ = evaluateTrade(cfg, TradeCheckArgs{Give: []string{"Beta"}, Get: []string{"Alpha"}}, tradeNow)
+	if text := resultText(t, res); !strings.Contains(text, "has no panel_max_gw") {
+		t.Fatalf("expected missing-panel fallback reason: %s", text)
+	}
+}
+
+func TestLastFinishedEvent(t *testing.T) {
+	var cal bootstrapCalendar
+	if got := lastFinishedEvent(cal); got != 0 {
+		t.Fatalf("no events: got %d, want 0", got)
+	}
+	cal.Events.Data = []deadlineEvent{{ID: 3, Finished: true}, {ID: 1, Finished: true}, {ID: 4}}
+	if got := lastFinishedEvent(cal); got != 3 {
+		t.Fatalf("got %d, want 3", got)
 	}
 }
 
