@@ -4,7 +4,22 @@ updates:
     directory: "/apps/mcp-server"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "pip"
+    groups:
+      go-minor-patch:
+        update-types: ["minor", "patch"]
+  # "uv" (not "pip"): Dependabot must regenerate apps/backend/uv.lock, or CI's
+  # `uv sync --locked` rejects every bump.
+  - package-ecosystem: "uv"
     directory: "/apps/backend"
     schedule:
       interval: "weekly"
+    groups:
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
