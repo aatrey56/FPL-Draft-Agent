@@ -278,7 +278,8 @@ def test_leak6_plan_regression_matches_pre_seam_recommendations(tmp_path):
     assert [(r["add"], r["drop"]) for r in result["recommendations"]] == golden
     star = next(r for r in result["recommendations"] if r["add"] == "SeasonStar")
     assert (star["add_element"], star["drop_element"]) == (20, 11)
-    assert set(result) == {"players", "squad", "xi_next3_xp", "recommendations", "unprojected_squad"}
+    assert set(result) == {"players", "squad", "xi_next3_xp", "recommendations",
+                           "unprojected_squad", "xp_reconciled"}
 
 
 def test_leak7_dnp_and_missing_are_zero_not_nan_and_gw3_null_for_late_gws():
@@ -346,3 +347,128 @@ def test_output_has_no_ids_and_prints_five_rows_per_gw(tmp_path):
     assert "entry" not in json.dumps(doc["rows"])
     assert all(r["won"] in ("y", "n", "fallback", "-") for r in doc["rows"])
     assert "no_change" in rp.format_table(doc) and rp.CAVEAT in rp.format_table(doc)
+
+
+# ---- scorer=model ---------------------------------------------------------
+
+def _panel(season, gws):
+    return pd.DataFrame([{"code": 1020, "season": season, "gw": gw, "total_points": 2}
+                         for gw in gws])
+
+
+def _model_world(tmp_path, monkeypatch, captured):
+    """build_world plus panels; matchmodel.build_gw_xp is stubbed (records its panel)."""
+    world = build_world(tmp_path)
+    _panel("2025-26", [1, 2]).to_parquet(world / "derived/ml/player_gameweeks.parquet")
+    (world / "derived/2026-27/ml").mkdir(parents=True)
+    _panel("2026-27", [1, 2, 3, 4]).to_parquet(world / "derived/2026-27/ml/player_gameweeks.parquet")
+
+    def fake_build(panel, bootstrap, gw, season):
+        captured.append((panel, bootstrap, gw))
+        return pd.DataFrame([{"code": 1021, "xp": 9.0, "p_start": 0.9, "xp_floor": 5.0,
+                              "xp_ceiling": 12.0, "drivers": "d", "opponents": "vWOL", "gw": gw}])
+
+    monkeypatch.setattr(rp.matchmodel, "build_gw_xp", fake_build)
+    return world
+
+
+def test_model_scorer_uses_asof_panel_and_leaves_other_rows_identical(tmp_path, monkeypatch):
+    captured: list = []
+    world = _model_world(tmp_path, monkeypatch, captured)
+    heuristic = rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "heuristic")
+    model = rp.run(world, "2026-27", LEAGUE, ME, [2, 3], "model")
+    assert model["scorer"] == "model" and heuristic["scorer"] == "heuristic"
+    for strategy in ("no_change", "std_points", "form3", "me"):
+        assert [r for r in model["rows"] if r["strategy"] == strategy] == \
+               [r for r in heuristic["rows"] if r["strategy"] == strategy]
+    for panel, bootstrap, event in captured:
+        assert panel.loc[panel["season"] == "2026-27", "gw"].max() < event
+        assert set(bootstrap["fixtures"]) == {str(event)}
+    assert {event for _, _, event in captured} == {2, 3}
+    assert _row(model, "waiver_plan")["add"] == "Yorke"      # the only model-covered player
+
+
+def test_asof_panel_drops_deadline_gw_and_guard_raises_on_sentinel():
+    archive, season_panel = _panel("2025-26", [1]), _panel("2026-27", [1, 2, 3])
+    asof = rp.asof_panel(archive, season_panel, {1, 2})
+    assert asof.loc[asof["season"] == "2026-27", "gw"].tolist() == [1, 2]
+    rp.assert_no_panel_leak(asof, "2026-27", 3, {1, 2})
+    with pytest.raises(ValueError, match="leak"):
+        rp.assert_no_panel_leak(pd.concat([asof, _panel("2026-27", [3])]), "2026-27", 3, {1, 2})
+
+
+# ---- waiver cutoff vs the previous gameweek's last match --------------------
+
+T3 = "2026-09-03T17:30:00Z"            # waivers_time of GW3 in build_world
+
+
+def _with_kickoffs(world, event, kickoffs):
+    """Stamp ``kickoffs`` onto gw/<event>/live.json's fixtures (one each)."""
+    path = world / f"raw/2026-27/gw/{event}/live.json"
+    live = json.loads(path.read_text())
+    live["fixtures"] = [{"team_h": 1, "team_a": 2, "kickoff_time": k} for k in kickoffs]
+    path.write_text(json.dumps(live))
+
+
+def test_previous_gw_finishing_after_the_waiver_cutoff_is_not_completed(tmp_path):
+    """Congested midweek: GW2's last match kicks off 1h before GW3's waivers
+    close, so its outcomes were not known at the cutoff."""
+    world = build_world(tmp_path)
+    _with_kickoffs(world, 1, ["2026-08-21T19:00:00Z"])
+    _with_kickoffs(world, 2, ["2026-08-29T14:00:00Z", "2026-09-03T16:30:00Z"])
+    raw = world / "raw/2026-27"
+    bootstrap = json.loads((raw / "bootstrap/bootstrap-static.json").read_text())
+    assert rp.completed_gameweeks(bootstrap, raw, 3) == {1}
+    with pytest.raises(ValueError, match="leak"):
+        rp.assert_no_panel_leak(_panel("2026-27", [1, 2]), "2026-27", 3, {1})
+
+
+@pytest.mark.parametrize("last_kickoff,completed", [
+    ("2026-09-03T15:00:00Z", {1, 2}),      # + 2.5h lands exactly on the cutoff
+    ("2026-09-03T15:01:00Z", {1}),         # one minute later is too late
+])
+def test_completion_boundary_is_kickoff_plus_two_and_a_half_hours(tmp_path, last_kickoff,
+                                                                 completed):
+    world = build_world(tmp_path)
+    _with_kickoffs(world, 2, [last_kickoff])
+    raw = world / "raw/2026-27"
+    bootstrap = json.loads((raw / "bootstrap/bootstrap-static.json").read_text())
+    assert rp.completed_gameweeks(bootstrap, raw, 3) == completed
+
+
+def test_completion_reads_bootstrap_fixtures_when_live_is_missing(tmp_path, caplog):
+    world = build_world(tmp_path, live3=False, live4=False, bootstrap_fixtures={
+        "3": [{"team_h": 1, "team_a": 2, "kickoff_time": "2026-09-11T11:00:00Z"}]})
+    raw = world / "raw/2026-27"
+    bootstrap = json.loads((raw / "bootstrap/bootstrap-static.json").read_text())
+    with caplog.at_level("WARNING"):
+        # GW1/2 carry no kickoff times: assumed completed, loudly
+        assert rp.completed_gameweeks(bootstrap, raw, 4) == {1, 2}
+    assert "no fixture kickoff times" in caplog.text
+
+
+def test_replay_excludes_an_unfinished_previous_gw_from_panel_and_history(tmp_path,
+                                                                         monkeypatch):
+    """GW2 ends after GW3's waivers: the model panel and the baselines'
+    history at the GW3 deadline see GW1 only."""
+    captured: list = []
+    world = _model_world(tmp_path, monkeypatch, captured)
+    _with_kickoffs(world, 2, ["2026-09-03T16:30:00Z"])
+    seen: list = []
+    real_pick = rp.baseline_pick
+
+    def spy_pick(strategy, event, free, squad, elements, history):
+        seen.append((event, sorted(history)))
+        return real_pick(strategy, event, free, squad, elements, history)
+
+    monkeypatch.setattr(rp, "baseline_pick", spy_pick)
+    rp.run(world, "2026-27", LEAGUE, ME, [3], "model")
+    (panel, _, event), = captured
+    assert event == 3
+    assert panel.loc[panel["season"] == "2026-27", "gw"].tolist() == [1]
+    assert seen == [(3, [1]), (3, [1])]
+
+
+def test_unknown_scorer_rejected(tmp_path):
+    with pytest.raises(ValueError, match="scorer"):
+        rp.run(build_world(tmp_path), "2026-27", LEAGUE, ME, [2], "magic")

@@ -28,7 +28,8 @@ start/sit) → Go MCP server (:8080, 14 tools) → Claude Desktop / Claude Code
 
 **Game day:** `make tui` opens a live terminal dashboard — your H2H matchup
 (any matchup, ←/→) with per-player in-play points, manager names, and a
-countdown to the next deadline. The autopilot keeps it fresh and sends macOS
+countdown to the next deadline (its Suggestions rail is headed `heuristic xP`
+when my_week fell back from the match model). The autopilot keeps it fresh and sends macOS
 notifications when a gameweek finalizes and at 24h/3h/2h before every
 deadline — each derived from that GW's own kickoff-anchored clock, so
 midweek and festive schedules follow automatically.
@@ -52,8 +53,27 @@ flat `data/` roots are the 2025-26 archive, current seasons nest under
   stage one predicts *who plays*, stage two *how many points if they do*, per
   position, with the opponent in the features. It beats every naive baseline
   in all four positions on a held-out slice of gameweeks (table below).
-  Not yet wired into `waiver_plan` / `my_week`, which still run the per-GW
-  heuristic (projection/38 × fixture multiplier × availability).
+  `waiver_plan` / `my_week` read it (`xp_gw<N>.parquet`) with
+  `--scorer model` and fall back, with a WARNING and a per-player `xp_source`
+  (`model` / `heuristic` / `none`), to the per-GW heuristic (projection/38 ×
+  fixture multiplier × availability) for uncovered players or a missing/unreadable/stale
+  file (the JSON's `scorer` then reads `heuristic`, with `xp_fallback: true`
+  and an `xp_fallback_reason`). A model row for a player whose *current*
+  availability is 0 (ruled out after the xP file was built) is zeroed
+  (`xp_next`/`p_start` 0, `xp_reconciled: true`; the JSON's
+  `xp_reconciled` counts them). Waiver recommendations rank by `next1_gain` (next-GW xP of the add
+  minus the drop); `hold` recs (no next-GW gain, better ROS) come last.
+  A free agent with model xP but no ROS projection (promoted club) is ranked
+  as a `stream` with `season_gain: null` and `season_unknown: true`; his
+  `next3_gain` is null too (the 3-GW value is built from the projection).
+  `--scorer model` is the default (the 2026-27 GW2-5 live check in
+  `docs/MODEL_ROADMAP.md` found the model ahead of every baseline in all
+  four positions); `--scorer heuristic` reproduces the pre-xP output exactly
+  between gameweeks — labels and ordering are then next-3-GW based, as they
+  are after a model fallback, and the `waiver_plan` tool note describes
+  whichever ranking the served file used (keyed on its `scorer`). Mid-gameweek (GW N in play) both scorers now plan for
+  N+1: the heuristic's fixture loads and my_week's `gw` used to start at the
+  locked GW N.
 - Players the model cannot value (long injury last season, promoted, new
   signings) are **surfaced for human judgment, never scored as zero** — the
   tools refuse to guess rather than quietly recommend dropping a returning star.
@@ -156,7 +176,7 @@ make autopilot-off
 ```
 
 Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
-derive: ownership, waiver, my_week first, then season panel, next-GW xP and the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`) (a panel/xP failure fails `make derive` but never blocks the decision artifacts); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
+derive: ownership, then season panel && next-GW xP (`-`-prefixed: a failure warns and waiver/my_week fall back to the heuristic), then waiver and my_week with `SCORER={heuristic,model}`, then the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
 Non-Mac or cron fans: schedule `scripts/autorefresh.sh` (crontab example inline).
 
 Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):

@@ -1,4 +1,5 @@
 SEASON ?= 2026-27
+SCORER ?= model
 RAW_SEASON := ../../data/raw/$(SEASON)
 DERIVED_SEASON := ../../data/derived/$(SEASON)
 GO_ROOTS := --raw-root ../../data/raw --derived-root ../../data/derived
@@ -13,23 +14,28 @@ serve:
 fetch:
 	cd apps/mcp-server && go run ./cmd/dev --season $(SEASON) $(GO_ROOTS) --refresh-now
 
-## derive: rebuild the weekly artifacts for SEASON (ownership -> waiver -> my_week, then panel -> next-GW xP -> track record)
-## Decision artifacts run first and are chained, so a panel/xP failure (e.g. a missing
-## archive panel) cannot block them; it still fails `make derive` afterwards so it stays visible.
-## The track record runs even when the next-GW xP fails (after GW38 there is no next GW,
-## and GW38 must still be scored); the xP exit code is kept so that failure stays visible.
+## derive: rebuild the weekly artifacts for SEASON (ownership -> panel && next-GW xP -> waiver -> my_week -> track record)
+## waiver/my_week consume xp_gw<N>.parquet (SCORER=model) and fall back to the heuristic with a
+## WARNING when it is missing or stale, so the panel && xP step is `-`-prefixed: a failure there
+## (e.g. a missing archive panel, or no next GW after GW38) warns, and the decision artifacts and
+## the track record still build (GW38 must still be scored).
+## Panel and xP are chained with && on one recipe line, so xP never trains on an unrefreshed
+## panel; the xP file records the panel's last finished GW (panel_max_gw) and waiver/my_week
+## reject it unless that equals the bootstrap's last finished GW (N-1 between gameweeks,
+## N-2 mid-gameweek while N-1 is still in play).
+## SCORER={heuristic,model} picks the next-GW xP source for waiver/my_week.
 ## Reads/writes season-nested paths only; the flat data/ layout is the 2025-26 archive.
 derive:
-	cd apps/backend && uv run python -m backend.ml.ownership --season $(SEASON) \
-		&& uv run python -m backend.ml.waiver --season $(SEASON) \
-		&& uv run python -m backend.ml.myweek --season $(SEASON)
-	cd apps/backend && uv run python -m backend.ml.gameweeks --season $(SEASON) \
+	cd apps/backend && uv run python -m backend.ml.ownership --season $(SEASON)
+	-cd apps/backend && uv run python -m backend.ml.gameweeks --season $(SEASON) \
 		--out $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
-		--gw-root $(RAW_SEASON)/gw --bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json
-	cd apps/backend && { uv run python -m backend.ml.matchmodel --gw next --season $(SEASON) \
+		--gw-root $(RAW_SEASON)/gw --bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json \
+		&& uv run python -m backend.ml.matchmodel --gw next --season $(SEASON) \
 		--panel ../../data/derived/ml/player_gameweeks.parquet $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
-		--bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json; rc=$$?; \
-		uv run python -m backend.ml.trackrecord --season $(SEASON) --data-root ../../data && exit $$rc; }
+		--bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json
+	cd apps/backend && uv run python -m backend.ml.waiver --season $(SEASON) --scorer $(SCORER)
+	cd apps/backend && uv run python -m backend.ml.myweek --season $(SEASON) --scorer $(SCORER)
+	cd apps/backend && uv run python -m backend.ml.trackrecord --season $(SEASON) --data-root ../../data
 
 ## weekly: the whole weekly loop (fetch + derive)
 weekly: fetch derive

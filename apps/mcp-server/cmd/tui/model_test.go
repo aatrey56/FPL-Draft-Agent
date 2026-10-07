@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func write(t *testing.T, path string, v any) {
@@ -415,5 +417,161 @@ func TestBonusRaceBuilds(t *testing.T) {
 	}
 	if body := m.bonusBody(40); !strings.Contains(body, "ARS 1-0 COV") || !strings.Contains(body, "40") {
 		t.Fatalf("bonus page wrong:\n%s", body)
+	}
+}
+
+func TestAttentionItemMatchesStableCodes(t *testing.T) {
+	cases := []struct {
+		name            string
+		warnings, codes []string
+		glyph, note     string
+	}{
+		// current my_week text, with codes
+		{"coded no value", []string{"no value — judge manually (player_card)"}, []string{"no_value"}, "?", "unprojected"},
+		{"coded blank", []string{"blank gameweek: no fixture"}, []string{"blank_gw"}, "◇", "blank GW"},
+		{"coded availability", []string{"availability [d] — Knock"}, []string{"availability"}, "⚠", "[d] — Knock"},
+		{"coded heuristic", []string{"no model xP — heuristic"}, []string{"heuristic_xp"}, "⚠", "heuristic xP"},
+		// one rail line per player: the scoring-source note never hides a blank GW or an injury
+		{"blank beats heuristic", []string{"blank gameweek: no fixture", "no model xP — heuristic"}, []string{"blank_gw", "heuristic_xp"}, "◇", "blank GW"},
+		{"old order: heuristic first", []string{"no model xP — heuristic", "blank gameweek: no fixture"}, []string{"heuristic_xp", "blank_gw"}, "◇", "blank GW"},
+		{"old order: heuristic then availability", []string{"no model xP — heuristic", "availability [i] — Knee"}, []string{"heuristic_xp", "availability"}, "⚠", "[i] — Knee"},
+		// the code wins even if the prose is reworded again
+		{"code beats prose", []string{"needs a human look"}, []string{"no_value"}, "?", "unprojected"},
+		// files written before warning_codes existed
+		{"legacy no projection", []string{"no projection — judge manually"}, nil, "?", "unprojected"},
+		{"legacy no value", []string{"no value — judge manually (player_card)"}, nil, "?", "unprojected"},
+		{"legacy other", []string{"something new"}, nil, "⚠", "something new"},
+	}
+	for _, c := range cases {
+		item, ok := attentionItem("P", c.warnings, c.codes)
+		if !ok || item.Glyph != c.glyph || item.Note != c.note {
+			t.Errorf("%s: got (%q, %q, %v), want (%q, %q)", c.name, item.Glyph, item.Note, ok, c.glyph, c.note)
+		}
+	}
+	if _, ok := attentionItem("P", nil, nil); ok {
+		t.Error("no warnings must yield no rail item")
+	}
+}
+
+func TestWireRecWithUnknownSeasonGain(t *testing.T) {
+	derived := t.TempDir()
+	write(t, filepath.Join(derived, "ml/waiver_plan.json"), map[string]any{
+		"recommendations": []map[string]any{
+			{"add": "Promoted", "add_team": "HUL", "drop": "Weak", "label": "stream",
+				"season_gain": nil, "season_unknown": true, "add_ros": nil, "drop_ros": 40.0},
+			{"add": "Upgrade", "add_team": "ARS", "drop": "Weak", "label": "upgrade",
+				"season_gain": 12.4, "add_ros": 52.4, "drop_ros": 40.0},
+		},
+	})
+	m := newModel(fixtureDir(t), derived, 5, 501, 0)
+	m.w = 160
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	for _, r := range m.snap.NeedsYou {
+		notes = append(notes, r.Note)
+	}
+	if got := strings.Join(notes, "|"); got != "wire · stream · ROS ?|wire · upgrade +12" {
+		t.Fatalf("notes = %q", got)
+	}
+	m.sugSel = 0
+	body := m.sugDetailBody(120)
+	if !strings.Contains(body, "No rest-of-season projection for Promoted") || strings.Contains(body, "+0 is that gap") {
+		t.Fatalf("unknown-season detail:\n%s", body)
+	}
+	m.sugSel = 1
+	if body := m.sugDetailBody(120); !strings.Contains(body, "the +12 is that gap") {
+		t.Fatalf("known-season detail:\n%s", body)
+	}
+}
+
+// A free agent with no ROS projection has no 3-GW value: waiver_plan writes
+// next3_gain and add_next3_xp as null, which must not be quoted as 0.0.
+func TestWireRecWithUnknownNext3Gain(t *testing.T) {
+	derived := t.TempDir()
+	write(t, filepath.Join(derived, "ml/waiver_plan.json"), map[string]any{
+		"recommendations": []map[string]any{
+			{"add": "Promoted", "add_team": "HUL", "drop": "Weak", "label": "stream",
+				"season_gain": nil, "season_unknown": true, "add_ros": nil, "drop_ros": 40.0,
+				"next3_gain": nil, "add_next3_xp": nil},
+			{"add": "Upgrade", "add_team": "ARS", "drop": "Weak", "label": "upgrade",
+				"season_gain": 12.4, "add_ros": 52.4, "drop_ros": 40.0,
+				"next3_gain": 2.3, "add_next3_xp": 4.1},
+			// a known zero is a number, not "unavailable"
+			{"add": "Level", "add_team": "WOL", "drop": "Weak", "label": "upgrade",
+				"season_gain": 3.0, "add_ros": 43.0, "drop_ros": 40.0,
+				"next3_gain": 0.0, "add_next3_xp": 1.8},
+		},
+	})
+	m := newModel(fixtureDir(t), derived, 5, 501, 0)
+	m.w = 160
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	m.sugSel = 0
+	body := m.sugDetailBody(120)
+	if !strings.Contains(body, "Next 3 GWs: unavailable") || strings.Contains(body, "projects 0.0") {
+		t.Fatalf("unknown next3 must render as unavailable:\n%s", body)
+	}
+	m.sugSel = 1
+	if body := m.sugDetailBody(120); !strings.Contains(body, "Upgrade projects 4.1 xP, +2.3 over Weak") {
+		t.Fatalf("known next3 detail:\n%s", body)
+	}
+	m.sugSel = 2
+	if body := m.sugDetailBody(120); !strings.Contains(body, "Level projects 1.8 xP, +0.0 over Weak") {
+		t.Fatalf("zero next3 gain is a number:\n%s", body)
+	}
+}
+
+// sharedWarningCodes reads the my_week warning-code contract that the Python
+// suite (apps/backend/tests/test_myweek.py) pins too.
+func sharedWarningCodes(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "testdata", "my_week_warning_codes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		WarningCodes []string `json:"warning_codes"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	return doc.WarningCodes
+}
+
+func TestWarningCodesMatchSharedFixture(t *testing.T) {
+	got := []string{warnNoValue, warnBlankGW, warnAvailability, warnHeuristicXP}
+	if want := sharedWarningCodes(t); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("TUI warning codes %v, shared fixture %v", got, want)
+	}
+}
+
+func TestSuggestionsHeaderMarksXPFallback(t *testing.T) {
+	for _, fallback := range []bool{true, false} {
+		derived := t.TempDir()
+		write(t, filepath.Join(derived, "ml/my_week.json"), map[string]any{
+			"xp_fallback": fallback,
+			"attention": []map[string]any{{"web_name": "Striker",
+				"warnings": []string{"blank gameweek: no fixture"}, "warning_codes": []string{"blank_gw"}}},
+		})
+		m := newModel(fixtureDir(t), derived, 5, 501, 0)
+		m.w = 160
+		if err := m.reload(); err != nil {
+			t.Fatal(err)
+		}
+		if m.snap.XPFallback != fallback {
+			t.Fatalf("XPFallback = %v, want %v", m.snap.XPFallback, fallback)
+		}
+		body := m.railBody(40, false)
+		if got := strings.Contains(body, "Suggestions heuristic xP"); got != fallback {
+			t.Fatalf("fallback=%v: marker shown=%v:\n%s", fallback, got, body)
+		}
+		for _, line := range strings.Split(body, "\n") {
+			if lipgloss.Width(line) > 40 {
+				t.Fatalf("rail line wider than the panel (%d): %q", lipgloss.Width(line), line)
+			}
+		}
 	}
 }

@@ -358,11 +358,21 @@ func (m *model) sugDetailBody(width int) string {
 	if r.Drop != "" {
 		para(fmt.Sprintf("Add %s, drop %s.", r.Name, r.Drop))
 		b.WriteString("\n")
-		para(fmt.Sprintf("Projected rest-of-season: %s %.0f pts vs %s %.0f pts — the +%.0f is that gap, the season points you gain by making the swap.",
-			r.Name, r.AddROS, r.Drop, r.DropROS, r.SeasonGain))
+		if r.SeasonUnknown {
+			para(fmt.Sprintf("No rest-of-season projection for %s (promoted club, new signing or under last season's minutes floor), so there is no season gain to quote — treat it as a next-GW stream.",
+				r.Name))
+		} else {
+			para(fmt.Sprintf("Projected rest-of-season: %s %.0f pts vs %s %.0f pts — the +%.0f is that gap, the season points you gain by making the swap.",
+				r.Name, r.AddROS, r.Drop, r.DropROS, r.SeasonGain))
+		}
 		b.WriteString("\n")
-		para(fmt.Sprintf("Next 3 GWs: %s projects %.1f xP, +%.1f over %s.",
-			r.Name, r.AddNext3, r.Next3Gain, r.Drop))
+		if r.Next3Unknown {
+			para(fmt.Sprintf("Next 3 GWs: unavailable — %s has no projection to build a 3-GW value from.",
+				r.Name))
+		} else {
+			para(fmt.Sprintf("Next 3 GWs: %s projects %.1f xP, +%.1f over %s.",
+				r.Name, r.AddNext3, r.Next3Gain, r.Drop))
+		}
 		if r.Confidence != "" {
 			b.WriteString("\n" + styDim.Render("confidence: "+r.Confidence) + "\n")
 		}
@@ -429,7 +439,14 @@ func (m *model) railBody(width int, focused bool) string {
 		}
 	}
 	if len(m.snap.NeedsYou) > 0 {
-		b.WriteString("\n" + styDim.Render("─ Suggestions "+strings.Repeat("─", clamp(width-16, 0, 30))) + "\n")
+		// xp_fallback: the model was asked for but its xP file was missing, unreadable or
+		// stale, so every suggestion below rests on the heuristic.
+		title, tag := "─ Suggestions ", ""
+		if m.snap.XPFallback {
+			tag = "heuristic xP "
+		}
+		rule := strings.Repeat("─", clamp(width-2-len([]rune(title+tag)), 0, 30))
+		b.WriteString("\n" + styDim.Render(title) + styWarn.Render(tag) + styDim.Render(rule) + "\n")
 		for i, r := range m.snap.NeedsYou {
 			sty := styDim
 			switch r.Glyph {

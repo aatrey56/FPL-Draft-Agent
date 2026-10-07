@@ -68,12 +68,18 @@ type railItem struct {
 	// Wire recommendations carry the full trade math for the detail view.
 	Drop       string
 	SeasonGain float64
-	Next3Gain  float64
-	AddROS     float64
-	DropROS    float64
-	AddNext3   float64
-	Confidence string
-	News       string
+	// SeasonUnknown: the add has no rest-of-season projection (promoted
+	// club, new signing), so SeasonGain/AddROS are not numbers to quote.
+	SeasonUnknown bool
+	Next3Gain     float64
+	// Next3Unknown: the add has no 3-GW value (it is built from the missing
+	// projection), so Next3Gain/AddNext3 are not numbers to quote.
+	Next3Unknown bool
+	AddROS       float64
+	DropROS      float64
+	AddNext3     float64
+	Confidence   string
+	News         string
 }
 
 type fixtureRow struct {
@@ -178,6 +184,7 @@ type snapshot struct {
 	Transactions []txRow
 	TxByManager  []managerTx
 	NeedsYou     []railItem
+	XPFallback   bool          // my_week asked for model xP but fell back to the heuristic
 	Matches      []matchDetail // one per in-play fixture, liveSel-aligned
 	Events       []eventRow    // today's official match events (goals/assists/cards)
 	PlayerStats  map[int]tickerStat
@@ -967,41 +974,37 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 
 	// Needs-you suggestions: my_week attention + top waiver targets (best effort).
 	var week struct {
-		Attention []struct {
-			WebName  string   `json:"web_name"`
-			Warnings []string `json:"warnings"`
+		XPFallback bool `json:"xp_fallback"`
+		Attention  []struct {
+			WebName      string   `json:"web_name"`
+			Warnings     []string `json:"warnings"`
+			WarningCodes []string `json:"warning_codes"`
 		} `json:"attention"`
 	}
 	if err := readJSON(filepath.Join(derived, "ml/my_week.json"), &week); err == nil {
+		snap.XPFallback = week.XPFallback
 		for _, a := range week.Attention {
-			for _, w := range a.Warnings {
-				g, note := "⚠", w
-				switch {
-				case strings.Contains(w, "no projection"):
-					g, note = "?", "unprojected"
-				case strings.Contains(w, "blank"):
-					g, note = "◇", "blank GW"
-				case strings.Contains(w, "availability"):
-					note = strings.TrimPrefix(w, "availability ")
-				}
-				snap.NeedsYou = append(snap.NeedsYou, railItem{Glyph: g, Name: a.WebName, Note: note})
-				break
+			if item, ok := attentionItem(a.WebName, a.Warnings, a.WarningCodes); ok {
+				snap.NeedsYou = append(snap.NeedsYou, item)
 			}
 		}
 	}
 	var plan struct {
 		Recommendations []struct {
-			Add        string  `json:"add"`
-			AddTeam    string  `json:"add_team"`
-			Drop       string  `json:"drop"`
-			Label      string  `json:"label"`
-			SeasonGain float64 `json:"season_gain"`
-			Next3Gain  float64 `json:"next3_gain"`
-			AddROS     float64 `json:"add_ros"`
-			DropROS    float64 `json:"drop_ros"`
-			AddNext3   float64 `json:"add_next3_xp"`
-			Confidence string  `json:"confidence"`
-			News       string  `json:"news"`
+			Add           string  `json:"add"`
+			AddTeam       string  `json:"add_team"`
+			Drop          string  `json:"drop"`
+			Label         string  `json:"label"`
+			SeasonGain    float64 `json:"season_gain"` // null when season_unknown
+			SeasonUnknown bool    `json:"season_unknown"`
+			AddROS        float64 `json:"add_ros"`
+			DropROS       float64 `json:"drop_ros"`
+			// Null when the add has no ROS projection: the 3-GW value is
+			// heuristic, so there is nothing to compare (not a zero).
+			Next3Gain  *float64 `json:"next3_gain"`
+			AddNext3   *float64 `json:"add_next3_xp"`
+			Confidence string   `json:"confidence"`
+			News       string   `json:"news"`
 		} `json:"recommendations"`
 	}
 	if err := readJSON(filepath.Join(derived, "ml/waiver_plan.json"), &plan); err == nil {
@@ -1009,12 +1012,20 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			if i >= 3 {
 				break
 			}
-			snap.NeedsYou = append(snap.NeedsYou, railItem{
-				Glyph: "↑", Name: r.Add, Team: r.AddTeam,
-				Note: fmt.Sprintf("wire · %s +%.0f", r.Label, r.SeasonGain),
-				Drop: r.Drop, SeasonGain: r.SeasonGain, Next3Gain: r.Next3Gain,
-				AddROS: r.AddROS, DropROS: r.DropROS, AddNext3: r.AddNext3,
-				Confidence: r.Confidence, News: r.News})
+			note := fmt.Sprintf("wire · %s +%.0f", r.Label, r.SeasonGain)
+			if r.SeasonUnknown {
+				note = fmt.Sprintf("wire · %s · ROS ?", r.Label)
+			}
+			item := railItem{
+				Glyph: "↑", Name: r.Add, Team: r.AddTeam, Note: note,
+				Drop: r.Drop, SeasonGain: r.SeasonGain, SeasonUnknown: r.SeasonUnknown,
+				Next3Unknown: r.Next3Gain == nil || r.AddNext3 == nil,
+				AddROS:       r.AddROS, DropROS: r.DropROS,
+				Confidence: r.Confidence, News: r.News}
+			if !item.Next3Unknown {
+				item.Next3Gain, item.AddNext3 = *r.Next3Gain, *r.AddNext3
+			}
+			snap.NeedsYou = append(snap.NeedsYou, item)
 		}
 	}
 
@@ -1371,4 +1382,65 @@ func liveCount(s snapshot) int {
 		}
 	}
 	return n
+}
+
+// my_week warning codes (backend/ml/myweek.py WARNING_*): stable identifiers
+// index-aligned with the human-readable warnings text. Pinned, with the Python
+// constants, to testdata/my_week_warning_codes.json at the repo root.
+const (
+	warnNoValue      = "no_value"
+	warnBlankGW      = "blank_gw"
+	warnAvailability = "availability"
+	warnHeuristicXP  = "heuristic_xp"
+)
+
+// attentionIndex picks which of a player's warnings the rail shows: the first
+// that is not the scoring-source note (heuristic_xp), which only says where
+// the number came from and must not hide a blank GW or an injury. my_week
+// emits that note last; files written before that ordering have it first.
+func attentionIndex(codes []string) int {
+	for i, code := range codes {
+		if code != warnHeuristicXP {
+			return i
+		}
+	}
+	return 0
+}
+
+// attentionItem turns one my_week attention entry into a needs-you rail item,
+// using its most actionable warning (attentionIndex). It matches on the stable
+// warning code when the file carries index-aligned warning_codes, and falls
+// back to the first warning's prose for files written before codes existed
+// ("no projection" was renamed "no value").
+func attentionItem(name string, warnings, codes []string) (railItem, bool) {
+	if len(warnings) == 0 {
+		return railItem{}, false
+	}
+	text := warnings[0]
+	code := ""
+	if len(codes) == len(warnings) {
+		shown := attentionIndex(codes)
+		text, code = warnings[shown], codes[shown]
+	} else {
+		switch {
+		case strings.Contains(text, "no value"), strings.Contains(text, "no projection"):
+			code = warnNoValue
+		case strings.Contains(text, "blank"):
+			code = warnBlankGW
+		case strings.HasPrefix(text, "availability"):
+			code = warnAvailability
+		}
+	}
+	item := railItem{Glyph: "⚠", Name: name, Note: text}
+	switch code {
+	case warnNoValue:
+		item.Glyph, item.Note = "?", "unprojected"
+	case warnHeuristicXP:
+		item.Note = "heuristic xP"
+	case warnBlankGW:
+		item.Glyph, item.Note = "◇", "blank GW"
+	case warnAvailability:
+		item.Note = strings.TrimPrefix(text, "availability ")
+	}
+	return item, true
 }

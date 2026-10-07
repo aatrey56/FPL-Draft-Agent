@@ -165,6 +165,48 @@ func TestWaiverPlanServesSeasonArtifact(t *testing.T) {
 	}
 }
 
+// The labels and ordering of waiver_plan depend on the scorer that ran, so the
+// note must describe that mode and not the other one.
+func TestWaiverPlanNoteDescribesTheRankingUsed(t *testing.T) {
+	const next1, next3 = "labels and ordering are next-GW based", "labels and ordering are next-3-GW based"
+	cases := []struct {
+		name          string
+		meta          map[string]any
+		want, notWant string
+	}{
+		{"model", map[string]any{"scorer": "model", "scorer_requested": "model", "xp_fallback": false}, next1, next3},
+		{"heuristic requested", map[string]any{"scorer": "heuristic", "scorer_requested": "heuristic", "xp_fallback": false}, next3, next1},
+		{"model fell back", map[string]any{"scorer": "heuristic", "scorer_requested": "model", "xp_fallback": true,
+			"xp_fallback_reason": "match xP file xp_gw6.parquet missing"}, next3, next1},
+		// written before the scorer field existed: the heuristic next-3 plan
+		{"no scorer field", map[string]any{}, next3, next1},
+	}
+	for _, c := range cases {
+		cfg := fixtureConfig(t)
+		doc := map[string]any{"xi_next3_xp": 49.3, "recommendations": []map[string]any{}}
+		for k, v := range c.meta {
+			doc[k] = v
+		}
+		writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/waiver_plan.json"), doc)
+		res, _, err := waiverPlanHandler(cfg)(context.Background(), nil, WaiverPlanArgs{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plan struct {
+			Note string `json:"note"`
+		}
+		if err := json.Unmarshal([]byte(resultText(t, res)), &plan); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plan.Note, c.want) || strings.Contains(plan.Note, c.notWant) {
+			t.Errorf("%s: note describes the wrong ranking:\n%s", c.name, plan.Note)
+		}
+		if !strings.Contains(plan.Note, "unprojected_squad") || !strings.Contains(plan.Note, "backend.ml.waiver") {
+			t.Errorf("%s: note lost its shared part:\n%s", c.name, plan.Note)
+		}
+	}
+}
+
 func TestMyWeekServesSeasonArtifact(t *testing.T) {
 	cfg := fixtureConfig(t)
 	writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/my_week.json"), map[string]any{
@@ -188,6 +230,37 @@ func TestMyWeekServesSeasonArtifact(t *testing.T) {
 	res, _, _ = myWeekHandler(missing)(context.Background(), nil, MyWeekArgs{})
 	if res == nil || !res.IsError {
 		t.Fatal("my_week should error when the artifact is missing")
+	}
+}
+
+// TestMyWeekNoteNamesEverySharedWarningCode pins the tool note to the
+// warning-code contract shared with the Python suite.
+func TestMyWeekNoteNamesEverySharedWarningCode(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "testdata", "my_week_warning_codes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shared struct {
+		WarningCodes []string `json:"warning_codes"`
+	}
+	if err := json.Unmarshal(raw, &shared); err != nil {
+		t.Fatal(err)
+	}
+	cfg := fixtureConfig(t)
+	writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/my_week.json"), map[string]any{"gw": 1})
+	res, _, err := myWeekHandler(cfg)(context.Background(), nil, MyWeekArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var week struct {
+		Note string `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, res)), &week); err != nil {
+		t.Fatal(err)
+	}
+	want := "warning_codes holds a stable code per warning: " + strings.Join(shared.WarningCodes, ", ") + ")"
+	if !strings.Contains(week.Note, want) {
+		t.Fatalf("my_week note does not list the shared codes %v:\n%s", shared.WarningCodes, week.Note)
 	}
 }
 

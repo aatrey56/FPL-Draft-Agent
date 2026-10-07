@@ -16,16 +16,38 @@ Design (v1, pre-GW1-honest):
   event handles blanks (0 fixtures) and doubles (2) naturally.
 * **Availability gate** — live status/news from bootstrap: available=1.0,
   doubtful=chance/100, injured/suspended=chance if stated else 0, departed=0.
+  A cached model xP row is reconciled against it: a player whose CURRENT
+  availability is 0 gets ``xp_next``/``p_start`` 0 and ``xp_reconciled``
+  True, even if the file was built (or a stale file served) before the news.
+* **Next-GW xP** (``xp_next``) comes from the match model's
+  ``xp_gw{N}.parquet`` when ``--scorer model`` and the file is fresh; players
+  the model does not cover (blank GW, no row, or a position the panel was too
+  thin to fit — a row with a NaN ``p_start``) fall back to the heuristic
+  ``ros/38 x fixture load x availability``. ``xp_source`` (model / heuristic /
+  none) is carried on every player and recommendation. Scale caveat: model xP
+  and the heuristic fallback share one ranking; the heuristic is on a lower
+  scale (``ros/38`` averages below the model's per-start expectation), so a
+  heuristic-valued drop makes model-valued adds look better than they are.
 * **The short-vs-long balance is explicit**: every candidate shows
-  ``next3_gain`` (points over the next 3 GWs vs the drop candidate) AND
-  ``season_gain`` (rest-of-season vs the same drop). Labels:
-  ``upgrade`` (both positive — add and hold), ``stream`` (helps now, worse
-  long-term — plan to re-drop), ``hold`` (worse now, better over the season —
-  patience play). A class player with two tough fixtures shows a small/negative
-  next3_gain but a big season_gain — and stays recommended as ``hold``.
+  ``next1_gain`` (next-GW xP vs the drop candidate), ``next3_gain`` (heuristic
+  3-GW points) AND ``season_gain`` (rest-of-season vs the same drop). Ranking
+  is by ``next1_gain``. Labels: ``upgrade`` (next1 and season positive — add
+  and hold), ``stream`` (helps next GW only — plan to re-drop), ``hold``
+  (no next-GW gain, better over the season — patience play); holds are listed
+  after every positive-next1 recommendation. A free agent with no ROS
+  projection but a model ``xp_next`` (e.g. a promoted club's starter) is still
+  ranked, with ``season_gain`` and ``add_ros`` null and ``season_unknown``
+  true; his season gain counts as 0 for the label and ordering, so he is at
+  most a ``stream``. His heuristic 3-GW value does not exist either, so
+  ``add_next3_xp`` and ``next3_gain`` are null too (unknown, never "0 minus
+  the drop"). With no match xP supplied (the
+  heuristic scorer) ``recommend`` keeps its original ranking (``rank_by=
+  "legacy"``: labels from ``next3_gain``, ordered by the larger gain) so the
+  heuristic output is unchanged.
 
-CLI: python -m backend.ml.waiver --league <id> --entry <id>   (env fallback:
-LEAGUE_ID / ENTRY_ID)
+CLI: python -m backend.ml.waiver --league <id> --entry <id> [--scorer {heuristic,model}]
+(env fallback: LEAGUE_ID / ENTRY_ID; ``--data-root`` and ``--out`` override the
+default data dir / output path)
 """
 
 from __future__ import annotations
@@ -34,6 +56,7 @@ import argparse
 import json
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +64,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from backend.ml import jsonutil
+from backend.ml.gameweeks import finished_gameweeks
 
 logger = logging.getLogger(__name__)
 
@@ -119,19 +143,180 @@ def availability_factor(element: dict) -> float:
     return 0.75 if status == "d" else 0.0
 
 
+def next_event(bootstrap: dict, now: datetime | None = None) -> int | None:
+    """The gameweek the weekly tools plan for, or None (season over / no calendar).
+
+    Delegates to ``matchmodel.next_gameweek`` so waiver_plan, my_week and the
+    ``xp_gw{N}`` build agree on N. The bootstrap's fixture map can still hold
+    the in-play gameweek mid-GW (its smallest key = current), which is why
+    the smallest key is not used: it would plan for a locked gameweek.
+    """
+    # Local import: matchmodel imports availability_factor from this module.
+    from backend.ml import matchmodel
+    try:
+        return matchmodel.next_gameweek(bootstrap, now)
+    except ValueError:
+        return None
+
+
+def upcoming_fixtures(bootstrap: dict) -> dict:
+    """The bootstrap fixture map from ``next_event`` onward.
+
+    Drops an in-play gameweek still present mid-GW so the heuristic's fixture
+    loads describe the same gameweek as the match xP. Without an event
+    calendar (``next_event`` None) the map is returned as given.
+    """
+    fixtures = bootstrap.get("fixtures") or {}
+    event = next_event(bootstrap)
+    if event is None:
+        return fixtures
+    return {k: v for k, v in fixtures.items() if int(k) >= event}
+
+
+def read_gw_xp(path: Path, expected_gw: int | None,
+               last_finished: int | None = None) -> tuple[pd.DataFrame | None, str | None]:
+    """Read the match model's ``xp_gw{N}.parquet``: ``(frame, None)`` when it
+    is usable for ``expected_gw``, else ``(None, reason)`` — the reason is
+    written to the artifact so a fallback is never silent.
+
+    ``last_finished`` is the last finished gameweek in the bootstrap (0 before
+    GW1 finishes); the file must have been trained on a panel through exactly
+    that GW. None means "assume ``expected_gw - 1``" (the between-gameweeks
+    case). Mid-gameweek — GW N-1 in play, planning for N — the freshest panel
+    ends at N-2, which is what ``last_finished`` is then, so the file is
+    served from the deadline onward instead of being rejected until GW N-1
+    finishes.
+    """
+    path = Path(path)
+    if not path.exists():
+        return None, f"match xP file {path.name} missing"
+    try:
+        frame = pd.read_parquet(path)
+    except (OSError, ValueError) as exc:   # pyarrow's ArrowInvalid is a ValueError
+        return None, (f"match xP file {path.name} is unreadable "
+                      f"({type(exc).__name__}: {exc}); rebuild it")
+    gws = sorted(int(g) for g in frame["gw"].unique()) if "gw" in frame else []
+    if expected_gw is None or gws != [expected_gw]:
+        return None, f"match xP file {path.name} is for gw {gws}, expected {expected_gw} (stale)"
+    if "panel_max_gw" not in frame:
+        return None, (f"match xP file {path.name} has no panel_max_gw "
+                      "(built before the panel check; rebuild it)")
+    required = expected_gw - 1 if last_finished is None else last_finished
+    panel_gws = sorted(int(g) for g in frame["panel_max_gw"].unique())
+    if panel_gws != [required]:
+        return None, (f"match xP file {path.name} was trained on a panel through gw "
+                      f"{panel_gws}, but the last finished gw is {required} "
+                      "(panel not refreshed; stale)")
+    return frame, None
+
+
+def load_gw_xp(path: Path, expected_gw: int | None,
+               last_finished: int | None = None) -> pd.DataFrame | None:
+    """Read the match model's ``xp_gw{N}.parquet`` for the upcoming gameweek.
+
+    Returns None (with a WARNING, so the caller falls back to the heuristic
+    loudly) when the file is missing or unreadable, was built for a different
+    gameweek than ``expected_gw``, or was trained on a panel whose last GW is
+    not the last finished one (stale). See ``read_gw_xp`` for the rule and
+    the reason string.
+    """
+    frame, reason = read_gw_xp(path, expected_gw, last_finished)
+    if reason:
+        logger.warning("%s — falling back to heuristic", reason)
+    return frame
+
+
+def usable_gw_xp(gw_xp: pd.DataFrame) -> pd.DataFrame:
+    """The rows of a match xP frame that carry a real prediction.
+
+    ``matchmodel.score_fixtures`` emits a row for every fixture stub, including
+    players in a position the panel was too thin to fit: their NaN per-fixture
+    xP sums to ``xp`` 0 with a NaN ``p_start``. That is "no opinion", not a
+    predicted blank, so those rows are dropped here and the player is valued by
+    the heuristic like anyone else the model does not cover.
+    """
+    return gw_xp[gw_xp["xp"].notna() & gw_xp["p_start"].notna()]
+
+
+SCORERS = ("heuristic", "model")
+DEFAULT_SCORER = "model"
+
+
+def resolve_scorer(scorer: str, bootstrap: dict,
+                   ml_dir: Path) -> tuple[pd.DataFrame | None, dict[str, Any]]:
+    """The next-GW xP frame for the requested scorer, plus run metadata.
+
+    ``model`` reads ``<ml_dir>/xp_gw{N}.parquet`` for the bootstrap's next
+    event and requires its panel to end at the bootstrap's last finished
+    gameweek (see ``read_gw_xp``); a missing, unreadable or stale file falls
+    back to the heuristic for everyone.
+    The metadata (merged into the waiver_plan / my_week JSON) records what
+    actually ran, never just what was asked for:
+
+    * ``scorer`` — the scorer used (``heuristic`` after a fallback)
+    * ``scorer_requested`` — the ``--scorer`` value
+    * ``xp_fallback`` — True when ``model`` was requested but not used
+    * ``xp_fallback_reason`` — why (None when there was no fallback)
+    """
+    meta: dict[str, Any] = {"scorer": scorer, "scorer_requested": scorer,
+                            "xp_fallback": False, "xp_fallback_reason": None}
+    if scorer != "model":
+        return None, meta
+    event = next_event(bootstrap)
+    if event is None:
+        frame, reason = None, "no upcoming gameweek in the bootstrap"
+    else:
+        last_finished = max(finished_gameweeks(bootstrap), default=0)
+        frame, reason = read_gw_xp(Path(ml_dir) / f"xp_gw{event}.parquet", event,
+                                   last_finished)
+    if reason:
+        logger.warning("%s — falling back to heuristic", reason)
+        meta.update(scorer="heuristic", xp_fallback=True, xp_fallback_reason=reason)
+    return frame, meta
+
+
 def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
                        projections_path: Path, *,
                        fixtures_by_event: dict | None = None,
-                       neutral_availability: bool = False) -> pd.DataFrame:
-    """One row per 26/27 element: identity, availability, next-3 xP, ROS value.
+                       neutral_availability: bool = False,
+                       gw_xp: pd.DataFrame | None = None) -> pd.DataFrame:
+    """One row per 26/27 element: identity, availability, xP, ROS value.
 
-    ``fixtures_by_event`` overrides the bootstrap schedule and
+    ``fixtures_by_event`` overrides the bootstrap schedule (default:
+    ``upcoming_fixtures``, i.e. from ``next_event`` onward) and
     ``neutral_availability`` forces availability to 1.0, except 0.0 for
     departed (status "u") players (both used by the
     replay harness, where only the current status/news snapshot exists).
+
+    ``gw_xp`` is the match model's one-row-per-code next-GW frame (see
+    ``matchmodel.build_gw_xp``). Joined on the permanent ``code``, it supplies
+    ``xp_next, p_start, xp_floor, xp_ceiling, drivers, opponents`` with
+    ``xp_source == "model"``. A player it does not cover — no row, or a row
+    without a prediction (``usable_gw_xp``) — gets the heuristic
+    1-GW value (``ros/38 x next-event fixture load x availability``,
+    source ``heuristic``), or ``none`` when there is no projection either.
+    ``next3_xp`` stays heuristic (already availability-gated).
+
+    Availability reconciliation: the model row's Stage-1 gate used the
+    bootstrap from when the xP file was built. When the CURRENT availability
+    is 0 (status u/i/s without a chance, or chance 0) a model row's
+    ``xp_next``, ``p_start``, ``xp_floor`` and ``xp_ceiling`` are set to 0
+    and ``xp_reconciled`` is True (False on every other row). Partial
+    availability changes (e.g. a new 50% doubt) are not reconciled.
     """
     strengths = team_strengths(seasons, bootstrap.get("teams", []))
+    if fixtures_by_event is None:
+        fixtures_by_event = upcoming_fixtures(bootstrap)
     load = next_fixture_load(bootstrap, strengths, fixtures_by_event=fixtures_by_event)
+    load1 = next_fixture_load(bootstrap, strengths, n_events=1,
+                              fixtures_by_event=fixtures_by_event)
+    model_by_code: dict[int, dict] = {}
+    if gw_xp is not None and not gw_xp.empty:
+        usable = usable_gw_xp(gw_xp)
+        if len(usable) < len(gw_xp):
+            logger.warning("match xP has no prediction for %d of %d players (position not "
+                           "fitted) — heuristic for those", len(gw_xp) - len(usable), len(gw_xp))
+        model_by_code = usable.drop_duplicates("code").set_index("code").to_dict("index")
     projections = {}
     if Path(projections_path).exists():
         projections = {int(r["code"]): r for r in
@@ -152,6 +337,27 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
             avail = availability_factor(el)
         per_gw = (ros / TOTAL_GWS) if ros is not None else None
         next3 = (per_gw * load.get(el.get("team"), 0.0) * avail) if per_gw is not None else None
+        model = model_by_code.get(el.get("code"))
+        reconciled = False
+        if model is not None:
+            xp_next, xp_source = float(model["xp"]), "model"
+            xp_extra = {"p_start": float(model["p_start"]), "xp_floor": float(model["xp_floor"]),
+                        "xp_ceiling": float(model["xp_ceiling"]),
+                        "drivers": model["drivers"], "opponents": model["opponents"]}
+            if avail == 0.0 and (xp_next > 0.0 or xp_extra["p_start"] > 0.0):
+                # The xP file's Stage-1 gate saw the bootstrap of its build
+                # time; a player ruled out since (or served from an older
+                # file after a failed rebuild) must not keep a positive xP.
+                xp_next, reconciled = 0.0, True
+                xp_extra.update(p_start=0.0, xp_floor=0.0, xp_ceiling=0.0)
+        else:
+            xp_extra = {"p_start": None, "xp_floor": None, "xp_ceiling": None,
+                        "drivers": None, "opponents": None}
+            if per_gw is not None:
+                xp_next = per_gw * load1.get(el.get("team"), 0.0) * avail
+                xp_source = "heuristic"
+            else:
+                xp_next, xp_source = None, "none"
         rows.append({
             "element": el["id"], "code": el.get("code"),
             "web_name": el.get("web_name"),
@@ -160,6 +366,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
             "availability": avail,
             "status": el.get("status"), "news": el.get("news") or "",
             "next3_xp": round(next3, 1) if next3 is not None else None,
+            "xp_next": round(xp_next, 2) if xp_next is not None else None,
+            "xp_source": xp_source, "xp_reconciled": reconciled, **xp_extra,
             # ROS is deliberately NOT availability-gated: an injury gates the
             # next-3 horizon, not the season (status "u" = departed is the
             # exception and is filtered out of recommendations entirely).
@@ -206,13 +414,24 @@ def best_xi(squad: pd.DataFrame, value_col: str = "next3_xp") -> tuple[pd.DataFr
 # ---------------------------------------------------------------------------
 
 def recommend(players: pd.DataFrame, squad: pd.DataFrame,
-              top_n: int = 10) -> list[dict[str, Any]]:
+              top_n: int = 10, *, rank_by: str = "next1") -> list[dict[str, Any]]:
     """Ranked add/drop pairs with the short-vs-long balance made explicit.
 
     For each free agent, pair with the weakest same-position player in my
-    squad (by ROS). Gains are computed on both horizons; the label encodes
-    the balance so a fixture-run streamer is never confused with a season
-    upgrade.
+    squad (by ROS). ``next1_gain`` = next-GW xP of the add minus the drop,
+    ``season_gain`` = ROS difference. Ranking is by ``next1_gain`` descending;
+    ``hold`` recs (no next-GW gain, better over the season) come after every
+    positive-next1 rec, ordered by ``season_gain``. The label encodes the
+    balance so a streamer is never confused with a season upgrade. A free
+    agent without a ROS projection is ranked only when the match model
+    values him (``xp_source == "model"``); his ``season_gain`` is emitted as
+    None with ``season_unknown`` True (every other rec carries False) and
+    counts as 0 for the label and the ordering; his ``next3_gain`` is None
+    as well, because the 3-GW value is built from the missing projection.
+
+    ``rank_by="legacy"`` keeps the pre-xP behaviour for the heuristic scorer
+    (labels from ``next3_gain``, ranked by the larger of ``next3_gain`` and
+    ``season_gain``); ``plan`` selects it whenever no match xP is supplied.
     """
     # Free agents by definition have no owner, so my squad is already excluded.
     pool = players[players["is_free_agent"] & (players["status"] != "u")]
@@ -225,21 +444,33 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
         # Those players go in the plan's unprojected_squad section instead.
         mine = squad[(squad["position"] == fa["position"])
                      & squad["ros_points"].notna()]
-        if mine.empty or pd.isna(fa["ros_points"]):
+        # A free agent with no ROS projection (promoted club, new signing,
+        # under last season's minutes floor) is still rankable on the next GW
+        # when the match model values him: his season gain is unknown — it
+        # counts as 0 here, so he can only ever label as a "stream", and is
+        # emitted as null with season_unknown so no consumer reads it as 0.
+        # The legacy ranking has no next-GW model value and still skips him.
+        model_only = (rank_by != "legacy" and pd.isna(fa["ros_points"])
+                      and fa["xp_source"] == "model")
+        if mine.empty or (pd.isna(fa["ros_points"]) and not model_only):
             continue  # cannot recommend a player we cannot value
         drop = mine.sort_values(["ros_points", "next3_xp"]).iloc[0]
 
         def _v(x):
             return 0.0 if pd.isna(x) else float(x)
 
-        next3_gain = _v(fa["next3_xp"]) - _v(drop["next3_xp"])
-        season_gain = _v(fa["ros_points"]) - _v(drop["ros_points"])
-        if next3_gain <= 0 and season_gain <= 0:
+        next1_gain = _v(fa["xp_next"]) - _v(drop["xp_next"])
+        # next3_xp is heuristic (ros/38 based), so a model-only add has none:
+        # the gain is unknown, not "0 minus the drop".
+        next3_gain = None if model_only else _v(fa["next3_xp"]) - _v(drop["next3_xp"])
+        season_gain = 0.0 if model_only else _v(fa["ros_points"]) - _v(drop["ros_points"])
+        short_gain = next3_gain if rank_by == "legacy" else next1_gain
+        if short_gain <= 0 and season_gain <= 0:
             continue
-        if next3_gain > 0 and season_gain > 0:
+        if short_gain > 0 and season_gain > 0:
             label = "upgrade"       # better now AND over the season: add and hold
-        elif next3_gain > 0:
-            label = "stream"        # helps the next 3 GWs only: plan to re-drop
+        elif short_gain > 0:
+            label = "stream"        # helps the next GW only: plan to re-drop
         else:
             label = "hold"          # tough fixtures now, better player long-term
         recs.append({
@@ -247,24 +478,36 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             "drop_element": int(drop["element"]),
             "add_team": fa["team"], "position": fa["position"],
             "drop": drop["web_name"],
-            "next3_gain": round(next3_gain, 1),
-            "season_gain": round(season_gain, 1),
+            "next1_gain": round(next1_gain, 2),
+            "next3_gain": None if next3_gain is None else round(next3_gain, 1),
+            "season_gain": None if model_only else round(season_gain, 1),
+            "season_unknown": model_only,
             "label": label,
+            "add_xp_next": fa["xp_next"], "drop_xp_next": drop["xp_next"],
+            "add_p_start": fa["p_start"], "add_xp_source": fa["xp_source"],
+            "drivers": fa["drivers"], "opponents": fa["opponents"],
             "add_next3_xp": fa["next3_xp"], "add_ros": fa["ros_points"],
             "drop_next3_xp": drop["next3_xp"], "drop_ros": drop["ros_points"],
             "availability": fa["status"], "news": fa["news"],
             "confidence": fa["confidence"],
         })
-    # Rank by the better of the two gains so both upgrade and stream value
-    # surface; the label keeps them distinguishable.
-    recs.sort(key=lambda r: -max(r["next3_gain"], r["season_gain"]))
+    if rank_by == "legacy":
+        recs.sort(key=lambda r: -max(r["next3_gain"], r["season_gain"]))
+    else:
+        recs.sort(key=lambda r: (r["label"] == "hold", -r["next1_gain"],
+                                 -(r["season_gain"] or 0.0)))
     return recs[:top_n]
 
 
 def unprojected_squad(squad: pd.DataFrame) -> list[dict[str, Any]]:
-    """Squad players the model cannot value (no projection) — surfaced for
-    human judgment instead of being silently treated as droppable zeros."""
-    rows = squad[squad["ros_points"].isna()]
+    """Squad players with no value at all — no ROS projection AND no match
+    xP (``xp_source == "none"``) — surfaced for human judgment instead of
+    being silently treated as droppable zeros. Same definition as my_week's.
+
+    A player with model xP but no ROS projection is valued for the next GW
+    and so is not listed here; he is still never the drop candidate
+    (``recommend`` only drops players with a ROS projection)."""
+    rows = squad[squad["xp_source"] == "none"]
     return [{
         "web_name": p["web_name"], "position": p["position"], "team": p["team"],
         "availability": p["status"], "news": p["news"],
@@ -274,16 +517,24 @@ def unprojected_squad(squad: pd.DataFrame) -> list[dict[str, Any]]:
 def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
          projections_path: Path, entry_id: int, top_n: int = 10, *,
          fixtures_by_event: dict | None = None,
-         neutral_availability: bool = False) -> dict[str, Any]:
+         neutral_availability: bool = False,
+         gw_xp: pd.DataFrame | None = None) -> dict[str, Any]:
     """Pure waiver plan: players table, my squad, best-XI xP, ranked recs.
 
+    ``gw_xp`` (optional) is the match model's next-GW frame; see
+    ``build_player_table``. Without it the heuristic scorer applies and
+    ``recommend`` keeps its pre-xP ranking (``rank_by="legacy"``).
+
     Free agents are the element-status rows with no owner. Returns
-    ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``recommendations``
-    and ``unprojected_squad``. No I/O beyond reading ``projections_path``.
+    ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``recommendations``,
+    ``unprojected_squad`` and ``xp_reconciled`` (how many model rows were
+    zeroed because the player is now ruled out; see ``build_player_table``).
+    No I/O beyond reading ``projections_path``.
     """
     players = build_player_table(
         bootstrap, seasons, projections_path,
-        fixtures_by_event=fixtures_by_event, neutral_availability=neutral_availability)
+        fixtures_by_event=fixtures_by_event, neutral_availability=neutral_availability,
+        gw_xp=gw_xp)
     free = {row["element"] for row in element_status.get("element_status", [])
             if row.get("owner") is None}
     players["is_free_agent"] = players["element"].isin(free)
@@ -291,8 +542,10 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
     _, xi_total = best_xi(squad)
     return {
         "players": players, "squad": squad, "xi_next3_xp": xi_total,
-        "recommendations": recommend(players, squad, top_n),
+        "recommendations": recommend(players, squad, top_n,
+                                     rank_by="next1" if gw_xp is not None else "legacy"),
         "unprojected_squad": unprojected_squad(squad),
+        "xp_reconciled": int(players["xp_reconciled"].sum()),
     }
 
 
@@ -312,19 +565,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--league", type=int, default=int(os.getenv("LEAGUE_ID", "0") or "0"))
     parser.add_argument("--entry", type=int, default=int(os.getenv("ENTRY_ID", "0") or "0"))
     parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--scorer", choices=SCORERS, default=DEFAULT_SCORER,
+                        help="next-GW xP source: match model parquet or the ros/38 heuristic")
+    parser.add_argument("--data-root", type=Path, default=_repo_root() / "data")
+    parser.add_argument("--out", type=Path, default=None,
+                        help="output JSON (default <data-root>/derived/<season>/ml/waiver_plan.json)")
     args = parser.parse_args(argv)
-    if not args.league or not args.entry:
+    load_dotenv(args.data_root.parent / ".env")
+    league = args.league or int(os.getenv("LEAGUE_ID", "0") or "0")
+    entry = args.entry or int(os.getenv("ENTRY_ID", "0") or "0")
+    if not league or not entry:
         parser.error("--league and --entry required (or set LEAGUE_ID / ENTRY_ID)")
 
-    raw_root = _repo_root() / "data/raw" / args.season
+    raw_root = args.data_root / "raw" / args.season
     bootstrap = json.loads((raw_root / "bootstrap/bootstrap-static.json").read_text(encoding="utf-8"))
     element_status = json.loads(
-        (raw_root / f"league/{args.league}/element-status.json").read_text(encoding="utf-8"))
-    seasons = pd.read_parquet(_repo_root() / "data/derived/ml/player_seasons.parquet")
+        (raw_root / f"league/{league}/element-status.json").read_text(encoding="utf-8"))
+    seasons = pd.read_parquet(args.data_root / "derived/ml/player_seasons.parquet")
+    ml_dir = args.data_root / "derived" / args.season / "ml"
 
+    gw_xp, scorer_meta = resolve_scorer(args.scorer, bootstrap, ml_dir)
     result = plan(bootstrap, element_status, seasons,
-                  _repo_root() / "data/derived/ml/projections_2627.json",
-                  args.entry, args.top)
+                  args.data_root / "derived/ml/projections_2627.json",
+                  entry, args.top, gw_xp=gw_xp)
     squad = result["squad"]
     xi, xi_total = best_xi(squad)
     bench = squad[~squad["element"].isin(xi["element"])]
@@ -352,18 +615,23 @@ def main(argv: list[str] | None = None) -> int:
                   f" use player_card for their history{flag}")
 
     recs = result["recommendations"]
-    print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}) ==")
-    print("   label    add                    ->  drop                next3   season")
+    fallback = (f" — FALLBACK: {scorer_meta['xp_fallback_reason']}"
+                if scorer_meta["xp_fallback"] else "")
+    print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}, scorer {scorer_meta['scorer']}{fallback}) ==")
+    print("   label    add                    ->  drop                next1  next3   season  src")
     for r in recs:
         flag = f"  [{r['availability']}] {r['news']}" if r["availability"] != "a" else ""
+        season = "?" if r["season_unknown"] else f"{r['season_gain']:+.1f}"
+        next3 = "?" if r["next3_gain"] is None else f"{r['next3_gain']:+.1f}"
         print(f"  {r['label']:<8} {r['add']:<18}({r['position']}) -> {r['drop']:<18} "
-              f"{r['next3_gain']:>+6.1f} {r['season_gain']:>+7.1f}{flag}")
+              f"{r['next1_gain']:>+6.2f} {next3:>6} {season:>7}"
+              f"  {r['add_xp_source']}{flag}")
 
-    out = _repo_root() / "data/derived" / args.season / "ml/waiver_plan.json"
+    out = args.out or ml_dir / "waiver_plan.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(jsonutil.dumps_strict(
-        {"xi_next3_xp": xi_total, "recommendations": recs,
-         "unprojected_squad": unknown}, indent=1))
+        {**scorer_meta, "xi_next3_xp": xi_total, "recommendations": recs,
+         "unprojected_squad": unknown, "xp_reconciled": result["xp_reconciled"]}, indent=1))
     logger.info("wrote %s", out)
     return 0
 

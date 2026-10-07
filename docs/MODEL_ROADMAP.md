@@ -263,8 +263,9 @@ live-season check has to be re-earned by live rows from GW6 on.
     rather than explicit in the output.
   - **Venue-split team environment** (`lambda_for`/`lambda_against` per venue)
     and the `fixture_targets` derived view.
-  - **Wire the weekly tools onto it** — `waiver_plan`, `my_week` and
-    `trade_check` still consume the per-GW heuristic.
+  - **Wire `trade_check` onto it** — `waiver_plan` and `my_week` now consume
+    the per-GW xP (see "Weekly tools on match xP" below); `trade_check` still
+    uses the heuristic.
   - **Horizons**: xP is produced for one gameweek; the 3-GW and ROS horizons
     in CLAUDE.md §5.2 are not built.
   - Club-move flag and `expected_minutes` surfaced (fixes the case where
@@ -298,10 +299,71 @@ from the ownership snapshots and per-GW live files as they stood at
 points, and compares it with `no_change`, `std_points`, `form3` and my actual
 moves (`me`). Run `uv run python -m backend.ml.replay --season 2026-27
 --gws 2-5` from `apps/backend` (`--data-root` points at another checkout's
-`data/`); it writes `derived/2026-27/ml/waiver_replay.json`. Availability is
+`data/`); it writes `derived/2026-27/ml/waiver_replay_<scorer>.json`
+(`--scorer {heuristic,model}`). Availability is
 neutralised (only the current status/news snapshot exists), so n=4 deadlines
 proves the harness runs, not the model. The as-of contract and caveats are in
 the module docstring.
+
+## Weekly tools on match xP
+
+`waiver_plan` and `my_week` take `--scorer {heuristic,model}`; the default is
+`model` because the 2026-27 GW2-5 live check (startable pool, Spearman model
+vs best baseline: GKP 0.391 vs 0.223, DEF 0.342 vs 0.226, MID 0.345 vs 0.291,
+FWD 0.412 vs 0.356) met the win rule in 4 of 4 positions. The Makefile
+`SCORER` variable and `replay` CLI default the same way. `model` joins
+`xp_gw<N>.parquet` on the permanent `code`; players it does not cover (blank
+GW) get the heuristic value, tagged `xp_source` = `heuristic` (`none` when
+there is no projection either). N is `matchmodel.next_gameweek` for the xP
+build, `waiver_plan` and `my_week` alike (the heuristic fixture loads start
+at N too, dropping a still-in-play gameweek from the bootstrap fixture
+map). This applies to `SCORER=heuristic` as well, and changes its output
+mid-gameweek: with GW N in play (past its deadline, unfinished), the
+heuristic fixture loads and my_week's `gw` used to start at N (the smallest
+fixture-map key, a locked gameweek) and now start at N+1. Between gameweeks
+the heuristic output is unchanged. `xp_gw<N>.parquet` is stale unless its `gw`
+is N and its `panel_max_gw` (the last finished GW in the training panel,
+stamped by `build_gw_xp`) equals the bootstrap's last finished gameweek;
+`make derive` chains the panel rebuild and the xP build with `&&`, so a
+failed panel step never yields an xP file trained on an old panel.
+Between gameweeks that is N-1. Mid-gameweek (GW N-1 in play, planning for N)
+it is N-2, and a file trained through N-2 is served from the deadline on (the
+earlier `== N-1` rule rejected every model file until the gameweek finished,
+which is exactly when `scripts/matchday.sh` runs derive). Once GW N-1
+finishes, that file is stale until derive rebuilds it. A missing, unreadable or stale file falls back to the
+heuristic for everyone with a WARNING, and the JSON says so: `scorer` is the
+scorer actually used (`heuristic` after a fallback), beside
+`scorer_requested`, `xp_fallback` and `xp_fallback_reason`. A served model
+row is reconciled against the CURRENT bootstrap: a player now at availability
+0 (status u/i/s without a chance, or chance 0) gets `xp_next`/`p_start` 0 and
+`xp_reconciled: true` (count in the JSON's `xp_reconciled`), since the file's
+Stage-1 gate saw the bootstrap of its build time. Waiver recs rank
+by `next1_gain`; a free agent with no ROS projection but a model `xp_next`
+(promoted clubs) is ranked too, with `season_gain` null and `season_unknown`
+true (it counts as 0 for the label and ordering, so at most a `stream`);
+`next3_xp` is still heuristic (horizons are a later section), so that free
+agent's `add_next3_xp` and `next3_gain` are null (unknown), and the drop
+pick is unchanged. Known scale mismatch: model xP averages higher than the
+`ros/38` heuristic fallback, so a heuristic-valued drop flatters model-valued
+adds until the horizons work removes most fallbacks.
+
+`replay --scorer model` rebuilds the match xP per deadline N from
+`archive panel UNION season panel[gw completed by T_N]` with the same neutral
+availability as the heuristic (a guard raises if any other season gw is
+present). GW k counts as completed by the waiver cutoff T_N when its last
+fixture's `kickoff_time` + 2.5h <= T_N (live.json fixtures, else bootstrap
+fixtures; no kickoff times = the old `k < N` rule with a WARNING), so a
+congested midweek where GW N's waivers close before GW N-1's last match
+excludes N-1; the baselines' history and the departed rule's minutes use the
+same set. No 2026-27 GW2-5 deadline is affected (every GW N-1 ended >= 2.5
+days before T_N), so the totals below are unchanged. Replay
+`waiver_plan` rank-1 `gw_gain` totals over GW2-5 (n=4, a reported number, not
+a gate): heuristic **-15.0**, model **+8.0**; `std_points` +7.0, `form3` +7.0
+and `me` +2.0 are identical between scorers. Model history: +9.0 as first
+wired, +10.0 after the carried team-form fix, +8.0 once model-valued free
+agents without a ROS projection are ranked (they become the rank-1 pick at
+GW3-5: Slater, McAtee, McAtee). Outputs go to
+`waiver_replay_<scorer>.json`.
 
 ## Working rules
 

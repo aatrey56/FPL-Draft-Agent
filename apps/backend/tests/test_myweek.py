@@ -1,6 +1,7 @@
 """Tests for my_week (backend.ml.myweek). No network — fixtures only."""
 
 import json
+from pathlib import Path
 
 import pandas as pd
 
@@ -26,11 +27,48 @@ def _world(tmp_path, elements, projections):
     return bootstrap, mw.gw_xp_table(bootstrap, SEASONS, proj)
 
 
-def test_next_event_is_smallest_fixture_key():
-    bootstrap = {"fixtures": {"4": [], "5": [], "6": []}}
-    assert mw.next_event(bootstrap) == 4
-    assert mw.next_event({"fixtures": {}}) is None
+def _events(current, nxt, current_finished, current_deadline):
+    return {"current": current, "next": nxt, "data": [
+        {"id": current, "finished": current_finished, "deadline_time": current_deadline},
+        {"id": nxt, "finished": False, "deadline_time": "2099-01-01T00:00:00Z"}]}
+
+
+def test_next_event_follows_the_event_calendar():
+    between = {"events": _events(5, 6, True, "2026-09-18T17:30:00Z"),
+               "fixtures": {"6": [], "7": []}}
+    assert mw.next_event(between) == 6
+    assert mw.next_event({"fixtures": {"4": []}}) is None   # no calendar
     assert mw.next_event({}) is None
+
+
+def test_mid_gameweek_plans_the_next_gw_not_the_one_in_play(tmp_path):
+    """Review regression: mid-GW the fixture map still holds the in-play GW,
+    so its smallest key (6) disagreed with matchmodel.next_gameweek (7).
+    my_week's gw, its fixture load and waiver's xP file must all say GW7."""
+    bootstrap = {
+        "teams": TEAMS,
+        "events": _events(6, 7, False, "2026-10-03T10:00:00Z"),   # GW6 in play
+        "fixtures": {"6": [{"team_h": 1, "team_a": 2}],             # GW6: both play
+                     "7": [{"team_h": 1, "team_a": 3}]},            # GW7: Wolves blank
+        "elements": [
+            {"id": 1, "code": 10, "web_name": "Gunner", "element_type": 3, "team": 1, "status": "a"},
+            {"id": 2, "code": 11, "web_name": "Wolf", "element_type": 3, "team": 2, "status": "a"}]}
+    proj = tmp_path / "p.json"
+    proj.write_text(json.dumps([{"code": 10, "projected_points": 76.0},
+                                {"code": 11, "projected_points": 76.0}]))
+    assert mw.next_event(bootstrap) == 7
+    players = mw.gw_xp_table(bootstrap, SEASONS, proj).set_index("web_name")
+    assert players.loc["Wolf", "gw_fixture_load"] == 0 and players.loc["Wolf", "gw_xp"] == 0
+    assert players.loc["Gunner", "gw_fixture_load"] > 0
+
+    # GW5 is the last finished GW, so the freshest panel (and the xP file's
+    # panel_max_gw) ends there while GW6 is in play.
+    bootstrap["events"]["data"].insert(
+        0, {"id": 5, "finished": True, "deadline_time": "2026-09-26T10:00:00Z"})
+    _model_frame([(10, 5.0)], gw=7).assign(panel_max_gw=5).to_parquet(
+        tmp_path / "xp_gw7.parquet")
+    frame, meta = mw.wv.resolve_scorer("model", bootstrap, tmp_path)
+    assert frame is not None and meta["scorer"] == "model"
 
 
 def test_gw_xp_scores_single_event_and_availability(tmp_path):
@@ -155,3 +193,133 @@ def test_blank_gameweek_flags_players(tmp_path):
     row = players.iloc[0]
     assert row["gw_xp"] == 0.0
     assert "blank gameweek: no fixture" in mw.player_warnings(row)
+
+
+# ---- match xP wiring --------------------------------------------------------
+
+def _model_frame(rows, gw=4):
+    return pd.DataFrame([{
+        "code": code, "xp": xp, "p_start": 0.9, "xp_floor": 0.0, "xp_ceiling": xp + 3,
+        "drivers": "d", "opponents": "vWOL", "gw": gw, "panel_max_gw": gw - 1}
+        for code, xp in rows])
+
+
+def _xp_world(tmp_path, gw_xp):
+    bootstrap = {
+        "teams": TEAMS, "fixtures": {"4": [{"team_h": 1, "team_a": 2}]},
+        "elements": [
+            {"id": 1, "code": 10, "web_name": "Covered", "element_type": 3, "team": 1, "status": "a"},
+            {"id": 2, "code": 11, "web_name": "Heur", "element_type": 3, "team": 1, "status": "a"},
+            {"id": 3, "code": 12, "web_name": "Mystery", "element_type": 3, "team": 1, "status": "a"}]}
+    proj = tmp_path / "p.json"
+    proj.write_text(json.dumps([{"code": 10, "projected_points": 76.0},
+                                {"code": 11, "projected_points": 76.0}]))
+    return mw.gw_xp_table(bootstrap, SEASONS, proj, gw_xp=gw_xp)
+
+
+def test_model_xp_used_when_covered_else_heuristic_with_source(tmp_path):
+    players = _xp_world(tmp_path, _model_frame([(10, 7.0)]))
+    by_name = players.set_index("web_name")
+    assert by_name.loc["Covered", "gw_xp"] == 7.0 and by_name.loc["Covered", "xp_source"] == "model"
+    assert by_name.loc["Heur", "xp_source"] == "heuristic" and by_name.loc["Heur", "gw_xp"] > 0
+    assert by_name.loc["Mystery", "xp_source"] == "none" and pd.isna(by_name.loc["Mystery", "gw_xp"])
+
+
+def test_unprojected_squad_lists_only_xp_source_none_and_warnings_differ(tmp_path):
+    players = _xp_world(tmp_path, _model_frame([(10, 7.0)]))
+    status = {"element_status": [{"element": e, "owner": 42} for e in (1, 2, 3)]}
+    week = mw.build_my_week(players, status, 42)
+    assert [p["web_name"] for p in week["unprojected_squad"]] == ["Mystery"]
+    warnings = {p["web_name"]: p["warnings"] for p in week["attention"]}
+    assert warnings["Heur"] == ["no model xP — heuristic"]
+    assert warnings["Mystery"] == ["no value — judge manually (player_card)"]
+    assert all("xp_source" in row for row in week["xi"] + week["bench"])
+
+
+def test_heuristic_scorer_does_not_warn_on_every_player(tmp_path):
+    players = _xp_world(tmp_path, None)
+    status = {"element_status": [{"element": e, "owner": 42} for e in (1, 2)]}
+    assert mw.build_my_week(players, status, 42)["attention"] == []
+
+
+def test_cli_writes_the_scorer_actually_used(weekly_cli_root, weekly_cli_argv, tmp_path):
+    """Review regression: --scorer model with a stale xP file wrote scorer "model"."""
+    xp_path = weekly_cli_root / "derived/2026-27/ml/xp_gw6.parquet"
+    _model_frame([(101, 3.0)], gw=5).to_parquet(xp_path)          # built for GW5
+    out = tmp_path / "out" / "my_week.json"
+    assert mw.main(weekly_cli_argv(out, "model")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["gw"] == 6
+    assert doc["scorer"] == "heuristic" and doc["scorer_requested"] == "model"
+    assert doc["xp_fallback"] is True and "stale" in doc["xp_fallback_reason"]
+
+    assert mw.main(weekly_cli_argv(out, "heuristic")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["scorer"] == "heuristic" and doc["xp_fallback"] is False
+
+
+def test_cli_falls_back_on_an_unreadable_xp_file(weekly_cli_root, weekly_cli_argv, tmp_path):
+    """Review regression: a corrupt xP parquet crashed my_week."""
+    (weekly_cli_root / "derived/2026-27/ml/xp_gw6.parquet").write_bytes(b"\x00garbage")
+    out = tmp_path / "out" / "my_week.json"
+    assert mw.main(weekly_cli_argv(out, "model")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["scorer"] == "heuristic" and doc["xp_fallback"] is True
+    assert "unreadable" in doc["xp_fallback_reason"]
+
+
+SHARED_WARNING_CODES = Path(__file__).resolve().parents[3] / "testdata/my_week_warning_codes.json"
+
+
+def test_warning_codes_match_the_fixture_shared_with_go():
+    """The Go TUI and tool note read the same file, so a renamed or added
+    code fails both suites instead of drifting silently."""
+    shared = json.loads(SHARED_WARNING_CODES.read_text())["warning_codes"]
+    assert [mw.WARNING_NO_VALUE, mw.WARNING_BLANK_GW,
+            mw.WARNING_AVAILABILITY, mw.WARNING_HEURISTIC_XP] == shared
+    declared = {value for name, value in vars(mw).items() if name.startswith("WARNING_")}
+    assert declared == set(shared)
+
+
+def test_warning_codes_are_stable_and_aligned_with_text(tmp_path):
+    """The TUI matches on warning_codes; each code sits at its text's index."""
+    players = _xp_world(tmp_path, _model_frame([(10, 7.0)]))
+    players.loc[players["web_name"] == "Mystery", ["status", "news"]] = ["d", "Knock"]
+    status = {"element_status": [{"element": e, "owner": 42} for e in (1, 2, 3)]}
+    week = mw.build_my_week(players, status, 42)
+    att = {p["web_name"]: p for p in week["attention"]}
+    assert att["Mystery"]["warning_codes"] == [mw.WARNING_NO_VALUE, mw.WARNING_AVAILABILITY]
+    assert att["Mystery"]["warnings"][1] == "availability [d] — Knock"
+    assert att["Heur"]["warning_codes"] == [mw.WARNING_HEURISTIC_XP]
+    for row in week["xi"] + week["bench"]:
+        assert len(row["warning_codes"]) == len(row["warnings"])
+
+
+def test_actionable_warnings_come_before_the_scoring_source_note(tmp_path):
+    """Review regression: for a projected player in a blank gameweek the
+    heuristic_xp note came first, and the TUI rail shows only the first
+    warning — so "no fixture" was hidden behind "heuristic xP"."""
+    elements = [
+        {"id": 1, "code": 10, "web_name": "Covered", "element_type": 3, "team": 1, "status": "a"},
+        {"id": 2, "code": 11, "web_name": "Blanked", "element_type": 3, "team": 2, "status": "a"},
+        {"id": 3, "code": 12, "web_name": "BlankedHurt", "element_type": 3, "team": 2,
+         "status": "i", "news": "Knee"}]
+    bootstrap = {"teams": TEAMS, "fixtures": {"4": [{"team_h": 1, "team_a": 1}]},  # team 2 blanks
+                 "elements": elements}
+    proj = tmp_path / "p.json"
+    proj.write_text(json.dumps([{"code": code, "projected_points": 76.0} for code in (10, 11, 12)]))
+    players = mw.gw_xp_table(bootstrap, SEASONS, proj, gw_xp=_model_frame([(10, 7.0)]))
+    status = {"element_status": [{"element": e, "owner": 42} for e in (1, 2, 3)]}
+    att = {p["web_name"]: p for p in mw.build_my_week(players, status, 42)["attention"]}
+    assert "Covered" not in att
+    assert att["Blanked"]["warning_codes"] == [mw.WARNING_BLANK_GW, mw.WARNING_HEURISTIC_XP]
+    assert att["Blanked"]["warnings"][0] == "blank gameweek: no fixture"
+    assert att["BlankedHurt"]["warning_codes"] == [
+        mw.WARNING_BLANK_GW, mw.WARNING_AVAILABILITY, mw.WARNING_HEURISTIC_XP]
+
+
+def test_scoring_source_note_alone_is_still_reported(tmp_path):
+    """Edge case: with nothing more actionable, heuristic_xp is the only warning."""
+    players = _xp_world(tmp_path, _model_frame([(10, 7.0)]))
+    heur = players[players["web_name"] == "Heur"].iloc[0]
+    assert [code for code, _ in mw.player_warning_items(heur)] == [mw.WARNING_HEURISTIC_XP]
