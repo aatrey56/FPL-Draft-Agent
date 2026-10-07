@@ -1450,6 +1450,42 @@ def test_squad_player_with_no_model_value_and_no_ros_is_never_the_drop(tmp_path)
     assert [p["web_name"] for p in result["unprojected_squad"]] == ["Unknown"]
 
 
+def test_blank_gw_player_with_a_model_horizon_is_a_drop_not_unprojected(tmp_path):
+    """Regression: a no-ROS player blanking next GW has xp_source "none" but a
+    model 3-GW value; under next3 he was the drop AND listed as "no value,
+    never auto-dropped". He is now only the drop."""
+    horizon = _horizon_xp({410: [5.0, 5.0, 5.0], 411: [4.0, 4.0, 4.0], 300: [3.0, 3.0, 3.0],
+                           401: [3.0, 3.0, 3.0], 402: [1.0, 1.0, 1.0], 403: [0.0, 0.2, 0.2]})
+    gw_xp = _gw_xp([(410, 5.0), (411, 4.0), (300, 3.0), (401, 3.0), (402, 1.0)])
+    result = _drop_world(tmp_path, departed_status="a", gw_xp=gw_xp, horizon_xp=horizon)
+    unknown = result["squad"].set_index("web_name").loc["Unknown"]
+    assert unknown["xp_source"] == "none" and unknown["next3_source"] == "model"
+    assert result["rank_by"] == "next3"
+    assert {r["drop"] for r in result["recommendations"]} == {"Unknown"}
+    assert result["unprojected_squad"] == []
+
+
+def test_unprojected_squad_is_the_complement_of_the_drop_pool():
+    """Edge: under legacy only a ROS projection values a player; under the
+    model rankings any model value does. Every non-departed squad player is
+    either in drop_order or in unprojected_squad, never both."""
+    squad = pd.DataFrame([
+        {"web_name": "Horizon", "position": "DEF", "team": "AAA", "status": "a", "news": "",
+         "ros_points": None, "ros_adj": None, "xp_next": None, "next3_xp": 0.4},
+        {"web_name": "Nothing", "position": "DEF", "team": "AAA", "status": "a", "news": "",
+         "ros_points": None, "ros_adj": None, "xp_next": None, "next3_xp": None},
+        {"web_name": "Projected", "position": "DEF", "team": "AAA", "status": "a", "news": "",
+         "ros_points": 80.0, "ros_adj": 80.0, "xp_next": 2.0, "next3_xp": 6.0}])
+    for rank_by in ("next1", "next3", "ros", "legacy"):
+        dropped = set(wv.drop_order(squad, rank_by)["web_name"])
+        listed = {p["web_name"] for p in wv.unprojected_squad(squad, rank_by)}
+        assert not dropped & listed and dropped | listed == set(squad["web_name"]), rank_by
+    assert {p["web_name"] for p in wv.unprojected_squad(squad, "next3")} == {"Nothing"}
+    assert {p["web_name"] for p in wv.unprojected_squad(squad, "legacy")} == {"Horizon", "Nothing"}
+    with pytest.raises(ValueError, match="unknown rank_by"):
+        wv.unprojected_squad(squad, "next5")
+
+
 def test_departed_player_is_still_dropped_before_a_zero_xp_teammate(tmp_path):
     result = _drop_world(tmp_path, gw_xp=_gw_xp(_UNKNOWN_AT_ZERO))
     assert {r["drop"] for r in result["recommendations"]} == {"Departed"}

@@ -76,7 +76,7 @@ Design (v1, pre-GW1-honest):
   ``xp_next`` (``--horizon 1``), ``next3_xp`` (``3``) or ``ros_adj``
   (``ros``, tie-break ``next3_xp``). A missing value sorts last, so ROS only
   breaks ties or orders players the horizon cannot value. Any squad player
-  with a model value OR a ROS projection is droppable — an injured 0-xP
+  with a model value (next-GW or 3-GW) OR a ROS projection is droppable — an injured 0-xP
   player is the obvious drop, not an unknown. A player with neither stays in
   ``unprojected_squad`` and is never auto-dropped. A drop without a ROS
   projection makes the rec's season gain unknown (``season_unknown``).
@@ -1011,6 +1011,20 @@ _DROP_KEYS = {"legacy": ["ros_adj", "next3_xp"],
               "ros": ["ros_adj", "next3_xp"]}
 
 
+def valued_mask(squad: pd.DataFrame, rank_by: str = "legacy") -> pd.Series:
+    """Squad players the ``rank_by`` ranking can value: a ROS projection
+    under ``legacy``; a model value or a ROS projection (``xp_next``,
+    ``next3_xp`` or ``ros_points`` present) otherwise. ``drop_order`` draws
+    from these and ``unprojected_squad`` lists the rest, so no player is
+    both a drop and "no value"."""
+    if rank_by not in _DROP_KEYS:
+        raise ValueError(f"unknown rank_by {rank_by!r}")
+    if rank_by == "legacy":
+        return squad["ros_points"].notna()
+    return (squad["ros_points"].notna() | squad["xp_next"].notna()
+            | squad["next3_xp"].notna())
+
+
 def drop_order(squad: pd.DataFrame, rank_by: str = "legacy") -> pd.DataFrame:
     """Squad players who may be dropped, most droppable first.
 
@@ -1028,15 +1042,8 @@ def drop_order(squad: pd.DataFrame, rank_by: str = "legacy") -> pd.DataFrame:
     A player with no value at all is unknown, not worthless, and is never
     returned (see ``unprojected_squad``).
     """
-    if rank_by not in _DROP_KEYS:
-        raise ValueError(f"unknown rank_by {rank_by!r}")
     departed = squad["status"] == "u"
-    if rank_by == "legacy":
-        valued = squad["ros_points"].notna()
-    else:
-        valued = (squad["ros_points"].notna() | squad["xp_next"].notna()
-                  | squad["next3_xp"].notna())
-    droppable = squad[valued | departed]
+    droppable = squad[valued_mask(squad, rank_by) | departed]
     return (droppable.assign(_kept=droppable["status"] != "u")
             .sort_values(["_kept", *_DROP_KEYS[rank_by]], na_position="last")
             .drop(columns="_kept"))
@@ -1250,15 +1257,18 @@ def best_by_position(recs: list[dict[str, Any]],
     return out
 
 
-def unprojected_squad(squad: pd.DataFrame) -> list[dict[str, Any]]:
-    """Squad players with no value at all — no ROS projection AND no match
-    xP (``xp_source == "none"``) — surfaced for human judgment instead of
-    being silently treated as droppable zeros. Same definition as my_week's.
+def unprojected_squad(squad: pd.DataFrame, rank_by: str = "next1") -> list[dict[str, Any]]:
+    """Squad players the ``rank_by`` ranking cannot value at all — no ROS
+    projection AND no model value on any horizon (``valued_mask``) —
+    surfaced for human judgment instead of being silently treated as
+    droppable zeros. Exactly the non-departed players ``drop_order`` never
+    returns, so a listed player is never the drop.
 
-    A player with model xP but no ROS projection is valued by the match
-    model and so is not listed here; under the model scorer he may be the
-    drop (``drop_order``), under the heuristic scorer he never is."""
-    rows = squad[squad["xp_source"] == "none"]
+    A player with no next-GW xP (``xp_source == "none"``, e.g. a blank GW)
+    but a model 3-GW value is valued, not listed. my_week calls this with
+    the default: its table carries no model horizon, so there it means
+    ``xp_source == "none"`` — the same test as its "no value" warning."""
+    rows = squad[~valued_mask(squad, rank_by)]
     return [{
         "web_name": p["web_name"], "position": p["position"], "team": p["team"],
         "availability": p["status"], "news": p["news"],
@@ -1320,7 +1330,7 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
                             else diversify(ranked, top_n)),
         "best_by_position": best_by_position(ranked),
         "drop_candidates": drop_candidates(squad, rank_by),
-        "unprojected_squad": unprojected_squad(squad),
+        "unprojected_squad": unprojected_squad(squad, rank_by),
         **override_report,
         "xp_reconciled": int(players["xp_reconciled"].sum()),
     }
