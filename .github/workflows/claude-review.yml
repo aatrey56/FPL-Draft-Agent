@@ -22,9 +22,14 @@ jobs:
     name: Claude Code Review
     runs-on: ubuntu-latest
 
-    # Every PR into main gets a review; workflow_dispatch allows manual runs.
+    # Every human PR into main gets a review; workflow_dispatch allows manual
+    # runs. Dependabot PRs are skipped: their runs only see Dependabot secrets,
+    # so CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY are empty and the job
+    # always failed. Keyed on the PR author (not github.actor) so a human
+    # re-running or pushing to a Dependabot PR doesn't change the outcome.
     if: |
-      github.base_ref == 'main' ||
+      (github.base_ref == 'main' &&
+       github.event.pull_request.user.login != 'dependabot[bot]') ||
       github.event_name == 'workflow_dispatch'
 
     steps:
