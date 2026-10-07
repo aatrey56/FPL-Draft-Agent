@@ -193,6 +193,8 @@ def build_my_week(players: pd.DataFrame, element_status: dict,
                 "ros_points": None if pd.isna(p["ros_points"]) else float(p["ros_points"]),
                 "xp_source": p["xp_source"],
                 "p_start": None if pd.isna(p["p_start"]) else float(p["p_start"]),
+                "p_appear": (None if pd.isna(p.get("p_appear", float("nan")))
+                             else float(p["p_appear"])),
                 "club_moved": None if pd.isna(p["club_moved"]) else bool(p["club_moved"]),
                 "expected_minutes": (None if pd.isna(p["expected_minutes"])
                                      else float(p["expected_minutes"])),

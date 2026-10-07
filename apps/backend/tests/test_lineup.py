@@ -113,3 +113,38 @@ def test_low_p_start_without_a_flag_is_not_doubtful():
     row = pd.Series({"status": "a", "p_start": 0.3, "role_override": None})
     assert not lu.is_doubtful(row)
     assert lu.is_doubtful(row.copy().replace({"a": "d"}))
+
+
+def _cover_case(**starter):
+    """A one-FWD-short squad: FWD13 starts (fields in ``starter``), FWD14 is
+    the only bench player who can cover him; returns FWD14's sub_value."""
+    spec = [("GKP", 3.0), ("GKP", 1.0)] + [("DEF", 3.0)] * 5 + [("MID", 3.0)] * 5 \
+        + [("FWD", 5.0), ("FWD", 2.0), ("FWD", 0.1)]
+    squad = _squad(spec)
+    squad.loc[squad["web_name"] == "FWD13", list(starter)] = list(starter.values())
+    xi = squad[squad["web_name"].isin(
+        ["GKP1"] + [f"DEF{i}" for i in range(3, 6)] + [f"MID{i}" for i in range(8, 13)]
+        + ["FWD13", "FWD15"])]
+    sub = squad[squad["web_name"] == "FWD14"].iloc[0]
+    return lu.substitute_value(sub, xi)
+
+
+def test_a_likely_cameo_blocks_the_auto_sub():
+    # p_start 0.4 but p_appear 0.9: he plays in 9 of 10 worlds, so cover is
+    # worth 2.0 x 0.1 — not 2.0 x 0.6 as 1 - p_start would say.
+    assert _cover_case(p_start=0.4, p_appear=0.9) == pytest.approx(2.0 * 0.1)
+
+
+def test_heuristic_flagged_starter_gives_cover_real_value():
+    # heuristic row: no p_start/p_appear, a 25% chance-of-playing flag
+    value = _cover_case(p_start=float("nan"), p_appear=float("nan"),
+                        availability=0.25, status="d")
+    assert value == pytest.approx(2.0 * 0.75)
+
+
+def test_model_row_from_an_older_file_falls_back_to_p_start():
+    assert _cover_case(p_start=0.4, p_appear=float("nan")) == pytest.approx(2.0 * 0.6)
+
+
+def test_unavailable_starter_is_certain_to_miss_whatever_p_appear_says():
+    assert _cover_case(p_appear=0.9, availability=0.0) == pytest.approx(2.0)

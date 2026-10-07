@@ -13,15 +13,23 @@ reserve GKP only ever replaces the starting GKP.
 * Bench order — the reserve GKP first (FPL's bench slot 1, which only covers
   the keeper), then outfielders by *substitute value*:
   ``gw_xp x P(at least one starter he could legally replace misses)``, with
-  that probability ``1 - prod(p_start)`` over those starters. It deliberately
+  that probability ``1 - prod(p_play)`` over those starters. It deliberately
   ignores the sub's slot in the queue (an earlier sub may use up the miss):
   simple and monotone, which is what ordering four players needs.
+* ``p_play`` — the chance a starter plays *any* minutes, since even a cameo
+  blocks his auto-sub: 0 when availability is 0; else the model's
+  ``p_appear`` (start or cameo; a role override sets it to its ``p_start``,
+  see ``waiver.apply_role_overrides``); else ``p_start`` (an xP file from
+  before ``p_appear`` was carried); else, for a heuristic row, the
+  ``availability`` factor (the bootstrap ``chance_of_playing_next_round``/100
+  when flagged, see ``waiver.availability_factor``); else 1.
 * ``if_out`` — for each doubtful starter (status ``d``, or p_start below
   ``DOUBT_P_START`` with an availability flag or a role override) the best XI
   with him removed, and who comes in.
 
 Inputs are a squad frame with ``element``, ``web_name``, ``position``,
-``gw_xp``, ``p_start``, ``status`` (``role_override`` optional) plus the
+``gw_xp``, ``p_start``, ``status`` (``p_appear``, ``availability`` and
+``role_override`` optional) plus the
 selection column. Pure: no I/O.
 """
 
@@ -58,12 +66,16 @@ class Lineup:
     bench: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
-def _p_start(row: pd.Series) -> float:
-    """Start chance used for auto-sub odds: 0 when unavailable, unknown = 1."""
+def _p_play(row: pd.Series) -> float:
+    """Chance a starter plays any minutes (blocking his auto-sub); see the
+    module docstring for the fallback order."""
     if row.get("availability") == 0:
         return 0.0
-    value = row.get("p_start")
-    return 1.0 if value is None or pd.isna(value) else float(value)
+    for col in ("p_appear", "p_start", "availability"):
+        value = row.get(col)
+        if value is not None and pd.notna(value):
+            return float(value)
+    return 1.0
 
 
 def _xp(row: pd.Series) -> float:
@@ -89,7 +101,7 @@ def substitute_value(sub: pd.Series, xi: pd.DataFrame) -> float:
     all_play = 1.0
     for _, starter in xi.iterrows():
         if _can_replace(sub["position"], starter["position"], counts):
-            all_play *= _p_start(starter)
+            all_play *= _p_play(starter)
     return _xp(sub) * (1.0 - all_play)
 
 
