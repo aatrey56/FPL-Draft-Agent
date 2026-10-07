@@ -23,3 +23,4 @@ apps/mcp-server/fpl-server/fpl-server
 apps/mcp-server/tui
 .autorefresh.lock/
 .autorefresh.lock/
+apps/mcp-server/cmd/tui/tui
