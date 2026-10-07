@@ -1077,7 +1077,9 @@ def ranked_recs(players: pd.DataFrame, squad: pd.DataFrame,
     * ``gw1`` — next-GW xP (``xp_next``).
     * ``gw3`` — 3-GW xP (``next3_xp``: the match model's horizon sum when
       ``add_next3_source`` is ``model``, else the heuristic). None when the
-      add has no 3-GW value at all — unknown, never "0 minus the drop".
+      add or the drop has no 3-GW value at all — unknown, never "0 minus the
+      drop" or "the add minus 0" (a departed drop counts as 0). An unknown
+      gain counts as 0 for the label and sorts after every known gain.
     * ``ros`` — ``ros_adj`` difference (role-adjusted rest-of-season; a
       departed drop counts as 0). None, with ``season_unknown`` True, for a
       free agent without a ROS projection — such a player is ranked only
@@ -1132,9 +1134,11 @@ def ranked_recs(players: pd.DataFrame, squad: pd.DataFrame,
             return 0.0 if pd.isna(x) else float(x)
 
         next1_gain = _v(fa["xp_next"]) - _v(drop["xp_next"])
-        # An add with no 3-GW value (no projection and no model horizon) has
-        # an unknown gain, not "0 minus the drop".
-        next3_gain = (None if pd.isna(fa["next3_xp"])
+        # A 3-GW value missing on either side (no projection and no model
+        # horizon) makes the gain unknown, not "0 minus the drop" or "the add
+        # minus 0". A departed drop is the exception: his value really is 0.
+        drop_next3_unknown = pd.isna(drop["next3_xp"]) and drop["status"] != "u"
+        next3_gain = (None if pd.isna(fa["next3_xp"]) or drop_next3_unknown
                       else _v(fa["next3_xp"]) - _v(drop["next3_xp"]))
         # A drop with no ROS projection (valued by the match model only) has
         # an unknown season value: the season gain is unknown, not "add - 0".
@@ -1191,10 +1195,11 @@ def ranked_recs(players: pd.DataFrame, squad: pd.DataFrame,
         recs.sort(key=lambda r: (r["label"] == "hold", -r["next1_gain"],
                                  -(r["season_gain"] or 0.0)))
     elif rank_by == "next3":
-        recs.sort(key=lambda r: (r["label"] == "hold", -(r["next3_gain"] or 0.0),
-                                 -(r["season_gain"] or 0.0)))
+        recs.sort(key=lambda r: (r["label"] == "hold", r["next3_gain"] is None,
+                                 -(r["next3_gain"] or 0.0), -(r["season_gain"] or 0.0)))
     elif rank_by == "ros":
-        recs.sort(key=lambda r: (-(r["season_gain"] or 0.0), -(r["next3_gain"] or 0.0)))
+        recs.sort(key=lambda r: (-(r["season_gain"] or 0.0), r["next3_gain"] is None,
+                                 -(r["next3_gain"] or 0.0)))
     else:
         raise ValueError(f"unknown rank_by {rank_by!r}")
     return recs

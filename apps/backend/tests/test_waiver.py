@@ -1407,6 +1407,28 @@ def test_unprojected_zero_xp_squad_player_is_now_the_drop(tmp_path):
     json.loads(jsonutil.dumps_strict(recs))
 
 
+def test_next3_gain_is_null_when_the_drop_has_no_three_gw_value(tmp_path):
+    """Regression: a drop with model next-GW xP but neither ROS nor a model
+    horizon has next3_xp null; next3_gain was "the add minus 0" (the add's
+    whole 3-GW value shown as improvement). It is unknown."""
+    result = _drop_world(tmp_path, departed_status="a", gw_xp=_gw_xp(_UNKNOWN_AT_ZERO))
+    free_a = next(r for r in result["recommendations"] if r["add"] == "FreeA")
+    assert free_a["drop"] == "Unknown" and pd.isna(free_a["drop_next3_xp"])
+    assert free_a["add_next3_xp"] is not None
+    assert free_a["next3_gain"] is None and free_a["gains"]["gw3"] is None
+    assert free_a["label"] == "stream"          # read from next1_gain, unaffected
+    json.loads(jsonutil.dumps_strict(result["recommendations"]))
+
+
+def test_departed_drop_without_a_three_gw_value_counts_as_zero(tmp_path):
+    """Edge: a departed drop's value really is 0, so his gain stays numeric."""
+    result = _drop_world(tmp_path, departed_projection=None,
+                         gw_xp=_gw_xp([(410, 5.0), (411, 4.0), (300, 3.0), (402, 1.0)]))
+    free_a = next(r for r in result["recommendations"] if r["add"] == "FreeA")
+    assert free_a["drop"] == "Departed" and free_a["drop_status"] == "u"
+    assert free_a["next3_gain"] == pytest.approx(free_a["add_next3_xp"])
+
+
 def test_drop_on_the_three_gw_value_under_the_next3_ranking(tmp_path):
     horizon = _horizon_xp({410: [5.0, 5.0, 5.0], 411: [4.0, 4.0, 4.0], 300: [3.0, 3.0, 3.0],
                            402: [1.0, 1.0, 1.0], 401: [0.5, 0.0, 0.0], 403: [2.0, 2.0, 2.0]})
