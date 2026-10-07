@@ -49,3 +49,13 @@ def test_unvalued_player_exports_nulls_and_strict_json(tmp_path):
 def test_panel_max_gw_without_model_is_none():
     assert pv._panel_max_gw(None) is None
     assert pv._panel_max_gw(pd.DataFrame({"panel_max_gw": [5, 5]})) == 5
+
+
+def test_horizon_events_reach_the_document():
+    meta = {**META, "horizon_fallback": False, "horizon_fallback_reason": None,
+            "horizon_events": [37, 38]}
+    doc = pv.build_player_values(_players(), season="2026-27", gw=37, panel_max_gw=36,
+                                 meta=meta, generated_at="x")
+    assert doc["horizon_events"] == [37, 38]
+    loaded = json.loads(jsonutil.dumps_strict(doc))
+    assert loaded["horizon_events"] == [37, 38]

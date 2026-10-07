@@ -94,6 +94,7 @@ type playerValuesDoc struct {
 	XpFallbackReason      *string          `json:"xp_fallback_reason"`
 	HorizonFallback       bool             `json:"horizon_fallback"`
 	HorizonFallbackReason *string          `json:"horizon_fallback_reason"`
+	HorizonEvents         []int            `json:"horizon_events"`
 	Players               []playerValueRow `json:"players"`
 }
 
@@ -180,7 +181,8 @@ func loadPlayerValues(cfg ServerConfig, season string, now time.Time) (*playerVa
 }
 
 // Verdict thresholds for the model path. ros_adj is rest-of-season points;
-// xp_h3 is the next three gameweeks' expected points.
+// xp_h3 is expected points over the next three gameweeks (fewer near season
+// end — see horizonLabel).
 const (
 	tradeRosMargin = 10.0 // ROS points: below this a trade is a close call
 	tradeH3Margin  = 2.0  // 3-GW xP: a short-term cost/gain worth flagging
@@ -232,23 +234,48 @@ func modelTradeSide(doc *playerValuesDoc, names []string) (tradeSide, []string, 
 	return side, warnings, nil
 }
 
-// modelVerdict leads with rest-of-season value and uses the 3-GW horizon to
-// separate a clean upgrade from one that costs points now (or a rental), and
-// to break near-ties on ROS value.
-func modelVerdict(rosGain, h3Gain float64) string {
+// horizonLabel names the span xp_h3 actually sums: horizon_events lists the
+// events in the model's 3-GW value, and near season end the bootstrap may
+// hold fewer than 3. Without horizon_events (heuristic 3-GW values) the label
+// stays the nominal "next 3 GWs".
+func horizonLabel(events []int) string {
+	switch n := len(events); {
+	case n == 0 || n == 3:
+		return "next 3 GWs"
+	case n == 1:
+		return "next GW"
+	default:
+		return fmt.Sprintf("next %d GWs", n)
+	}
+}
+
+// horizonNote explains a short horizon; "" when the export covers 3 events
+// or does not report its coverage.
+func horizonNote(events []int) string {
+	if len(events) == 0 || len(events) >= 3 {
+		return ""
+	}
+	return fmt.Sprintf("xp_h3 covers only %d event(s) %v — the bootstrap does not hold a full 3-GW horizon, so it sums fewer gameweeks",
+		len(events), events)
+}
+
+// modelVerdict leads with rest-of-season value and uses the short horizon
+// (xp_h3, named by label) to separate a clean upgrade from one that costs
+// points now (or a rental), and to break near-ties on ROS value.
+func modelVerdict(rosGain, h3Gain float64, label string) string {
 	switch {
 	case rosGain >= tradeRosMargin && h3Gain >= -tradeH3Margin:
 		return "accept: clear rest-of-season gain without a short-term cost"
 	case rosGain >= tradeRosMargin:
-		return "lean accept: rest-of-season gain, but you lose points over the next 3 GWs"
+		return "lean accept: rest-of-season gain, but you lose points over the " + label
 	case rosGain <= -tradeRosMargin && h3Gain >= tradeH3Margin:
-		return "short-term rental: better next 3 GWs, clearly worse rest of season"
+		return "short-term rental: better " + label + ", clearly worse rest of season"
 	case rosGain <= -tradeRosMargin:
 		return "reject: you are giving up clearly more rest-of-season value"
 	case h3Gain >= tradeH3Margin:
-		return "lean accept: similar rest-of-season value, better next 3 GWs"
+		return "lean accept: similar rest-of-season value, better " + label
 	case h3Gain <= -tradeH3Margin:
-		return "lean reject: similar rest-of-season value, worse next 3 GWs"
+		return "lean reject: similar rest-of-season value, worse " + label
 	}
 	return "close call — judge positional needs, fixtures and the warnings"
 }
@@ -269,22 +296,28 @@ func modelTradeCheck(doc *playerValuesDoc, args TradeCheckArgs) (*mcp.CallToolRe
 		"xp_h3":   round2(get.XpH3 - give.XpH3),
 		"ros_adj": round2(get.RosAdj - give.RosAdj),
 	}
-	return toolMarshal(map[string]any{
+	label := horizonLabel(doc.HorizonEvents)
+	out := map[string]any{
 		"value_source": "model",
 		"source": map[string]any{
 			"file": "player_values.json", "gw": doc.GW, "panel_max_gw": doc.PanelMaxGW,
 			"generated_at": doc.GeneratedAt, "scorer": doc.Scorer,
 			"horizon_fallback": doc.HorizonFallback, "horizon_fallback_reason": doc.HorizonFallbackReason,
+			"horizon_events": doc.HorizonEvents,
 		},
 		"give":     give,
 		"get":      get,
 		"gain":     gain,
-		"verdict":  modelVerdict(gain["ros_adj"], gain["xp_h3"]),
+		"verdict":  modelVerdict(gain["ros_adj"], gain["xp_h3"], label),
 		"warnings": append(giveWarn, getWarn...),
-		"note": fmt.Sprintf("Horizons: xp_next = GW%d match-model xP, xp_h3 = next 3 GWs, ros_adj = role-adjusted rest of season. "+
-			"Verdict leads on ros_adj (margin %.0f) and flags 3-GW swings over %.0f. Totals are raw sums: in a 2-for-1 the extra player only helps if he would start for you.",
-			doc.GW, tradeRosMargin, tradeH3Margin),
-	})
+		"note": fmt.Sprintf("Horizons: xp_next = GW%d match-model xP, xp_h3 = %s, ros_adj = role-adjusted rest of season. "+
+			"Verdict leads on ros_adj (margin %.0f) and flags xp_h3 swings over %.0f. Totals are raw sums: in a 2-for-1 the extra player only helps if he would start for you.",
+			doc.GW, label, tradeRosMargin, tradeH3Margin),
+	}
+	if note := horizonNote(doc.HorizonEvents); note != "" {
+		out["horizon_note"] = note
+	}
+	return toolMarshal(out)
 }
 
 func tradeCheckHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, TradeCheckArgs) (*mcp.CallToolResult, any, error) {

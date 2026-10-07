@@ -17,7 +17,9 @@ Top-level ``gw`` is the bootstrap's next gameweek the values are for;
 without model xP). trade_check treats the file as stale when ``gw`` differs
 from the bootstrap's next gameweek. Scorer metadata (``scorer``,
 ``xp_fallback``/``_reason``, ``horizon_fallback``/``_reason``) records what
-actually ran, exactly as in waiver_plan.json.
+actually ran, exactly as in waiver_plan.json; ``horizon_events`` lists the
+events summed into ``xp_h3`` (None without the horizon file; fewer than 3
+near season end), which trade_check uses to label the span honestly.
 
 No league or entry id is needed: values are league-independent.
 

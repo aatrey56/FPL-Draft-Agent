@@ -65,7 +65,7 @@ func writeTradeFixtures(t *testing.T, cfg ServerConfig, gw int) {
 	})
 	writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/player_values.json"), map[string]any{
 		"season": "2026-27", "gw": gw, "panel_max_gw": 5, "generated_at": "2026-10-07T08:00:00+00:00",
-		"scorer": "model", "xp_fallback": false, "horizon_fallback": false,
+		"scorer": "model", "xp_fallback": false, "horizon_fallback": false, "horizon_events": []int{7, 8, 9},
 		"players": []map[string]any{
 			{"code": 1, "web_name": "Alpha", "position": "FWD", "team": "ARS", "status": "a",
 				"xp_next": 5.5, "xp_source": "model", "xp_h3": 15.0, "xp_h3_source": "model",
@@ -218,6 +218,51 @@ func TestPlanningEventMirrorsNextGameweek(t *testing.T) {
 	}
 }
 
+func TestTradeCheckLabelsShortHorizon(t *testing.T) {
+	cfg := fixtureConfig(t)
+	writeTradeFixtures(t, cfg, 7)
+	// A full 3-event horizon keeps the nominal label and adds no note.
+	res, _, _ := evaluateTrade(cfg, TradeCheckArgs{Give: []string{"Beta"}, Get: []string{"Alpha"}}, tradeNow)
+	text := resultText(t, res)
+	if !strings.Contains(text, "xp_h3 = next 3 GWs") || strings.Contains(text, "horizon_note") {
+		t.Fatalf("full horizon mislabelled: %s", text)
+	}
+
+	// Season end: the export's 3-GW value sums only GW7-8.
+	path := filepath.Join(cfg.DerivedRoot, "2026-27/ml/player_values.json")
+	var doc map[string]any
+	if err := readJSONFile(path, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["horizon_events"] = []int{7, 8}
+	writeFixture(t, path, doc)
+	res, _, err := evaluateTrade(cfg, TradeCheckArgs{Give: []string{"Beta"}, Get: []string{"Alpha"}}, tradeNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = resultText(t, res)
+	for _, want := range []string{`"horizon_events": [`, "xp_h3 = next 2 GWs", `"horizon_note"`, "covers only 2 event(s)"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("short horizon missing %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "next 3 GWs") {
+		t.Fatalf("short horizon still labelled 3 GWs: %s", text)
+	}
+}
+
+func TestHorizonLabel(t *testing.T) {
+	cases := map[string][]int{"next 3 GWs": nil, "next GW": {38}, "next 2 GWs": {37, 38}}
+	for want, events := range cases {
+		if got := horizonLabel(events); got != want {
+			t.Errorf("horizonLabel(%v) = %q, want %q", events, got, want)
+		}
+	}
+	if horizonNote([]int{6, 7, 8}) != "" || horizonNote(nil) != "" {
+		t.Error("full or unreported horizon must not carry a note")
+	}
+}
+
 func TestModelVerdictBands(t *testing.T) {
 	cases := map[[2]float64]string{
 		{12, 0}:   "accept",
@@ -229,7 +274,7 @@ func TestModelVerdictBands(t *testing.T) {
 		{5, 1}:    "close call",
 	}
 	for in, want := range cases {
-		if got := modelVerdict(in[0], in[1]); !strings.HasPrefix(got, want) {
+		if got := modelVerdict(in[0], in[1], "next 3 GWs"); !strings.HasPrefix(got, want) {
 			t.Fatalf("modelVerdict(%v) = %q, want prefix %q", in, got, want)
 		}
 	}
