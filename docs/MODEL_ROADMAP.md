@@ -136,6 +136,68 @@ the best naive baseline above, or add the public FPL API as a second read-only
 source and snapshot `ep_next` weekly so a real comparison accumulates
 prospectively. Until then, the baselines above are the bar.
 
+## Live-season check — 2026-27 GW2-5
+
+`uv run python -m backend.ml.matchmodel --eval-season 2026-27 --eval-gws 2-5
+--panel <archive panel> <2026-27 panel> --out data/derived/2026-27/ml/` scores
+each target gameweek *as it would have been served*
+(`matchmodel.served_walk_forward`):
+
+- **Training set:** every row of the seasons that started before 2026-27 (the
+  2025-26 archive) plus 2026-27 rows with `gw < N` — what `build_gw_xp` fits
+  on. Later seasons are never included.
+- **Features:** the panel's GW-N rows are stripped to outcome-free stubs and
+  featurised through `stub_frame`, the same function `build_gw_xp` uses, so
+  the scored features are the served ones by construction (pinned by a parity
+  test against `upcoming_fixture_rows` + `build_gw_xp`). Outcomes are attached
+  only after scoring. This differs from `--backtest`, which trains within one
+  season on panel rows.
+- Alphas are the shipped `SELECTED_ALPHAS` (nothing tuned on these gameweeks);
+  every metric averages over the same gameweeks (`gws`). It writes
+  `derived/2026-27/ml/match_model_eval_gw2-5.csv`.
+
+Mean per-gameweek Spearman, **startable** pool, 4 gameweeks (re-run 2026-10-06
+on the serving path, after the team-form carry fix):
+
+| position | model | best baseline | edge | model top-20% | baseline top-20% | model MAE |
+|---|---|---|---|---|---|---|
+| GKP | 0.391 | 0.223 (mean l5) | +0.168 | 0.312 | 0.250 | 2.26 |
+| DEF | 0.342 | 0.226 (minutes) | +0.117 | 0.405 | 0.298 | 2.43 |
+| MID | 0.345 | 0.291 (minutes) | +0.054 | 0.296 | 0.333 | 2.05 |
+| FWD | 0.412 | 0.356 (minutes) | +0.056 | 0.462 | 0.488 | 2.69 |
+
+The numbers match the first (pre-parity) run to three decimals: on finished
+gameweeks the stub features equal the panel rows' own features once team form
+carries the latest completed gameweek, so the earlier run's *numbers* stood —
+it was serving, not the eval, that had been stale. The full pool agrees (model
+ahead in all four positions, +0.03 to +0.12). Stage 1 holds up live: Brier
+0.07 / 0.13 / 0.13 / 0.12 (GKP/DEF/MID/FWD), predicted start rate within 4pp
+of actual.
+
+**Verdict: model wins 4/4** (rule: startable-pool Spearman ≥ best baseline in
+≥ 3 of 4 positions and within 0.02 on the fourth). Per the S1 → S2 decision
+rule, the weekly tools should default to the model scorer (`--scorer model`)
+once they are wired onto it; until then they still serve the heuristic.
+
+Caveats: GW2 form is one gameweek; four gameweeks is a small sample (the
+baselines differ by less than the week-to-week spread), and top-20% precision
+is behind the baseline for MID/FWD even where Spearman is ahead. Availability
+is inert here (no historical flags), as in the backtest. GKP `minutes_only` is
+constant at GW2 (every startable keeper has one 90-minute game), so all its
+metrics average 3 gameweeks, not 4; it is not the best GKP baseline.
+
+**Known limitation — double and blank gameweeks.** Serving (`score_fixtures`)
+scores each fixture of a double against its own opponent and sums. The panel
+stores a double as one row with `num_fixtures == 2` and *no* opponent or venue
+(an ingest gap: all 409 DGW rows of 2025-26 — GW26/33/36 — lack them), so the
+eval scores such a row once with imputed opponent features × 2, and a blank
+row (`num_fixtures == 0`) as 0 where serving has no row. Pinned by a test. It
+does not touch this check: 2026-27 GW2-5 has **0** double and 0 blank rows.
+The same gap reaches 8 single-fixture rows of 2026-27 GW2-5
+(`num_fixtures == 1`, no `opponent_team`): the eval imputes their opponent
+features where serving would know the opponent. Fixing both needs
+per-fixture rows in `GAMEWEEK_INGEST`.
+
 ## Phases
 
 ### Phase A — Match xP model  *(core built 2026-08-24)*

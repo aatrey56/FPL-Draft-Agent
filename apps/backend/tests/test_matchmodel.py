@@ -193,6 +193,286 @@ def test_features_for_a_gameweek_use_only_earlier_rows(frame):
     assert row["pts_std"] == pytest.approx(earlier.mean())
 
 
+# --- live-season evaluation: scored as served -------------------------------
+
+LIVE_SEASON = "2026-27"
+LIVE_GWS = 5
+# The target gameweek of the serving-parity checks.
+PARITY_GW = 3
+
+
+def _live_panel(seed: int = 11, season: str = LIVE_SEASON,
+                offset: int = 100) -> pd.DataFrame:
+    """The first ``LIVE_GWS`` gameweeks of a later season.
+
+    Team ids are shifted by ``offset``: nothing may join across seasons.
+    """
+    live = _panel(seed=seed)
+    live = live[live["gw"] <= LIVE_GWS].assign(season=season)
+    live["team_id"] = live["team_id"] + offset
+    live["opponent_team"] = live["opponent_team"] + offset
+    return live.reset_index(drop=True)
+
+
+def _two_season_panel() -> pd.DataFrame:
+    """A full archive season plus the first gameweeks of a live one."""
+    return pd.concat([_panel(), _live_panel()], ignore_index=True)
+
+
+def _paired(live: pd.DataFrame, gw: int) -> tuple[pd.DataFrame, dict]:
+    """Give one live gameweek a real fixture list, and the bootstrap serving it.
+
+    The synthetic rotation is not symmetric (a team's opponent need not list
+    it back), so the target gameweek is re-paired into home/away fixtures that a
+    bootstrap can express.
+    """
+    teams = sorted(int(t) for t in live["team_id"].unique())
+    pairs = list(zip(teams[::2], teams[1::2]))
+    partner = {**{h: a for h, a in pairs}, **{a: h for h, a in pairs}}
+    home = {**{h: True for h, _ in pairs}, **{a: False for _, a in pairs}}
+    live = live.copy()
+    at = live["gw"] == gw
+    live.loc[at, "opponent_team"] = live.loc[at, "team_id"].map(partner)
+    live.loc[at, "opponent_name"] = live.loc[at, "opponent_team"].map(lambda t: f"T{t}")
+    live.loc[at, "was_home"] = live.loc[at, "team_id"].map(home)
+    bootstrap = {
+        "fixtures": {str(gw): [{"team_h": h, "team_a": a} for h, a in pairs]},
+        "teams": [{"id": t, "short_name": f"T{t}"} for t in teams],
+        "elements": [
+            {"id": int(row.code), "code": int(row.code),
+             "element_type": int(row.element_type), "team": int(row.team_id),
+             "status": "a", "chance_of_playing_next_round": None}
+            for row in live.drop_duplicates("code").itertuples()],
+    }
+    return live, bootstrap
+
+
+def _all_feature_columns() -> list[str]:
+    columns = set(mm.MINUTES_FEATURES)
+    for position in mm.POSITIONS:
+        columns.update(mm.feature_columns(position))
+    return sorted(columns)
+
+
+def test_served_walk_forward_scores_the_features_serving_builds():
+    """Parity: the eval scores exactly the rows ``build_gw_xp`` would serve.
+
+    Target (live season, GW3). Serving would build features from the archive
+    plus live GW1-2 and outcome-free bootstrap stubs; the eval must score the
+    same feature values and, fitted on the same rows, the same xP.
+    """
+    live, bootstrap = _paired(_live_panel(), PARITY_GW)
+    panel = pd.concat([_panel(), live], ignore_index=True)
+    served = (mm.served_walk_forward(panel, LIVE_SEASON, [PARITY_GW], alpha=100.0,
+                                     min_train_rows=SMALL_FIT)
+              .set_index("code").sort_index())
+
+    history = panel[(panel["season"] == SEASON)
+                    | ((panel["season"] == LIVE_SEASON) & (panel["gw"] < PARITY_GW))]
+    stubs = mm.upcoming_fixture_rows(bootstrap, PARITY_GW, LIVE_SEASON)
+    frame = build_match_frame(pd.concat([history, stubs], ignore_index=True))
+    expected = (frame[(frame["season"] == LIVE_SEASON) & (frame["gw"] == PARITY_GW)]
+                .set_index("code").sort_index())
+
+    assert served.index.equals(expected.index)
+    columns = _all_feature_columns()
+    pd.testing.assert_frame_equal(served[columns].astype("float64"),
+                                  expected[columns].astype("float64"),
+                                  check_exact=False, atol=1e-9)
+    assert (served["is_startable"] == expected["is_startable"]).all()
+    assert served[["team_conceded_pg", "opp_conceded_pg"]].notna().all().all()
+    # And serving's stub features are the ones the finished gameweek's own
+    # panel row carries — the team-form carry contract (no stale form).
+    full = build_match_frame(panel)
+    played = (full[(full["season"] == LIVE_SEASON) & (full["gw"] == PARITY_GW)]
+              .set_index("code").sort_index())
+    pd.testing.assert_frame_equal(served[columns].astype("float64"),
+                                  played[columns].astype("float64"),
+                                  check_exact=False, atol=1e-9)
+
+    xp = mm.build_gw_xp(history, bootstrap, PARITY_GW, LIVE_SEASON, alpha=100.0,
+                        min_train_rows=SMALL_FIT).set_index("code")["xp"]
+    np.testing.assert_allclose(served["xp"].to_numpy(float),
+                               xp.loc[served.index].to_numpy(float), rtol=1e-9)
+
+
+def test_served_walk_forward_attaches_outcomes_only_after_scoring():
+    """Changing the target gameweek's results moves the labels, never the features."""
+    panel = _two_season_panel()
+    at = (panel["season"] == LIVE_SEASON) & (panel["gw"] == PARITY_GW)
+    shifted = panel.copy()
+    shifted.loc[at, "total_points"] += 50
+    shifted.loc[at, "minutes"] = 0
+    shifted.loc[at, "goals_conceded"] += 9
+    kwargs = {"alpha": 100.0, "min_train_rows": SMALL_FIT}
+    before = mm.served_walk_forward(panel, LIVE_SEASON, [PARITY_GW], **kwargs)
+    after = mm.served_walk_forward(shifted, LIVE_SEASON, [PARITY_GW], **kwargs)
+
+    columns = _all_feature_columns() + ["xp", "p_start"]
+    pd.testing.assert_frame_equal(before[columns], after[columns])
+    assert (after["label_points"] - before["label_points"] == 50).all()
+    truth = panel[at].set_index("code")
+    assert (before.set_index("code")["label_points"]
+            == truth.loc[before["code"], "total_points"].to_numpy()).all()
+
+
+def test_served_walk_forward_training_set_matches_serving(monkeypatch):
+    """GW2 of the live season is fitted on archive rows + live GW1, never GW>=2."""
+    panel = _two_season_panel()
+    captured = []
+    real_fit = mm.MatchModel.fit
+
+    def recording_fit(self, train):
+        captured.append(train)
+        return real_fit(self, train)
+
+    monkeypatch.setattr(mm.MatchModel, "fit", recording_fit)
+    predicted = mm.served_walk_forward(panel, LIVE_SEASON, [2], alpha=100.0,
+                                       min_train_rows=SMALL_FIT)
+
+    assert len(captured) == 1
+    train = captured[0]
+    assert (train["season"] == SEASON).sum() == (panel["season"] == SEASON).sum()
+    live_train = train[train["season"] == LIVE_SEASON]
+    assert not live_train.empty and live_train["gw"].max() == 1
+    assert set(predicted["season"]) == {LIVE_SEASON}
+    assert set(predicted["gw"]) == {2}
+
+
+def test_served_walk_forward_never_trains_on_a_later_season(monkeypatch):
+    """Scoring 2026-27 must not learn from 2027-28, which did not exist yet."""
+    later = _live_panel(seed=13, season="2027-28", offset=200)
+    panel = pd.concat([_two_season_panel(), later], ignore_index=True)
+    seasons = []
+    real_fit = mm.MatchModel.fit
+
+    def recording_fit(self, train):
+        seasons.append(set(train["season"]))
+        return real_fit(self, train)
+
+    monkeypatch.setattr(mm.MatchModel, "fit", recording_fit)
+    mm.served_walk_forward(panel, LIVE_SEASON, [2, 3], alpha=100.0,
+                           min_train_rows=SMALL_FIT)
+    assert seasons == [{SEASON, LIVE_SEASON}, {SEASON, LIVE_SEASON}]
+
+
+def test_season_start_orders_by_start_year_and_rejects_garbage():
+    assert sorted(["2027-28", "2025-26", "2026-27"], key=mm.season_start) == [
+        "2025-26", "2026-27", "2027-28"]
+    with pytest.raises(ValueError):
+        mm.season_start("last season")
+
+
+def test_served_walk_forward_scores_a_panel_double_as_one_imputed_fixture():
+    """Pins the documented DGW limitation of the as-served eval.
+
+    The panel stores a double as one row with ``num_fixtures == 2`` and no
+    opponent, so the eval cannot score each fixture the way ``score_fixtures``
+    serves it: it scores one fixture with imputed opponent features and
+    doubles it. If the panel ever gains per-fixture rows, this test should be
+    replaced by a parity test against ``score_fixtures``.
+    """
+    panel = _two_season_panel()
+    doubled_team = 101
+    at = ((panel["season"] == LIVE_SEASON) & (panel["gw"] == PARITY_GW)
+          & (panel["team_id"] == doubled_team))
+    panel.loc[at, "num_fixtures"] = 2
+    panel.loc[at, ["opponent_team", "opponent_name"]] = np.nan
+    scored = mm.served_walk_forward(panel, LIVE_SEASON, [PARITY_GW], alpha=100.0,
+                                    min_train_rows=SMALL_FIT)
+
+    doubled = scored[scored["team_id"] == doubled_team]
+    single = scored[scored["team_id"] != doubled_team]
+    assert len(doubled) == at.sum()
+    assert doubled[["opp_scored_pg", "opp_conceded_pg"]].isna().all().all()
+    assert doubled["xp"].to_numpy() == pytest.approx(2 * doubled["xp_fixture"].to_numpy())
+    assert single["xp"].to_numpy() == pytest.approx(single["xp_fixture"].to_numpy())
+
+
+def test_served_walk_forward_needs_the_archive_for_a_thin_season():
+    """Within the live season alone GW2 has no labelled history; the archive fixes that."""
+    alone = mm.served_walk_forward(_live_panel(), LIVE_SEASON, [2], alpha=100.0,
+                                   min_train_rows=SMALL_FIT)
+    assert alone.empty
+
+    pooled = mm.served_walk_forward(_two_season_panel(), LIVE_SEASON, [2],
+                                    alpha=100.0, min_train_rows=SMALL_FIT)
+    assert set(pooled["element_type"]) == {1, 2, 3, 4}
+    assert pooled["xp"].notna().all()
+
+
+def test_served_walk_forward_skips_gameweeks_missing_from_the_panel():
+    predicted = mm.served_walk_forward(_two_season_panel(), LIVE_SEASON, [5, 9],
+                                       alpha=100.0, min_train_rows=SMALL_FIT)
+    assert set(predicted["gw"]) == {5}
+
+
+def test_live_eval_scores_every_requested_gameweek():
+    report, calibration = mm.live_eval(_two_season_panel(), LIVE_SEASON, [2, 3, 4, 5],
+                                       min_train_rows=SMALL_FIT)
+    assert set(report["pool"]) == {"startable", "all"}
+    assert set(report["predictor"]) == {"model_xp", *mm.me.BASELINES}
+    # A baseline can be constant (NaN Spearman) in a tiny synthetic GW; the
+    # model itself is scored on all four.
+    assert (report[report["predictor"] == "model_xp"]["gws"] == 4).all()
+    assert (report["gws"] <= 4).all()
+    assert set(calibration["position"]) == {"GKP", "DEF", "MID", "FWD"}
+
+
+def _tiny_report() -> tuple[pd.DataFrame, pd.DataFrame]:
+    rows = [{"pool": pool, "position": "MID", "predictor": predictor,
+             "spearman": value, "top_frac": 0.5, "mae": 2.0, "gws": 3}
+            for pool in ("startable", "all")
+            for predictor, value in (("model_xp", 0.3), ("mean_l3", 0.2))]
+    calibration = pd.DataFrame([{"position": "MID", "brier": 0.1,
+                                 "predicted_rate": 0.6, "actual_rate": 0.62, "n": 9}])
+    return pd.DataFrame(rows), calibration
+
+
+def test_live_report_prints_the_gw2_caveat_only_when_gw2_is_scored(capsys):
+    report, calibration = _tiny_report()
+    mm._print_live_eval(report, calibration, LIVE_SEASON, [2, 3, 4, 5])
+    assert "GW2 form = 1 gameweek" in capsys.readouterr().out
+    mm._print_live_eval(report, calibration, LIVE_SEASON, [3, 4, 5])
+    out = capsys.readouterr().out
+    assert "GW2 form" not in out and "LIVE CHECK 2026-27 GW3-5" in out
+
+
+def test_gw_range_parses_ranges_lists_and_rejects_garbage():
+    assert mm._gw_range("2-5") == [2, 3, 4, 5]
+    assert mm._gw_range("3") == [3]
+    assert mm._gw_range("2,4") == [2, 4]
+    with pytest.raises(Exception):
+        mm._gw_range("five")
+
+
+def test_walk_forward_default_is_unchanged(frame):
+    """Regression: the within-season backtest path reproduces its golden output."""
+    predicted = mm.walk_forward(frame, min_gw=6, alpha=100.0,
+                                min_train_rows=SMALL_FIT)
+    assert len(predicted) == 1680
+    assert predicted["xp"].sum() == pytest.approx(4470.087216015732)
+
+
+def test_walk_forward_default_stays_within_season_on_two_seasons():
+    """Regression: the default path must never train across a season boundary.
+
+    With a second full season beside it, the archive season reproduces its
+    single-season golden output exactly, and the second season its own — so
+    any change that lets the default path pool seasons is caught.
+    """
+    second = _panel(seed=11).assign(season=LIVE_SEASON)
+    second["team_id"] += 100
+    second["opponent_team"] += 100
+    frame = build_match_frame(pd.concat([_panel(), second], ignore_index=True))
+    predicted = mm.walk_forward(frame, min_gw=6, alpha=100.0,
+                                min_train_rows=SMALL_FIT)
+    by_season = predicted.groupby("season")["xp"]
+    assert by_season.size().to_dict() == {SEASON: 1680, LIVE_SEASON: 1680}
+    assert by_season.sum()[SEASON] == pytest.approx(4470.087216015732)
+    assert by_season.sum()[LIVE_SEASON] == pytest.approx(3785.2729618143544)
+
+
 # --- acceptance criterion 3: double gameweeks -------------------------------
 
 def test_double_gameweek_sums_both_fixtures():
@@ -463,6 +743,30 @@ def test_cli_tolerates_empty_season_panel_beside_archive(tmp_path):
     assert mm.main(["--gw", "next", "--season", SEASON, "--panel", str(archive),
                     str(empty), "--bootstrap", str(bootstrap_path), "--out", str(out)]) == 0
     assert out.exists()
+
+
+def test_cli_eval_out_directory_gets_the_default_file_name(tmp_path):
+    archive, live = tmp_path / "archive.parquet", tmp_path / "live.parquet"
+    _panel().to_parquet(archive)
+    _live_panel().to_parquet(live)
+    out_dir = tmp_path / "ml"
+    out_dir.mkdir()
+    assert mm.main(["--eval-season", LIVE_SEASON, "--eval-gws", "2-3",
+                    "--panel", str(archive), str(live), "--out", str(out_dir)]) == 0
+    written = pd.read_csv(out_dir / "match_model_eval_gw2-3.csv")
+    assert list(written.columns) == ["pool", "position", "predictor", "spearman",
+                                     "top_frac", "mae", "gws", "window"]
+
+
+def test_out_path_keeps_an_explicit_file_and_the_default():
+    default = Path("derived/ml/eval.csv")
+    assert mm._out_path(None, default) == default
+    assert mm._out_path(Path("elsewhere.csv"), default) == Path("elsewhere.csv")
+
+
+def test_out_path_puts_the_default_name_inside_an_existing_directory(tmp_path):
+    default = Path("derived/ml/eval.csv")
+    assert mm._out_path(tmp_path, default) == tmp_path / "eval.csv"
 
 
 def test_next_gameweek_list_shape_mid_gw_prefers_is_next():

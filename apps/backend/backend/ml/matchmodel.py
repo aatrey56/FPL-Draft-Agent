@@ -81,6 +81,13 @@ MIN_CAMEO_ROWS = 100
 # trailing history for either stage to be fitted honestly.
 MIN_TRAIN_GW = 5
 
+# Panel columns known before kickoff — what ``upcoming_fixture_rows`` gives a
+# stub when serving. Everything else in a panel row is an outcome.
+PRE_KICKOFF_COLUMNS = ["code", "season", "gw", "element_type", "team_id",
+                       "opponent_team", "opponent_name", "was_home", "num_fixtures"]
+# Realized columns copied back onto evaluated stubs once they are scored.
+OUTCOME_COLUMNS = ["played", "started", "minutes", "total_points"]
+
 # Stage 1 — role only. Deliberately excludes points: the question is whether
 # the manager picks them, not whether they are good.
 MINUTES_FEATURES = [
@@ -508,30 +515,126 @@ def availability_series(bootstrap: dict, codes: pd.Series) -> pd.Series:
     return codes.map(by_code).astype("float64").fillna(1.0)
 
 
+def stub_frame(history: pd.DataFrame, stubs: pd.DataFrame, season: str,
+               gw: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """``(train, target)`` for one gameweek, built the way serving builds them.
+
+    ``stubs`` are outcome-free rows for gameweek ``gw`` of ``season`` (from the
+    bootstrap when serving, from the panel when evaluating); appending them to
+    ``history`` *before* building features is what keeps serving and training
+    consistent: the same shift-and-roll code path produces both, so a feature
+    can never mean one thing in the backtest and another on Sunday morning.
+    ``train`` is every labelled row, ``target`` the stub rows with features.
+    """
+    frame = build_match_frame(pd.concat([history, stubs], ignore_index=True))
+    target = frame[(frame["season"] == season) & (frame["gw"] == gw)]
+    return frame[frame["label_points"].notna()], target
+
+
 def build_gw_xp(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
                 alpha: float | dict[int, float] | None = None,
                 min_train_rows: int = MIN_TRAIN_ROWS) -> pd.DataFrame:
     """Fit on everything completed and score the upcoming gameweek.
 
-    Appending the stub rows to the panel *before* building features is what
-    keeps serving and training consistent: the same shift-and-roll code path
-    produces both, so a feature can never mean one thing in the backtest and
-    another on Sunday morning.
+    Features come from ``stub_frame``, the path ``served_walk_forward`` also
+    evaluates through.
     """
     stubs = upcoming_fixture_rows(bootstrap, gw, season)
     if stubs.empty:
         raise ValueError(f"no fixtures for gameweek {gw} in the bootstrap")
-    frame = build_match_frame(pd.concat([panel, stubs], ignore_index=True))
-    target = frame[(frame["season"] == season) & (frame["gw"] == gw)]
+    train, target = stub_frame(panel, stubs, season, gw)
     model = MatchModel(alpha=alpha or dict(SELECTED_ALPHAS),
-                       min_train_rows=min_train_rows).fit(
-        frame[frame["label_points"].notna()])
+                       min_train_rows=min_train_rows).fit(train)
     if not model.positions:
         raise ValueError("no position had enough training rows to fit")
     availability = availability_series(bootstrap, target["code"])
     scored = score_fixtures(model, target, availability)
     scored["season"], scored["gw"] = season, gw
     return scored.sort_values("xp", ascending=False).reset_index(drop=True)
+
+
+def panel_stub_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    """Completed panel rows reduced to what was known before kickoff.
+
+    The panel-side twin of ``upcoming_fixture_rows``: the same pre-kickoff
+    columns, ``played`` forced False, every outcome dropped — so a stub built
+    from a finished gameweek yields exactly the features serving would have
+    built for it.
+    """
+    present = [column for column in PRE_KICKOFF_COLUMNS if column in rows.columns]
+    return rows[present].assign(played=False).reset_index(drop=True)
+
+
+def _attach_outcomes(scored: pd.DataFrame, actual: pd.DataFrame) -> pd.DataFrame:
+    """Copy the realized outcome columns of ``actual`` onto scored stub rows, by code."""
+    if actual["code"].duplicated().any():
+        raise ValueError("panel has more than one row per (code, season, gw)")
+    outcomes = actual.set_index("code")
+    out = scored.copy()
+    for column in OUTCOME_COLUMNS:
+        if column in outcomes.columns:
+            out[column] = out["code"].map(outcomes[column])
+    out["label_points"] = out["total_points"]
+    return out
+
+
+def season_start(season: str) -> int:
+    """Start year of a season label such as ``"2026-27"`` — its chronological key."""
+    try:
+        return int(str(season).split("-", 1)[0])
+    except ValueError as exc:
+        raise ValueError(f"season {season!r} is not of the form YYYY-YY") from exc
+
+
+def served_walk_forward(panel: pd.DataFrame, season: str, eval_gws: list[int],
+                        alpha: float | dict[int, float] | None = None,
+                        min_train_rows: int = MIN_TRAIN_ROWS) -> pd.DataFrame:
+    """Score finished gameweeks of ``season`` exactly as they would have been served.
+
+    For each target gameweek ``N``: history = every row of the seasons that
+    *started before* ``season`` (later ones did not exist at that deadline)
+    plus ``season``'s rows with ``gw < N``; the panel's gameweek-``N`` rows are
+    stripped to outcome-free stubs (``panel_stub_rows``) and featurised through
+    ``stub_frame`` — the path ``build_gw_xp`` serves through — so serving
+    parity holds by construction. Outcomes are attached only after features
+    and predictions exist.
+
+    Known divergence — double and blank gameweeks. Serving
+    (``score_fixtures``) scores each real fixture of a double against its own
+    opponent and sums. The panel records no opponent for a double-gameweek row
+    (a known ingest gap, see MODEL_ROADMAP.md), so there are no per-fixture
+    stubs to build: such a row is scored once with imputed opponent features
+    and multiplied by ``num_fixtures`` (``score_panel``). A blank row
+    (``num_fixtures == 0``) scores 0, where serving has no row at all.
+    Single-fixture gameweeks are unaffected.
+
+    Takes the raw ``panel``, not a built frame: the frame is rebuilt per
+    target gameweek, as serving does. Returns the scored rows with features,
+    model columns and realized outcomes, in the shape ``walk_forward`` returns.
+    """
+    alpha = dict(SELECTED_ALPHAS) if alpha is None else alpha
+    start = season_start(season)
+    others = panel[panel["season"].map(season_start) < start]
+    current = panel[panel["season"] == season]
+    predictions = []
+    for target_gw in sorted(set(eval_gws)):
+        actual = current[current["gw"] == target_gw]
+        if actual.empty:
+            continue
+        history = pd.concat([others, current[current["gw"] < target_gw]],
+                            ignore_index=True)
+        train, target = stub_frame(history, panel_stub_rows(actual), season, target_gw)
+        model = MatchModel(alpha=alpha, min_train_rows=min_train_rows).fit(train)
+        if not model.positions:
+            continue
+        target = target.reset_index(drop=True)
+        scored = score_panel(model, target).drop(columns="num_fixtures")
+        predictions.append(_attach_outcomes(pd.concat([target, scored], axis=1), actual))
+    logger.info("served walk-forward: season %s, %d gameweeks predicted",
+                season, len(predictions))
+    if not predictions:
+        return pd.DataFrame(columns=list(panel.columns) + ["xp"])
+    return pd.concat(predictions, ignore_index=True)
 
 
 def next_gameweek(bootstrap: dict, now: datetime | None = None) -> int:
@@ -655,7 +758,11 @@ def backtest(frame: pd.DataFrame, min_gw: int = MIN_TRAIN_GW,
 
 def summarise(scored: pd.DataFrame, fraction: float = me.TOP_FRACTION) -> pd.DataFrame:
     """Model against the best naive baseline, per position, on one row each."""
-    report = compare(scored, "startable", fraction)
+    return best_baseline(compare(scored, "startable", fraction))
+
+
+def best_baseline(report: pd.DataFrame) -> pd.DataFrame:
+    """Model against the best naive baseline per position, from a ``compare`` report."""
     model = report[report["predictor"] == "model_xp"].set_index("position")
     others = report[report["predictor"] != "model_xp"]
     best = others.loc[others.groupby("position")["spearman"].idxmax()].set_index("position")
@@ -703,6 +810,78 @@ def _print_backtest(frame: pd.DataFrame, min_gw: int, fraction: float,
     return result
 
 
+def live_eval(panel: pd.DataFrame, season: str, eval_gws: list[int],
+              fraction: float = me.TOP_FRACTION,
+              min_train_rows: int = MIN_TRAIN_ROWS) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Score a live season the way it is served (``served_walk_forward``).
+
+    Returns ``(report, calibration)``: one report row per (pool, position,
+    predictor) for the startable and full pools, and the Stage-1 calibration on
+    the startable pool. Alphas are the shipped ``SELECTED_ALPHAS`` — nothing is
+    tuned on these gameweeks. ``matcheval.MIN_EVAL_GW`` (a 2025-26 default) is
+    replaced by the first evaluated gameweek.
+    """
+    scored = served_walk_forward(panel, season, eval_gws, alpha=dict(SELECTED_ALPHAS),
+                                 min_train_rows=min_train_rows)
+    if scored.empty:
+        raise ValueError(f"no gameweeks of {season} among {eval_gws} could be scored")
+    first = min(eval_gws)
+    startable = me.eligible(scored, startable_only=True, min_gw=first)
+    everyone = me.eligible(scored, startable_only=False, min_gw=first)
+    report = pd.concat([compare(startable, "startable", fraction),
+                        compare(everyone, "all", fraction)], ignore_index=True)
+    report["window"] = f"{season}_gw{first}-{max(eval_gws)}"
+    return report, start_calibration(startable)
+
+
+def _gw_range(value: str) -> list[int]:
+    """argparse type for --eval-gws: ``2-5``, ``3`` or ``2,4,5``."""
+    try:
+        if "-" in value:
+            low, high = value.split("-", 1)
+            gws = list(range(int(low), int(high) + 1))
+        else:
+            gws = [int(part) for part in value.split(",")]
+    except ValueError:
+        gws = []
+    if not gws or min(gws) < 1:
+        raise argparse.ArgumentTypeError(
+            f"--eval-gws must look like 2-5, 3 or 2,4,5; got {value!r}")
+    return gws
+
+
+def _print_live_eval(report: pd.DataFrame, calibration: pd.DataFrame,
+                     season: str, eval_gws: list[int]) -> None:
+    print(f"\n== LIVE CHECK {season} GW{min(eval_gws)}-{max(eval_gws)}: as-of "
+          "walk-forward, trained on archive + earlier GWs of the season ==")
+    if 2 in eval_gws:
+        print("caveat: GW2 form = 1 gameweek")
+    print(f"caveat: every metric is the mean over at most {len(eval_gws)} "
+          "gameweeks (see gws), so noise is large")
+    for pool, title in (("startable", "startable pool"), ("all", "full pool")):
+        view = report[report["pool"] == pool]
+        print(f"\n-- {title}: mean per-gameweek Spearman --")
+        print(view.pivot(index="predictor", columns="position", values="spearman")
+              .round(3).to_string())
+        print(f"gws per row: {sorted(view['gws'].unique().tolist())}")
+        print(f"-- {title}: model vs best baseline --")
+        print(best_baseline(view).round(3).to_string())
+    print("\n-- stage 1 P(start) (startable pool): Brier, predicted vs actual rate --")
+    print(calibration.round(3).to_string(index=False))
+
+
+def _out_path(out: Path | None, default: Path) -> Path:
+    """``--out`` resolved: absent → ``default``; an existing directory → the
+    default file name inside it; anything else is the file to write.
+
+    The directory must already exist: argparse's ``Path`` drops a trailing
+    slash, so ``--out newdir/`` for a missing ``newdir`` writes a file named
+    ``newdir``."""
+    if out is None:
+        return default
+    return out / default.name if out.is_dir() else out
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     root = _repo_root()
@@ -721,13 +900,20 @@ def main(argv: list[str] | None = None) -> int:
                         help="run the walk-forward evaluation and print the report")
     parser.add_argument("--selection-max-gw", type=int, default=SELECTION_MAX_GW,
                         help="last gameweek used to select alpha; later ones are held out")
+    parser.add_argument("--eval-season", type=str, default=None,
+                        help="score this live season as-of (trained on the other "
+                             "panels + its own earlier GWs); needs --eval-gws")
+    parser.add_argument("--eval-gws", type=_gw_range, default=None,
+                        help="gameweeks to score with --eval-season, e.g. 2-5")
     parser.add_argument("--gw", type=_gw_arg, default=None,
                         help="build xp_gw{N}.parquet for this upcoming gameweek; "
                              "'next' picks the first unfinished one from the bootstrap")
     parser.add_argument("--season", type=str, default=None,
                         help="season for --gw, e.g. 2026-27 (also picks the data root)")
     parser.add_argument("--bootstrap", type=Path, default=None)
-    parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--out", type=Path, default=None,
+                        help="output file, or a directory to write the default "
+                             "file name into")
     args = parser.parse_args(argv)
 
     # A missing or empty panel (new season, no finished GW yet) is skipped, not concatenated.
@@ -747,14 +933,31 @@ def main(argv: list[str] | None = None) -> int:
         frame = build_match_frame(panel)
         result = _print_backtest(frame, args.min_gw, args.top_fraction,
                                  args.selection_max_gw)
-        out = args.out or root / "data/derived/ml/match_model_backtest.csv"
+        out = _out_path(args.out, root / "data/derived/ml/match_model_backtest.csv")
         out.parent.mkdir(parents=True, exist_ok=True)
         result.to_csv(out, index=False)
         logger.info("wrote %s", out)
         return 0
 
+    if args.eval_season is not None:
+        if args.eval_gws is None:
+            parser.error("--eval-season requires --eval-gws")
+        if args.eval_season not in set(panel["season"]):
+            parser.error(f"season {args.eval_season} not in the supplied panels")
+        report, calibration = live_eval(
+            panel, args.eval_season, args.eval_gws, args.top_fraction)
+        _print_live_eval(report, calibration, args.eval_season, args.eval_gws)
+        span = f"gw{min(args.eval_gws)}-{max(args.eval_gws)}"
+        out = _out_path(args.out, root / f"data/derived/{args.eval_season}/ml"
+                        / f"match_model_eval_{span}.csv")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        report[["pool", "position", "predictor", "spearman", "top_frac", "mae",
+                "gws", "window"]].to_csv(out, index=False)
+        logger.info("wrote %s", out)
+        return 0
+
     if args.gw is None:
-        parser.error("choose one of --backtest or --gw")
+        parser.error("choose one of --backtest, --eval-season or --gw")
 
     season = args.season
     if season is None:
@@ -765,7 +968,7 @@ def main(argv: list[str] | None = None) -> int:
     gw = next_gameweek(bootstrap) if args.gw == "next" else int(args.gw)
     scored = build_gw_xp(panel, bootstrap, gw, season,
                          alpha=args.alpha or dict(SELECTED_ALPHAS))
-    out = args.out or root / f"data/derived/{season}/ml/xp_gw{gw}.parquet"
+    out = _out_path(args.out, root / f"data/derived/{season}/ml/xp_gw{gw}.parquet")
     out.parent.mkdir(parents=True, exist_ok=True)
     scored.to_parquet(out, index=False)
     logger.info("wrote %s (%d players)", out, len(scored))
