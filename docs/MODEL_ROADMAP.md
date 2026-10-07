@@ -104,6 +104,28 @@ half of it rests on a single match. Early-season output should be read as
 *fixture + role, lightly tinted by one gameweek*, and the cross-season priors
 in RESHAPE_PLAN §6 remain the fix.
 
+### Serving fix: team form was one gameweek stale (2026-10-06)
+
+`matchfeatures._carry_team_form` filled a gameweek with no played rows — a
+blank, or the outcome-free stub rows `build_gw_xp` scores — with the *pre*-GW
+team-form value of the team's last played gameweek. Serving's
+`team_scored_pg`, `team_conceded_pg`, `opp_scored_pg` and `opp_conceded_pg`
+therefore ignored the most recent completed gameweek, and were all NaN at GW2
+(so the cold-start GW2 numbers above were measured without team form). Such
+gameweeks now carry the *post*-GW value: the mean over every played gameweek
+strictly before the target, exactly what a training row for that gameweek
+sees. Played rows are unchanged (verified identical on the 2025-26 and 2026-27
+panels).
+
+Measured impact:
+- **GW6 2026-27 xP:** mean absolute change 0.03 (median 0.01, max 0.30) over
+  667 players; 18 of the top 20 and 48 of the top 50 unchanged. Small because
+  at GW6 the missing gameweek is one of five in an expanding mean; the
+  reviewer's rebuild saw shifts of up to 2.2 at GW2, where the old value was
+  NaN.
+- **2025-26 backtest:** byte-identical. Only blank-gameweek rows changed
+  (409), and those never reach stage 2 (not played) or a score (0 fixtures).
+
 ### On `ep_next`
 
 `MATCH_MODEL_SPEC.md` originally set FPL's own `ep_next` as the bar. It is not

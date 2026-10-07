@@ -515,3 +515,46 @@ def test_cli_errors_when_no_usable_panel(tmp_path):
     with pytest.raises(SystemExit):
         mm.main(["--gw", "next", "--season", SEASON,
                  "--panel", str(tmp_path / "nope.parquet")])
+
+
+def test_build_gw_xp_serves_gw2_with_team_form(monkeypatch):
+    """Regression: GW2 of a new season used to serve all-NaN team form.
+
+    The stub gameweek must inherit the post-GW1 value, exactly what a GW2
+    feature row computed from GW1's results would carry.
+    """
+    archive = _panel()
+    new_season = archive[archive["gw"] == 1].assign(season="2026-27")
+    served = {}
+    original = mm.score_fixtures
+
+    def capture(model, rows, availability=None):
+        served["rows"] = rows
+        return original(model, rows, availability)
+
+    monkeypatch.setattr(mm, "score_fixtures", capture)
+    panel = pd.concat([archive, new_season], ignore_index=True)
+    mm.build_gw_xp(panel, _bootstrap(new_season, 2), 2, "2026-27",
+                   min_train_rows=SMALL_FIT)
+
+    rows = served["rows"]
+    team_columns = ["team_scored_pg", "team_conceded_pg",
+                    "opp_scored_pg", "opp_conceded_pg"]
+    assert rows[team_columns].notna().all().all()
+    gw1 = new_season[new_season["played"]]
+    conceded = gw1.groupby("team_id")["goals_conceded"].max()
+    for _, row in rows.iterrows():
+        assert row["team_conceded_pg"] == pytest.approx(conceded[row["team_id"]])
+        assert row["opp_conceded_pg"] == pytest.approx(conceded[row["opponent_team"]])
+
+
+def test_played_row_team_form_snapshot_on_the_synthetic_season(frame):
+    """Regression: blanks/stub carry must not move any played-row team form."""
+    expected = {
+        "team_scored_pg": 3541.301252, "team_conceded_pg": 3192.0,
+        "opp_scored_pg": 3541.301252, "opp_conceded_pg": 3192.0,
+        "opp_pts_allowed_pg": 17673.118673,
+    }
+    for column, total in expected.items():
+        assert frame[column].sum() == pytest.approx(total, abs=1e-5)
+        assert frame[column].isna().sum() == PER_POSITION * 4  # GW1 only
