@@ -495,6 +495,13 @@ that week, seven more over the three. Two deadlines is not evidence that the
 3-GW ranking is better; it is the default because a waiver add is held for
 more than one gameweek.
 
+Drop on the horizon's value (model scorer drops the squad player with the
+lowest value on the ranking horizon, ROS-unprojected players included;
+heuristic unchanged at -15.0 / -14.0): `--scorer model --horizon 3` moves to
+**+12.0** `gw_gain` / **+24.0** `gw3_gain`. Rank-1 picks now drop the
+injured Kroupi.Jr (GW2, 4, 5) and the low-minutes J.Timber (GW3) instead of
+the lowest-ROS teammate. Still n=4 deadlines: not evidence either way.
+
 ## Working rules
 
 - Plain Python → parquet first (per `CLAUDE.md`); no warehouse until a task
