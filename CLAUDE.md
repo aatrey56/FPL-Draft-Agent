@@ -60,8 +60,9 @@ working here right now:
 - ML work lives under `apps/backend/backend/ml/` with specs as contracts:
   HISTORY_INGEST, GAMEWEEK_INGEST, PROJECTION_MODEL (built), MATCH_MODEL
   (core built — `matchmodel.py`, backtested and beating the naive baselines;
-  the weekly tools have NOT been rewired onto it yet and still serve the
-  per-GW heuristic. Remaining work is listed in `docs/MODEL_ROADMAP.md`).
+  `waiver_plan` and `my_week` serve its next-GW xP, and `waiver_plan` its
+  3-GW horizon, with a loud heuristic fallback; `trade_check` still runs the
+  heuristic. Remaining work is listed in `docs/MODEL_ROADMAP.md`).
 - **Data layout:** flat `data/raw|derived/` = the 2025-26 archive (never
   overwrite); current seasons nest as `<root>/<season>/` (fetcher `--season`,
   server `--default-season`, `ArchiveSeason` const in Go).
@@ -444,7 +445,7 @@ Fetcher (Go, cmd/dev — the only component that hits live APIs:
   ▼
 Derive (Python, backend/ml/*)
   │  projections, player_history, ownership_events,
-  │  waiver_plan, my_week, xp_gw<N>, track_record → data/derived[/<season>]/ml/
+  │  waiver_plan, my_week, xp_gw<N>, xp_horizon_gw<N>, track_record → data/derived[/<season>]/ml/
   ▼
 Go MCP Server (:8080)
   │  reads raw + derived (local JSON only)

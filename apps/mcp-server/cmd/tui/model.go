@@ -71,15 +71,23 @@ type railItem struct {
 	// SeasonUnknown: the add has no rest-of-season projection (promoted
 	// club, new signing), so SeasonGain/AddROS are not numbers to quote.
 	SeasonUnknown bool
-	Next3Gain     float64
-	// Next3Unknown: the add has no 3-GW value (it is built from the missing
-	// projection), so Next3Gain/AddNext3 are not numbers to quote.
+	// RankBy: waiver_plan.json's top-level rank_by (next1 / next3 / ros /
+	// legacy; "" in files written before it existed) — the horizon a
+	// season-unknown add was recommended on.
+	RankBy    string
+	Next3Gain float64
+	// Next3Unknown: the add has no 3-GW value (no match-model horizon and no
+	// projection to build one from), so Next3Gain/AddNext3 are not numbers
+	// to quote.
 	Next3Unknown bool
-	AddROS       float64
-	DropROS      float64
-	AddNext3     float64
-	Confidence   string
-	News         string
+	// Next3Model: the 3-GW value is the match model's horizon (fixtures of
+	// the next 3 GWs, form frozen at this one), not the projection heuristic.
+	Next3Model bool
+	AddROS     float64
+	DropROS    float64
+	AddNext3   float64
+	Confidence string
+	News       string
 }
 
 type fixtureRow struct {
@@ -990,6 +998,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		}
 	}
 	var plan struct {
+		RankBy          string `json:"rank_by"`
 		Recommendations []struct {
 			Add           string  `json:"add"`
 			AddTeam       string  `json:"add_team"`
@@ -1004,12 +1013,17 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			// the role signals, where the raw ROS pair is the gap.
 			AddROSAdj  *float64 `json:"add_ros_adj"`
 			DropROSAdj *float64 `json:"drop_ros_adj"`
-			// Null when the add has no ROS projection: the 3-GW value is
-			// heuristic, so there is nothing to compare (not a zero).
-			Next3Gain  *float64 `json:"next3_gain"`
-			AddNext3   *float64 `json:"add_next3_xp"`
-			Confidence string   `json:"confidence"`
-			News       string   `json:"news"`
+			// Null when the add has no 3-GW value at all — no match-model
+			// horizon and no ROS projection for the heuristic — so there
+			// is nothing to compare (not a zero).
+			Next3Gain *float64 `json:"next3_gain"`
+			AddNext3  *float64 `json:"add_next3_xp"`
+			// "model" when add_next3_xp is the match model's 3-GW horizon;
+			// "heuristic"/"none" otherwise. Absent in files written before
+			// the horizon existed (then it is the heuristic).
+			AddNext3Source string `json:"add_next3_source"`
+			Confidence     string `json:"confidence"`
+			News           string `json:"news"`
 		} `json:"recommendations"`
 	}
 	if err := readJSON(filepath.Join(derived, "ml/waiver_plan.json"), &plan); err == nil {
@@ -1031,7 +1045,9 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			item := railItem{
 				Glyph: "↑", Name: r.Add, Team: r.AddTeam, Note: note,
 				Drop: r.Drop, SeasonGain: r.SeasonGain, SeasonUnknown: r.SeasonUnknown,
+				RankBy:       plan.RankBy,
 				Next3Unknown: r.Next3Gain == nil || r.AddNext3 == nil,
+				Next3Model:   r.AddNext3Source == "model",
 				AddROS:       addROS, DropROS: dropROS,
 				Confidence: r.Confidence, News: r.News}
 			if !item.Next3Unknown {

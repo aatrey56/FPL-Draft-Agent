@@ -359,17 +359,21 @@ func (m *model) sugDetailBody(width int) string {
 		para(fmt.Sprintf("Add %s, drop %s.", r.Name, r.Drop))
 		b.WriteString("\n")
 		if r.SeasonUnknown {
-			para(fmt.Sprintf("No rest-of-season projection for %s (promoted club, new signing or under last season's minutes floor), so there is no season gain to quote — treat it as a next-GW stream.",
-				r.Name))
+			para(fmt.Sprintf("No rest-of-season projection for %s (promoted club, new signing or under last season's minutes floor), so there is no season gain to quote — treat it as a %s.",
+				r.Name, streamHorizon(r.RankBy)))
 		} else {
 			para(fmt.Sprintf("Projected rest-of-season: %s %.0f pts vs %s %.0f pts — the %+.0f is that gap, the season points you gain by making the swap.",
 				r.Name, r.AddROS, r.Drop, r.DropROS, r.SeasonGain))
 		}
 		b.WriteString("\n")
-		if r.Next3Unknown {
-			para(fmt.Sprintf("Next 3 GWs: unavailable — %s has no projection to build a 3-GW value from.",
+		switch {
+		case r.Next3Unknown:
+			para(fmt.Sprintf("Next 3 GWs: unavailable — %s has no match-model horizon and no projection to build a 3-GW value from.",
 				r.Name))
-		} else {
+		case r.Next3Model:
+			para(fmt.Sprintf("Next 3 GWs (match model, by fixtures — form held at this GW): %s projects %.1f xP, %+.1f over %s.",
+				r.Name, r.AddNext3, r.Next3Gain, r.Drop))
+		default:
 			para(fmt.Sprintf("Next 3 GWs: %s projects %.1f xP, %+.1f over %s.",
 				r.Name, r.AddNext3, r.Next3Gain, r.Drop))
 		}
@@ -1220,4 +1224,18 @@ func (m *model) View() string {
 		out += "\n" + strip
 	}
 	return out + "\n" + screen + "\n" + m.footer()
+}
+
+// streamHorizon names the horizon a season-unknown wire add was recommended
+// on. waiver_plan ranks it on its short-horizon gain: the next 3 GWs under
+// rank_by next3 and ros (whose labels read the 3-GW gain), so it may be
+// picked for N+1/N+2 while blanking in N; the next GW under next1 and in
+// files that predate rank_by.
+func streamHorizon(rankBy string) string {
+	switch rankBy {
+	case "next3", "ros":
+		return "stream over the next 3 GWs (its value may sit in the later two)"
+	default:
+		return "next-GW stream"
+	}
 }

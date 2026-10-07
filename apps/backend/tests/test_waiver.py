@@ -218,7 +218,7 @@ def _gw_xp(rows, gw=1):
         for code, xp in rows])
 
 
-def _xp_table(tmp_path, gw_xp):
+def _xp_table(tmp_path, gw_xp, horizon_xp=None):
     """Player table over a small world, with projections for 101/200/201 only."""
     projections = [{"code": 101, "projected_points": 80.0},
                    {"code": 200, "projected_points": 150.0},
@@ -232,7 +232,8 @@ def _xp_table(tmp_path, gw_xp):
             {"id": 20, "code": 200, "web_name": "SeasonStar", "element_type": 4, "team": 1, "status": "a"},
             {"id": 21, "code": 201, "web_name": "Streamer", "element_type": 4, "team": 1, "status": "a"},
             {"id": 99, "code": 999, "web_name": "NoProj", "element_type": 4, "team": 1, "status": "a"}]}
-    return wv.build_player_table(bootstrap, SEASONS, proj_path, gw_xp=gw_xp)
+    return wv.build_player_table(bootstrap, SEASONS, proj_path, gw_xp=gw_xp,
+                                 horizon_xp=horizon_xp)
 
 
 def test_covered_player_takes_model_xp_and_uncovered_falls_back(tmp_path):
@@ -342,9 +343,9 @@ def test_default_scorer_is_model_and_heuristic_stays_available():
     assert wv.DEFAULT_SCORER == "model" and "heuristic" in wv.SCORERS
 
 
-def _model_only_world(tmp_path, xp_rows):
+def _model_only_world(tmp_path, xp_rows, horizon_xp=None):
     """MyWeakFWD (projected, heuristic) in my squad; NoProj and Streamer free."""
-    table = _xp_table(tmp_path, _gw_xp(xp_rows))
+    table = _xp_table(tmp_path, _gw_xp(xp_rows), horizon_xp)
     status = {"element_status": [{"element": 11, "owner": 42},
                                  {"element": 21, "owner": None},
                                  {"element": 99, "owner": None}]}
@@ -740,7 +741,7 @@ def test_seasons_table_without_codes_flags_nobody(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _drop_world(tmp_path, *, departed_status="u", season_panel=None, gw_xp=None,
-                departed_projection=160.0):
+                departed_projection=160.0, **plan_kwargs):
     """My DEFs: Departed (high ROS), Solid, Weak, plus an unprojected Unknown.
     Free DEFs: FreeA, FreeB and FreeMover (moved clubs, big projection)."""
     projections = [{"code": 400, "projected_points": departed_projection},
@@ -767,7 +768,7 @@ def _drop_world(tmp_path, *, departed_status="u", season_panel=None, gw_xp=None,
         *({"element": e, "owner": 42} for e in (40, 41, 42, 43)),
         *({"element": e, "owner": None} for e in (50, 51, 52))]}
     return wv.plan(bootstrap, status, ROLE_SEASONS, proj_path, 42, gw_xp=gw_xp,
-                   season_panel=season_panel)
+                   season_panel=season_panel, **plan_kwargs)
 
 
 @pytest.mark.parametrize("gw_xp", [None, _gw_xp([(410, 5.0), (411, 4.0), (300, 3.0), (402, 1.0)])],
@@ -803,7 +804,7 @@ def test_drop_candidates_lists_three_per_position_in_drop_order(tmp_path):
     assert [c["web_name"] for c in candidates] == ["Departed", "Weak", "Solid"]
     assert candidates[0] == {
         "web_name": "Departed", "position": "DEF", "team": "ARS", "status": "u",
-        "ros_points": 160.0, "ros_adj": 0.0, "xp_next": 0.0,
+        "ros_points": 160.0, "ros_adj": 0.0, "xp_next": 0.0, "next3_xp": 0.0,
         "club_moved": None, "expected_minutes": None}
     json.loads(jsonutil.dumps_strict(result["drop_candidates"]))     # strict-JSON safe
 
@@ -863,10 +864,10 @@ def test_heuristic_ranking_no_longer_leads_with_a_benched_club_mover(tmp_path):
 # role_overrides.json
 # ---------------------------------------------------------------------------
 
-def _override_table(tmp_path):
+def _override_table(tmp_path, horizon_xp=None):
     """SeasonStar: model xp 6.5 (p_start 0.9, xp_started 7.0). Streamer: heuristic."""
     gw_xp = _gw_xp([(200, 6.5)]).assign(xp_started=7.0, xp_cameo=1.5, num_fixtures=1)
-    return _xp_table(tmp_path, gw_xp)
+    return _xp_table(tmp_path, gw_xp, horizon_xp)
 
 
 def _by_name(table):
@@ -1201,7 +1202,7 @@ def test_cli_runs_without_a_season_panel_or_overrides_file(weekly_cli_root, week
     assert "club-move role signals off" in caplog.text
 
 
-def _ruled_out_world(tmp_path, status, chance=None):
+def _ruled_out_world(tmp_path, status, chance=None, horizon_xp=None):
     """Streamer (ros 60 < MyWeakFWD's 80) valued by a cached model row at 6.5
     xP, now with ``status``/``chance`` in the CURRENT bootstrap."""
     projections = [{"code": 101, "projected_points": 80.0},
@@ -1218,7 +1219,7 @@ def _ruled_out_world(tmp_path, status, chance=None):
     status_rows = {"element_status": [{"element": 11, "owner": 42},
                                       {"element": 21, "owner": None}]}
     return wv.plan(bootstrap, status_rows, SEASONS, proj_path, 42,
-                   gw_xp=_gw_xp([(101, 1.0), (201, 6.5)]))
+                   gw_xp=_gw_xp([(101, 1.0), (201, 6.5)]), horizon_xp=horizon_xp)
 
 
 def test_model_xp_of_a_player_now_ruled_out_is_zeroed_and_never_recommended(tmp_path):
@@ -1246,3 +1247,350 @@ def test_reconciliation_only_applies_at_zero_availability(tmp_path, status, chan
     assert bool(row["xp_reconciled"]) is reconciled
     assert bool(row["xp_next"] == 0.0) is reconciled
     assert bool(result["recommendations"]) is not reconciled
+
+
+# --- horizons: gw1 / gw3 / ros -------------------------------------------------
+
+def _horizon_xp(per_code, gw=1, *, started=None, fitted=True):
+    """A ``matchmodel.build_horizon_xp``-shaped frame: ``per_code`` maps a code
+    to its xP in events gw, gw+1, ... (0.0 = a blank). ``started`` maps a code
+    to the matching ``xp_started`` values (default: the xP itself)."""
+    rows = []
+    for code, values in per_code.items():
+        for offset, xp in enumerate(values):
+            rows.append({
+                "code": code, "season": "2026-27", "gw": gw, "event": gw + offset,
+                "num_fixtures": int(xp > 0), "opponents": "vWOL" if xp > 0 else "",
+                "p_start": 0.9 if xp > 0 else float("nan"), "xp": float(xp),
+                "xp_started": float((started or {}).get(code, values)[offset]),
+                "fitted": fitted, "xp_h1": float(values[0]), "xp_h3": float(sum(values)),
+                "events_covered": len(values), "panel_max_gw": gw - 1})
+    return pd.DataFrame(rows)
+
+
+def test_covered_player_takes_the_model_horizon_for_next3(tmp_path):
+    horizon = _horizon_xp({200: [6.5, 0.0, 5.25], 999: [3.0, 3.0, 3.0]})
+    table = _by_name(_xp_table(tmp_path, _gw_xp([(200, 6.5)]), horizon))
+    assert table.loc["SeasonStar", "next3_source"] == "model"
+    assert table.loc["SeasonStar", "next3_xp"] == pytest.approx(11.75)   # 6.5 + blank + 5.25
+    assert table.loc["NoProj", "next3_source"] == "model"                 # no projection needed
+    assert table.loc["NoProj", "next3_xp"] == pytest.approx(9.0)
+    streamer = table.loc["Streamer"]                                      # not in the frame
+    assert streamer["next3_source"] == "heuristic" and streamer["next3_xp"] > 0
+
+
+def test_without_a_horizon_frame_next3_is_the_heuristic_as_before(tmp_path):
+    with_model = _by_name(_xp_table(tmp_path, _gw_xp([(200, 6.5)])))
+    heuristic = _by_name(_xp_table(tmp_path, None))
+    assert (with_model["next3_xp"].dropna() == heuristic["next3_xp"].dropna()).all()
+    assert with_model.loc["SeasonStar", "next3_source"] == "heuristic"
+    assert with_model.loc["NoProj", "next3_source"] == "none"
+    assert pd.isna(with_model.loc["NoProj", "next3_xp"])
+
+
+def test_unfitted_horizon_rows_are_not_served_as_model_values(tmp_path):
+    """Edge: a position the model could not fit has xp 0.0 in the horizon file
+    ("no opinion"); the heuristic must value those players, not that zero."""
+    horizon = _horizon_xp({200: [0.0, 0.0, 0.0]}, fitted=False)
+    table = _by_name(_xp_table(tmp_path, _gw_xp([(201, 5.0)]), horizon))
+    assert table.loc["SeasonStar", "next3_source"] == "heuristic"
+    assert table.loc["SeasonStar", "next3_xp"] > 0
+    assert wv.usable_horizon_xp(horizon).empty and wv.usable_horizon_xp(None).empty
+
+
+def test_rank_key_maps_the_horizon_and_falls_back_safely():
+    gw_xp, horizon = _gw_xp([(200, 6.5)]), _horizon_xp({200: [6.5, 6.0, 5.0]})
+    assert wv.rank_key("1", gw_xp, horizon) == "next1"
+    assert wv.rank_key("3", gw_xp, horizon) == "next3"
+    assert wv.rank_key("ros", gw_xp, horizon) == "ros"
+    assert wv.rank_key("3", gw_xp, None) == "next1"          # no horizon file: next-GW ranking
+    assert wv.rank_key("ros", gw_xp, None) == "ros"
+    for horizon_arg in wv.HORIZONS:                           # heuristic scorer: frozen baseline
+        assert wv.rank_key(horizon_arg, None, None) == "legacy"
+    with pytest.raises(ValueError, match="unknown horizon"):
+        wv.rank_key("5", gw_xp, horizon)
+    assert wv.DEFAULT_HORIZON == "3"
+
+
+def _three_way_world(tmp_path):
+    """SeasonStar: best next GW and all season, but two blanks ahead.
+    Streamer: three kind fixtures, a worse season. Drop = MyWeakFWD."""
+    players, status = _players_fixture(tmp_path)
+    for name, xp_next, next3 in (("MyWeakFWD", 2.0, 6.0), ("SeasonStar", 2.5, 2.5),
+                                 ("Streamer", 2.2, 7.5)):
+        players.loc[players["web_name"] == name, ["xp_next", "next3_xp"]] = [xp_next, next3]
+    players["next3_source"] = "model"
+    return players, wv.my_squad(players, status, entry_id=42)
+
+
+def test_each_horizon_ranks_and_labels_on_its_own_gain(tmp_path):
+    players, squad = _three_way_world(tmp_path)
+
+    def ranked(rank_by):
+        return [(r["add"], r["label"]) for r in wv.recommend(players, squad, rank_by=rank_by)]
+
+    assert ranked("next1") == [("SeasonStar", "upgrade"), ("Streamer", "stream")]
+    assert ranked("next3") == [("Streamer", "stream"), ("SeasonStar", "hold")]
+    assert ranked("ros") == [("SeasonStar", "hold"), ("Streamer", "stream")]   # holds not demoted
+    with pytest.raises(ValueError, match="unknown rank_by"):
+        wv.recommend(players, squad, rank_by="next5")
+
+
+def test_every_rec_carries_gains_for_all_three_horizons(tmp_path):
+    players, squad = _three_way_world(tmp_path)
+    for rank_by in ("legacy", "next1", "next3", "ros"):
+        for rec in wv.recommend(players, squad, rank_by=rank_by):
+            assert rec["gains"] == {"gw1": rec["next1_gain"], "gw3": rec["next3_gain"],
+                                    "ros": rec["season_gain"]}, rank_by
+            assert rec["add_next3_source"] == "model"
+    star = next(r for r in wv.recommend(players, squad, rank_by="next3")
+                if r["add"] == "SeasonStar")
+    assert star["gains"] == {"gw1": 0.5, "gw3": -3.5, "ros": 70.0}
+    json.loads(jsonutil.dumps_strict(wv.recommend(players, squad, rank_by="next3")))
+
+
+def test_drop_tiebreak_follows_the_ranking_horizon():
+    assert wv._drop_tiebreak("next1") == "xp_next"
+    for rank_by in ("legacy", "next3", "ros"):
+        assert wv._drop_tiebreak(rank_by) == "next3_xp"
+
+
+def test_model_only_add_has_a_gw3_gain_once_the_horizon_values_him(tmp_path):
+    """The promoted-club starter: no ROS projection, but the horizon knows his
+    three fixtures — gw3 is a number, ros stays unknown, and he is a stream."""
+    horizon = _horizon_xp({999: [6.0, 5.0, 4.0]})
+    table, squad = _model_only_world(tmp_path, [(999, 6.0), (201, 5.0)], horizon)
+    noproj = next(r for r in wv.recommend(table, squad, rank_by="next3") if r["add"] == "NoProj")
+    assert noproj["add_next3_xp"] == pytest.approx(15.0) and noproj["add_next3_source"] == "model"
+    assert noproj["next3_gain"] == pytest.approx(15.0 - noproj["drop_next3_xp"], abs=0.01)
+    assert noproj["season_unknown"] is True and noproj["gains"]["ros"] is None
+    assert noproj["label"] == "stream"
+
+
+def test_free_agent_blanking_next_gw_is_ranked_by_the_horizon_only(tmp_path):
+    """Edge: no xp_gw row (his club blanks in GW N) and no projection — the
+    3-GW ranking still sees his next two fixtures; the next-GW one does not."""
+    horizon = _horizon_xp({999: [0.0, 5.0, 5.0]})
+    table, squad = _model_only_world(tmp_path, [(201, 5.0)], horizon)
+    assert _by_name(table).loc["NoProj", "xp_source"] == "none"
+    by_three = [r["add"] for r in wv.recommend(table, squad, rank_by="next3")]
+    assert "NoProj" in by_three
+    assert all(r["add"] != "NoProj" for r in wv.recommend(table, squad, rank_by="next1"))
+
+
+def test_plan_ranks_on_next1_without_a_horizon_frame_and_next3_with_one(tmp_path):
+    """FreeA has the best next GW, FreeB the best three (FreeA blanks twice)."""
+    gw_xp = _gw_xp([(410, 5.0), (411, 4.0), (300, 3.0), (402, 1.0)])
+    horizon = _horizon_xp({410: [5.0, 0.0, 0.0], 411: [4.0, 4.0, 4.0], 300: [3.0, 3.0, 3.0],
+                           402: [1.0, 1.0, 1.0], 401: [2.0, 2.0, 2.0]})
+
+    def plan(**kwargs):
+        result = _drop_world(tmp_path, departed_status="a", **kwargs)
+        return result["rank_by"], result["recommendations"][0]["add"]
+
+    assert plan(gw_xp=gw_xp) == ("next1", "FreeA")                     # as before the horizon
+    assert plan(gw_xp=gw_xp, horizon_xp=horizon) == ("next3", "FreeB")
+    assert plan(gw_xp=gw_xp, horizon_xp=horizon, horizon="1") == ("next1", "FreeA")
+    # heuristic scorer: the horizon frame is ignored, values and ranking alike
+    heuristic = _drop_world(tmp_path, departed_status="a", horizon_xp=horizon)
+    assert heuristic["rank_by"] == "legacy"
+    assert set(heuristic["players"]["next3_source"]) <= {"heuristic", "none"}
+    assert heuristic["recommendations"] == _drop_world(
+        tmp_path, departed_status="a")["recommendations"]
+
+
+# --- role overrides over the horizon ----------------------------------------------
+
+OVERRIDE_HORIZON = {"per_code": {200: [6.5, 6.0, 5.0]}, "started": {200: [7.0, 6.6, 5.6]}}
+
+
+def _horizon_override(tmp_path, entry):
+    """SeasonStar's next3_xp after ``entry`` is applied for GW6 (horizon 6-8)."""
+    horizon = _horizon_xp(OVERRIDE_HORIZON["per_code"], gw=6, started=OVERRIDE_HORIZON["started"])
+    table = _override_table(tmp_path, horizon)
+    assert _by_name(table).loc["SeasonStar", "next3_xp"] == pytest.approx(17.5)
+    out, report = wv.apply_role_overrides(
+        table, [{"player": "SeasonStar", "team": "ARS", **entry}], target_gw=6,
+        deadlines=DEADLINES, horizon_xp=horizon)
+    return _by_name(out).loc["SeasonStar"], report
+
+
+def test_undated_override_changes_only_the_next_gameweek_of_the_horizon(tmp_path):
+    star, report = _horizon_override(tmp_path, {"p_start": 0.4, "as_of": "2026-10-06T09:00:00Z"})
+    assert report == _report(applied=["SeasonStar"])
+    assert star["xp_next"] == pytest.approx(0.4 * 7.0)
+    assert star["next3_xp"] == pytest.approx(0.4 * 7.0 + 6.0 + 5.0)     # GW7, GW8 untouched
+
+
+def test_valid_through_gw_extends_the_override_across_the_horizon(tmp_path):
+    star, _ = _horizon_override(tmp_path, {"p_start": 0.4, "valid_through_gw": 7})
+    assert star["next3_xp"] == pytest.approx(0.4 * 7.0 + 0.4 * 6.6 + 5.0)
+
+
+@pytest.mark.parametrize("return_gw, expected", [(8, 5.0), (7, 6.0 + 5.0), (9, 0.0)])
+def test_return_gw_zeroes_the_horizon_events_before_the_return(tmp_path, return_gw, expected):
+    star, _ = _horizon_override(tmp_path, {"p_start": 0.0, "return_gw": return_gw})
+    assert star["xp_next"] == 0.0
+    assert star["next3_xp"] == pytest.approx(expected)
+
+
+def test_override_that_does_not_apply_leaves_the_horizon_alone(tmp_path):
+    star, report = _horizon_override(tmp_path, {"p_start": 0.4, "as_of": "2026-08-27"})
+    assert report == _report(stale=["SeasonStar"]) and star["next3_xp"] == pytest.approx(17.5)
+    star, _ = _horizon_override(tmp_path, {"fact": "new manager", "valid_through_gw": 8})
+    assert star["next3_xp"] == pytest.approx(17.5)            # fact-only: nothing to re-weight
+
+
+def test_override_leaves_a_heuristic_next3_untouched(tmp_path):
+    """Streamer has no horizon rows: his 3-GW value has no per-event parts."""
+    horizon = _horizon_xp(OVERRIDE_HORIZON["per_code"], gw=6)
+    table = _override_table(tmp_path, horizon)
+    before = _by_name(table).loc["Streamer", "next3_xp"]
+    out, report = wv.apply_role_overrides(
+        table, [{"player": "Streamer", "team": "ARS", "p_start": 0.0, **FRESH}], target_gw=6,
+        deadlines=DEADLINES, horizon_xp=horizon)
+    assert report == _report(applied=["Streamer"])
+    assert _by_name(out).loc["Streamer", "xp_next"] == 0.0
+    assert _by_name(out).loc["Streamer", "next3_xp"] == before
+
+
+def test_blocked_override_does_not_touch_the_horizon(tmp_path):
+    horizon = _horizon_xp({200: [0.0, 0.0, 0.0]}, gw=6, started={200: [7.0, 6.6, 5.6]})
+    table = _override_table(tmp_path, horizon)
+    table.loc[table["web_name"] == "SeasonStar", "availability"] = 0.0
+    out, report = wv.apply_role_overrides(
+        table, [{"player": "SeasonStar", "team": "ARS", "p_start": 0.9, **FRESH}], target_gw=6,
+        deadlines=DEADLINES, horizon_xp=horizon)
+    assert report == _report(blocked=["SeasonStar"])
+    assert _by_name(out).loc["SeasonStar", "next3_xp"] == 0.0
+
+
+# --- the horizon file: freshness and fallback ----------------------------------------
+
+def _weekly_bootstrap(root):
+    return json.loads((root / "raw/2026-27/bootstrap/bootstrap-static.json").read_text())
+
+
+def test_resolve_horizon_reads_a_fresh_file_and_reports_its_events(weekly_cli_root):
+    ml_dir = weekly_cli_root / "derived/2026-27/ml"
+    gw_xp = _gw_xp([(102, 6.0), (101, 1.0)], gw=6)
+    _horizon_xp({102: [6.0, 5.0, 4.0], 101: [1.0, 1.0, 1.0]}, gw=6).to_parquet(
+        ml_dir / "xp_horizon_gw6.parquet")
+    frame, meta = wv.resolve_horizon("3", gw_xp, _weekly_bootstrap(weekly_cli_root), ml_dir)
+    assert frame is not None and len(frame) == 6
+    assert meta == {"horizon_requested": "3", "horizon_fallback": False,
+                    "horizon_fallback_reason": None, "horizon_events": [6, 7, 8]}
+
+
+def test_resolve_horizon_is_not_read_for_the_heuristic_scorer(weekly_cli_root):
+    ml_dir = weekly_cli_root / "derived/2026-27/ml"
+    (ml_dir / "xp_horizon_gw6.parquet").write_bytes(b"not a parquet file")
+    frame, meta = wv.resolve_horizon("3", None, _weekly_bootstrap(weekly_cli_root), ml_dir)
+    assert frame is None and meta["horizon_fallback"] is False
+    assert meta["horizon_requested"] == "3" and meta["horizon_events"] is None
+
+
+@pytest.mark.parametrize("build, reason", [
+    (None, "xp_horizon_gw6.parquet missing"),
+    (lambda: _horizon_xp({102: [6.0, 5.0, 4.0]}, gw=5), "is for gw [5], expected 6"),
+    (lambda: _horizon_xp({102: [6.0, 5.0, 4.0]}, gw=6).assign(panel_max_gw=4),
+     "trained on a panel through gw [4]"),
+    (lambda: _horizon_xp({102: [5.5, 5.0, 4.0]}, gw=6), "disagrees with xp_gw6"),
+    (lambda: _horizon_xp({102: [6.0, 5.0, 4.0]}, gw=6).drop(columns=["fitted", "xp_h3"]),
+     "lacks ['fitted', 'xp_h3']"),
+])
+def test_resolve_horizon_falls_back_with_a_reason(weekly_cli_root, caplog, build, reason):
+    ml_dir = weekly_cli_root / "derived/2026-27/ml"
+    if build is not None:
+        build().to_parquet(ml_dir / "xp_horizon_gw6.parquet")
+    with caplog.at_level("WARNING"):
+        frame, meta = wv.resolve_horizon("3", _gw_xp([(102, 6.0)], gw=6),
+                                         _weekly_bootstrap(weekly_cli_root), ml_dir)
+    assert frame is None and meta["horizon_fallback"] is True
+    assert reason in meta["horizon_fallback_reason"]
+    assert "horizon xP file" in meta["horizon_fallback_reason"]
+    assert "3-GW values fall back to the heuristic" in caplog.text
+
+
+def _write_weekly_xp(root):
+    """xp_gw6 + xp_horizon_gw6 for the CLI world: FreeFWD has the better next
+    GW, Promoted (no projection) the better three."""
+    ml_dir = root / "derived/2026-27/ml"
+    _gw_xp([(101, 1.0), (102, 6.0), (103, 5.0)], gw=6).to_parquet(ml_dir / "xp_gw6.parquet")
+    _horizon_xp({101: [1.0, 1.0, 1.0], 102: [6.0, 0.0, 0.0], 103: [5.0, 5.0, 5.0]},
+                gw=6).to_parquet(ml_dir / "xp_horizon_gw6.parquet")
+
+
+def test_cli_ranks_on_the_requested_horizon_and_writes_all_three_gains(
+        weekly_cli_root, weekly_cli_argv, tmp_path, capsys):
+    _write_weekly_xp(weekly_cli_root)
+    out = tmp_path / "waiver_plan.json"
+    assert wv.main(weekly_cli_argv(out, "model")) == 0                 # default --horizon 3
+    doc = json.loads(out.read_text())
+    assert doc["rank_by"] == "next3" and doc["horizon_requested"] == "3"
+    assert doc["horizon_fallback"] is False and doc["horizon_events"] == [6, 7, 8]
+    assert [r["add"] for r in doc["recommendations"]] == ["Promoted", "FreeFWD"]
+    for rec in doc["recommendations"]:
+        assert set(rec["gains"]) == {"gw1", "gw3", "ros"}
+        assert rec["gains"]["gw1"] == rec["next1_gain"] and rec["gains"]["gw3"] == rec["next3_gain"]
+        assert rec["gains"]["ros"] == rec["season_gain"] and rec["add_next3_source"] == "model"
+    promoted = doc["recommendations"][0]
+    assert promoted["gains"] == {"gw1": 4.0, "gw3": 12.0, "ros": None}
+    assert "ranked by next3" in capsys.readouterr().out
+
+    assert wv.main([*weekly_cli_argv(out, "model"), "--horizon", "1"]) == 0
+    doc = json.loads(out.read_text())
+    assert doc["rank_by"] == "next1" and doc["horizon_requested"] == "1"
+    assert [r["add"] for r in doc["recommendations"]] == ["FreeFWD", "Promoted"]
+    assert doc["recommendations"][1]["gains"]["gw3"] == 12.0           # still reported
+
+    assert wv.main([*weekly_cli_argv(out, "model"), "--horizon", "ros"]) == 0
+    assert json.loads(out.read_text())["rank_by"] == "ros"
+
+
+def test_cli_without_the_horizon_file_keeps_the_next_gw_ranking(
+        weekly_cli_root, weekly_cli_argv, tmp_path, capsys):
+    """The horizon build failing must not cost the weekly run its model
+    ranking: gw1 stays model-valued, gw3 says it is heuristic, and why."""
+    _write_weekly_xp(weekly_cli_root)
+    (weekly_cli_root / "derived/2026-27/ml/xp_horizon_gw6.parquet").unlink()
+    out = tmp_path / "waiver_plan.json"
+    assert wv.main(weekly_cli_argv(out, "model")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["scorer"] == "model" and doc["rank_by"] == "next1"
+    assert doc["horizon_fallback"] is True and doc["horizon_events"] is None
+    assert "xp_horizon_gw6.parquet missing" in doc["horizon_fallback_reason"]
+    recs = {r["add"]: r for r in doc["recommendations"]}
+    assert recs["FreeFWD"]["add_next3_source"] == "heuristic"
+    assert recs["Promoted"]["gains"]["gw3"] is None and recs["Promoted"]["add_next3_source"] == "none"
+    assert "HORIZON FALLBACK" in capsys.readouterr().out
+
+
+def test_cli_heuristic_scorer_ignores_the_horizon(weekly_cli_root, weekly_cli_argv, tmp_path):
+    """Regression: the heuristic ranking is the frozen replay baseline — no
+    --horizon value and no model file may move it."""
+    _write_weekly_xp(weekly_cli_root)
+    docs = []
+    for horizon in wv.HORIZONS:
+        out = tmp_path / f"waiver_plan_{horizon}.json"
+        assert wv.main([*weekly_cli_argv(out, "heuristic"), "--horizon", horizon]) == 0
+        docs.append(json.loads(out.read_text()))
+    assert all(doc["rank_by"] == "legacy" and doc["horizon_fallback"] is False for doc in docs)
+    assert all(doc["recommendations"] == docs[0]["recommendations"] for doc in docs)
+    assert {r["add_next3_source"] for r in docs[0]["recommendations"]} == {"heuristic"}
+    assert all(isinstance(r["next3_gain"], float) and round(r["next3_gain"], 1) == r["next3_gain"]
+               for r in docs[0]["recommendations"])
+
+
+def test_model_horizon_of_a_player_now_ruled_out_is_zeroed(tmp_path):
+    """The 3-GW horizon file has the same stale Stage-1 gate as xp_gw: a
+    model-based next3_xp is reconciled to 0 too, and the 3-GW ranking never
+    recommends him."""
+    horizon = _horizon_xp({101: [1.0, 1.0, 1.0], 201: [6.5, 6.0, 6.0]})
+    result = _ruled_out_world(tmp_path, "i", horizon_xp=horizon)
+    hurt = _by_name(result["players"]).loc["Streamer"]
+    assert hurt["next3_source"] == "model" and hurt["next3_xp"] == 0.0
+    assert hurt["xp_reconciled"] and result["xp_reconciled"] == 1
+    assert result["recommendations"] == []
+    fit = _by_name(_ruled_out_world(tmp_path, "a", horizon_xp=horizon)["players"])
+    assert fit.loc["Streamer", "next3_xp"] == pytest.approx(18.5)

@@ -1,5 +1,6 @@
 SEASON ?= 2026-27
 SCORER ?= model
+HORIZON ?= 3
 RAW_SEASON := ../../data/raw/$(SEASON)
 DERIVED_SEASON := ../../data/derived/$(SEASON)
 GO_ROOTS := --raw-root ../../data/raw --derived-root ../../data/derived
@@ -14,7 +15,7 @@ serve:
 fetch:
 	cd apps/mcp-server && go run ./cmd/dev --season $(SEASON) $(GO_ROOTS) --refresh-now
 
-## derive: rebuild the weekly artifacts for SEASON (ownership -> panel && next-GW xP -> waiver -> my_week -> track record)
+## derive: rebuild the weekly artifacts for SEASON (ownership -> panel && next-GW xP && 3-GW horizon -> waiver -> my_week -> track record)
 ## waiver/my_week consume xp_gw<N>.parquet (SCORER=model) and fall back to the heuristic with a
 ## WARNING when it is missing or stale, so the panel && xP step is `-`-prefixed: a failure there
 ## (e.g. a missing archive panel, or no next GW after GW38) warns, and the decision artifacts and
@@ -23,7 +24,12 @@ fetch:
 ## panel; the xP file records the panel's last finished GW (panel_max_gw) and waiver/my_week
 ## reject it unless that equals the bootstrap's last finished GW (N-1 between gameweeks,
 ## N-2 mid-gameweek while N-1 is still in play).
+## The 3-GW horizon (xp_horizon_gw<N>.parquet, GW N..N+2 with features frozen at N) is built
+## right after xp_gw<N> on the same line, so it fails together with it and never blocks
+## waiver/my_week: without a fresh horizon file waiver ranks on the next GW and says so
+## (horizon_fallback), without xp_gw<N> it falls back to the heuristic as above.
 ## SCORER={heuristic,model} picks the next-GW xP source for waiver/my_week.
+## HORIZON={1,3,ros} picks the gain waiver_plan ranks on under SCORER=model (default 3).
 ## Reads/writes season-nested paths only; the flat data/ layout is the 2025-26 archive.
 derive:
 	cd apps/backend && uv run python -m backend.ml.ownership --season $(SEASON)
@@ -32,8 +38,11 @@ derive:
 		--gw-root $(RAW_SEASON)/gw --bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json \
 		&& uv run python -m backend.ml.matchmodel --gw next --season $(SEASON) \
 		--panel ../../data/derived/ml/player_gameweeks.parquet $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
+		--bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json \
+		&& uv run python -m backend.ml.matchmodel --gw next --horizon --season $(SEASON) \
+		--panel ../../data/derived/ml/player_gameweeks.parquet $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
 		--bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json
-	cd apps/backend && uv run python -m backend.ml.waiver --season $(SEASON) --scorer $(SCORER)
+	cd apps/backend && uv run python -m backend.ml.waiver --season $(SEASON) --scorer $(SCORER) --horizon $(HORIZON)
 	cd apps/backend && uv run python -m backend.ml.myweek --season $(SEASON) --scorer $(SCORER)
 	cd apps/backend && uv run python -m backend.ml.trackrecord --season $(SEASON) --data-root ../../data
 
@@ -44,14 +53,19 @@ weekly: fetch derive
 backtest:
 	cd apps/backend && uv run python -m backend.ml.matcheval && uv run python -m backend.ml.matchmodel --backtest
 
-## xp: build xp_gw$(GW).parquet for a specific gameweek (SEASON defaults to 2026-27; derive does the next GW)
+## xp: build xp_gw$(GW).parquet and xp_horizon_gw$(GW).parquet (GW..GW+2) for a specific gameweek
+## (SEASON defaults to 2026-27; derive does the next GW)
 xp:
 	@test -n "$(GW)" || (echo "usage: make xp GW=2 [SEASON=2026-27]"; exit 1)
 	@test -n "$(SEASON)" || (echo "usage: make xp GW=2 [SEASON=2026-27]"; exit 1)
 	cd apps/backend && uv run python -m backend.ml.matchmodel \
 		--panel ../../data/derived/ml/player_gameweeks.parquet \
 		        ../../data/derived/$(SEASON)/ml/player_gameweeks.parquet \
-		--gw $(GW) --season $(SEASON)
+		--gw $(GW) --season $(SEASON) \
+		&& uv run python -m backend.ml.matchmodel \
+		--panel ../../data/derived/ml/player_gameweeks.parquet \
+		        ../../data/derived/$(SEASON)/ml/player_gameweeks.parquet \
+		--gw $(GW) --season $(SEASON) --horizon
 
 ## livefetch: minimal in-play refresh — current GW live points only (~2s)
 livefetch:

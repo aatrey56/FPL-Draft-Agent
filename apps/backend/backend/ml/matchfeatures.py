@@ -94,6 +94,19 @@ def add_player_form(panel: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def player_form_columns() -> list[str]:
+    """Every column ``add_player_form`` adds, in emission order.
+
+    These depend only on the player's own earlier gameweeks, so they are one
+    value per (player, gameweek) — the set ``matchmodel.stub_frame`` computes
+    once per event and attaches to each fixture of a double.
+    """
+    columns = []
+    for stem in FORM_SOURCES.values():
+        columns += [f"{stem}_l{SHORT_WINDOW}", f"{stem}_l{LONG_WINDOW}", f"{stem}_std"]
+    return [*columns, "pts_l1", "mins_l1", "pts_sd_std", "games_std"]
+
+
 def team_form(panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Expanding, shifted team strength tables derived from the panel itself.
 

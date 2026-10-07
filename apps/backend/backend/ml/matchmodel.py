@@ -52,7 +52,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from backend.ml import matcheval as me
-from backend.ml.matchfeatures import build_match_frame
+from backend.ml.matchfeatures import build_match_frame, player_form_columns
 from backend.ml.projection import Ridge
 from backend.ml.waiver import availability_factor
 
@@ -118,6 +118,12 @@ POSITION_FEATURES = {
     3: ["xg_l3", "xa_l3", "dc_l3", "dc_l5"],
     4: ["xg_l3", "xg_l5", "xa_l3"],
 }
+# Events in the horizon view (``build_horizon_xp``): the gameweek being served
+# and the two after it.
+HORIZON_GWS = 3
+HORIZON_COLUMNS = ["code", "season", "gw", "event", "element_type", "team_id",
+                   "num_fixtures", "opponents", "p_start", "xp", "xp_started", "fitted",
+                   "xp_h1", "xp_h3", "events_covered", "panel_max_gw"]
 # Width of the floor/ceiling band, in trailing standard deviations of the
 # player's gameweek points. One sigma — a plausible range, not a calibrated
 # quantile (distributions are Phase C of the roadmap).
@@ -536,19 +542,57 @@ def stub_frame(history: pd.DataFrame, stubs: pd.DataFrame, season: str,
     consistent: the same shift-and-roll code path produces both, so a feature
     can never mean one thing in the backtest and another on Sunday morning.
     ``train`` is every labelled row, ``target`` the stub rows with features.
+
+    A double is two stub rows for one player in one gameweek, and player form
+    is built by shifting and rolling over a player's rows — so the second stub
+    would see the first's missing outcome as its "last gameweek" (``mins_l1``
+    NaN, one observation short in every window). Player form is therefore
+    computed from one stub per (player, gameweek) and attached to each of its
+    fixtures; only the fixture columns (opponent, venue, opponent strength)
+    differ between a double's rows.
     """
-    frame = build_match_frame(pd.concat([history, stubs], ignore_index=True))
-    target = frame[(frame["season"] == season) & (frame["gw"] == gw)]
-    return frame[frame["label_points"].notna()], target
+    key = ["code", "season", "gw"]
+    single = stubs.drop_duplicates(key)
+    frame = build_match_frame(pd.concat([history, single], ignore_index=True))
+    in_gw = (frame["season"] == season) & (frame["gw"] == gw)
+    train, target = frame[frame["label_points"].notna()], frame[in_gw]
+    if len(single) == len(stubs):
+        return train, target
+    form = [*player_form_columns(), "is_startable", "has_history"]
+    fixtures = build_match_frame(pd.concat([history, stubs], ignore_index=True))
+    fixtures = fixtures[(fixtures["season"] == season) & (fixtures["gw"] == gw)]
+    target = fixtures.drop(columns=form).merge(target[key + form], on=key, how="left")
+    return train, target[fixtures.columns]
 
 
-def build_gw_xp(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
-                alpha: float | dict[int, float] | None = None,
-                min_train_rows: int = MIN_TRAIN_ROWS) -> pd.DataFrame:
-    """Fit on everything completed and score the upcoming gameweek.
+def completed_before(panel: pd.DataFrame, season: str, gw: int) -> pd.DataFrame:
+    """``panel`` without ``season`` rows at or after ``gw``: the as-of cutoff.
 
-    Features come from ``stub_frame``, the path ``served_walk_forward`` also
-    evaluates through.
+    A builder serving gameweek ``gw`` must not see that gameweek's own outcomes
+    (or any later one's): they would be trained on, and a completed ``gw`` row
+    would sit among the targets. Callers normally pass a panel that already
+    stops before ``gw``; when one does not (a refreshed panel, a hand-run CLI),
+    the offending rows are dropped with a WARNING rather than silently leaked.
+    """
+    late = (panel["season"] == season) & (panel["gw"] >= int(gw))
+    if late.any():
+        logger.warning("panel holds %d %s row(s) at gw >= %d (gw %s); dropped so the "
+                       "gw %d forecast uses only earlier gameweeks", int(late.sum()), season,
+                       gw, ", ".join(str(g) for g in sorted(panel.loc[late, "gw"].unique())), gw)
+        return panel[~late]
+    return panel
+
+
+def _fit_for_gw(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
+                alpha: float | dict[int, float] | None,
+                min_train_rows: int) -> tuple[MatchModel, pd.DataFrame]:
+    """``(model, target)`` for serving gameweek ``gw``: the model fitted on
+    every completed row, and that gameweek's fixture stubs with their features.
+
+    Shared by ``build_gw_xp`` and ``build_horizon_xp`` so the first horizon
+    event is the next-gameweek forecast by construction, not by coincidence.
+    Raises ValueError when the bootstrap has no fixtures for ``gw`` or no
+    position has enough rows to fit.
     """
     stubs = upcoming_fixture_rows(bootstrap, gw, season)
     if stubs.empty:
@@ -558,11 +602,152 @@ def build_gw_xp(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
                        min_train_rows=min_train_rows).fit(train)
     if not model.positions:
         raise ValueError("no position had enough training rows to fit")
+    return model, target
+
+
+def build_gw_xp(panel: pd.DataFrame, bootstrap: dict, gw: int, season: str,
+                alpha: float | dict[int, float] | None = None,
+                min_train_rows: int = MIN_TRAIN_ROWS) -> pd.DataFrame:
+    """Fit on everything completed and score the upcoming gameweek.
+
+    Features come from ``stub_frame``, the path ``served_walk_forward`` also
+    evaluates through. Rows of ``season`` at or after ``gw`` are dropped first
+    (``completed_before``), as ``build_horizon_xp`` does, so the two stay equal.
+    """
+    panel = completed_before(panel, season, gw)
+    model, target = _fit_for_gw(panel, bootstrap, gw, season, alpha, min_train_rows)
     availability = availability_series(bootstrap, target["code"])
     scored = score_fixtures(model, target, availability)
     scored["season"], scored["gw"] = season, gw
     scored["panel_max_gw"] = panel_max_gw(panel, season)
     return scored.sort_values("xp", ascending=False).reset_index(drop=True)
+
+
+def horizon_gameweeks(first_gw: int, n_events: int = HORIZON_GWS) -> list[int]:
+    """The consecutive events of a horizon starting at ``first_gw``."""
+    return list(range(int(first_gw), int(first_gw) + n_events))
+
+
+def _horizon_players(bootstrap: dict) -> pd.DataFrame:
+    """One identity row per bootstrap element that has a club: the horizon's
+    player grid (a blank needs a row, and a blank has no fixture stub)."""
+    rows = [{"code": int(e["code"]), "element_type": int(e["element_type"]),
+             "team_id": int(e["team"])}
+            for e in bootstrap.get("elements") or [] if e.get("team") is not None]
+    return pd.DataFrame(rows, columns=["code", "element_type", "team_id"]).drop_duplicates("code")
+
+
+def build_horizon_xp(panel: pd.DataFrame, bootstrap: dict, season: str,
+                     gws: list[int] | None = None,
+                     alpha: float | dict[int, float] | None = None,
+                     min_train_rows: int = MIN_TRAIN_ROWS) -> pd.DataFrame:
+    """Expected points per event over the next few gameweeks — a schedule view.
+
+    ``gws`` are the events to score, the first being the gameweek ``N`` being
+    served (default: ``horizon_gameweeks(next_gameweek(bootstrap))``, i.e.
+    N, N+1, N+2). One model is fitted, exactly as ``build_gw_xp`` fits it for
+    ``N``; every event is then scored with **feature-freeze**:
+
+    * player form and the carried team form (``team_*_pg``) are the as-of-``N``
+      values — nobody knows GW ``N``'s outcomes yet, so form cannot be rolled
+      forward. Mechanically, a later event's fixture stubs are relabelled to
+      gameweek ``N`` before ``stub_frame`` builds their features.
+    * the fixture columns (``opponent_team``, ``was_home``, ``num_fixtures``
+      and the opponent's ``opp_*_pg``, also as of ``N``) are that event's own.
+
+    So the events differ only by who is played and where: this ignores form
+    drift over the horizon by design. The bootstrap's availability factor is
+    applied unchanged to every event (a doubt for ``N`` is assumed to persist;
+    a departed "u" player is 0 throughout) — conservative, and documented in
+    MATCH_MODEL_SPEC.md.
+
+    Returns one row per (code, event) for every bootstrap player with a club
+    and every *covered* event (one the bootstrap holds fixtures for): ``xp``,
+    ``p_start``, ``xp_started``, ``opponents``, ``num_fixtures``. A blank is a
+    row with ``num_fixtures`` 0 and ``xp`` 0.0; a double is one row whose
+    ``xp`` sums both fixtures. Each row also carries the per-code summary
+    ``xp_h1`` (the first event — equal to ``build_gw_xp``'s ``xp`` bit for
+    bit), ``xp_h3`` (the sum over the covered events) and ``events_covered``
+    (how many of ``gws`` the bootstrap covered; fewer than requested logs a
+    WARNING and ``xp_h3`` sums what there is). ``fitted`` is False for a
+    position the panel was too thin to fit: its ``xp`` 0.0 is "no opinion",
+    as in ``build_gw_xp``. ``gw`` is ``N`` on every row and ``panel_max_gw``
+    the freshness stamp, so ``waiver.read_gw_xp`` validates the file like an
+    ``xp_gw{N}`` one.
+
+    Rows of ``season`` at or after ``N`` are dropped first (with a WARNING,
+    see ``completed_before``): a panel refreshed past the deadline must not
+    train on, or featurise from, outcomes the forecast is meant to predict.
+
+    Raises ValueError when the first event has no fixtures or nothing fits.
+    """
+    gws = horizon_gameweeks(next_gameweek(bootstrap)) if gws is None else [int(g) for g in gws]
+    if not gws:
+        raise ValueError("no gameweeks to score")
+    first = gws[0]
+    panel = completed_before(panel, season, first)
+    model, first_target = _fit_for_gw(panel, bootstrap, first, season, alpha, min_train_rows)
+    players = _horizon_players(bootstrap)
+    # Every feature is computed within a season (matchfeatures groups by it),
+    # so the later events' stubs need only this season's rows behind them —
+    # the same values as the full panel gives, without rebuilding the archive.
+    current = panel[panel["season"] == season]
+    per_event, missing = [], []
+    for event in gws:
+        if event == first:
+            target = first_target
+        else:
+            stubs = upcoming_fixture_rows(bootstrap, event, season)
+            if stubs.empty:
+                missing.append(event)
+                continue
+            # Feature-freeze: the event's fixtures, featurised as of gameweek N.
+            _, target = stub_frame(current, stubs.assign(gw=first), season, first)
+        scored = score_fixtures(model, target, availability_series(bootstrap, target["code"]))
+        rows = players.merge(
+            scored[["code", "num_fixtures", "opponents", "p_start", "xp", "xp_started"]],
+            on="code", how="left")
+        blank = rows["num_fixtures"].isna()
+        rows["num_fixtures"] = rows["num_fixtures"].fillna(0).astype("int64")
+        rows["opponents"] = rows["opponents"].fillna("")
+        rows.loc[blank, ["xp", "xp_started"]] = 0.0
+        rows["event"] = event
+        per_event.append(rows)
+    if missing:
+        logger.warning("horizon from gw %d: the bootstrap has no fixtures for gw %s — "
+                       "%d of %d events covered, xp_h3 sums those", first,
+                       ", ".join(str(g) for g in missing), len(per_event), len(gws))
+    # Summed in event order with plain float adds, so a blank contributes an
+    # exact 0.0 and xp_h3 is reproducible from the per-event rows.
+    first_xp = per_event[0].set_index("code")["xp"]
+    total = first_xp.copy()
+    for rows in per_event[1:]:
+        total = total + rows.set_index("code")["xp"]
+    out = pd.concat(per_event, ignore_index=True)
+    out["xp_h1"] = out["code"].map(first_xp)
+    out["xp_h3"] = out["code"].map(total)
+    out["events_covered"] = len(per_event)
+    out["fitted"] = out["element_type"].isin(model.positions)
+    out["season"], out["gw"] = season, first
+    out["panel_max_gw"] = panel_max_gw(panel, season)
+    out = out.sort_values(["xp_h3", "code", "event"], ascending=[False, True, True])
+    return out[HORIZON_COLUMNS].reset_index(drop=True)
+
+
+def horizon_table(horizon: pd.DataFrame) -> pd.DataFrame:
+    """A ``build_horizon_xp`` frame as one row per player: ``xp_h1``, ``xp_h3``
+    and one ``gw{event}`` column per covered event holding
+    ``"<opponents> <xp>"`` ("-" for a blank). For printing and spot checks."""
+    cells = horizon.assign(cell=[
+        f"{opponents} {xp:.2f}" if fixtures else "-"
+        for opponents, xp, fixtures in zip(horizon["opponents"], horizon["xp"],
+                                           horizon["num_fixtures"])])
+    wide = cells.pivot(index="code", columns="event", values="cell")
+    wide.columns = [f"gw{int(event)}" for event in wide.columns]
+    summary = horizon.drop_duplicates("code").set_index("code")[
+        ["element_type", "xp_h1", "xp_h3", "events_covered"]]
+    return (summary.join(wide).reset_index()
+            .sort_values(["xp_h3", "code"], ascending=[False, True]).reset_index(drop=True))
 
 
 def panel_stub_rows(rows: pd.DataFrame) -> pd.DataFrame:
@@ -934,6 +1119,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gw", type=_gw_arg, default=None,
                         help="build xp_gw{N}.parquet for this upcoming gameweek; "
                              "'next' picks the first unfinished one from the bootstrap")
+    parser.add_argument("--horizon", action="store_true",
+                        help="with --gw: build xp_horizon_gw{N}.parquet (gameweeks N..N+"
+                             f"{HORIZON_GWS - 1}, features frozen at N) instead of xp_gw{{N}}")
     parser.add_argument("--season", type=str, default=None,
                         help="season for --gw, e.g. 2026-27 (also picks the data root)")
     parser.add_argument("--bootstrap", type=Path, default=None)
@@ -992,9 +1180,19 @@ def main(argv: list[str] | None = None) -> int:
         root / f"data/raw/{season}/bootstrap/bootstrap-static.json")
     bootstrap = json.loads(Path(bootstrap_path).read_text(encoding="utf-8"))
     gw = next_gameweek(bootstrap) if args.gw == "next" else int(args.gw)
-    scored = build_gw_xp(panel, bootstrap, gw, season,
-                         alpha=args.alpha or dict(SELECTED_ALPHAS))
-    out = _out_path(args.out, root / f"data/derived/{season}/ml/xp_gw{gw}.parquet")
+    alpha = args.alpha or dict(SELECTED_ALPHAS)
+    ml_dir = root / f"data/derived/{season}/ml"
+    if args.horizon:
+        horizon = build_horizon_xp(panel, bootstrap, season, horizon_gameweeks(gw), alpha=alpha)
+        out = _out_path(args.out, ml_dir / f"xp_horizon_gw{gw}.parquet")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        write_xp(horizon, out)
+        events = sorted(int(e) for e in horizon["event"].unique())
+        logger.info("wrote %s (%d players, events %s)", out, horizon["code"].nunique(), events)
+        print(horizon_table(horizon).head(20).round(2).to_string(index=False))
+        return 0
+    scored = build_gw_xp(panel, bootstrap, gw, season, alpha=alpha)
+    out = _out_path(args.out, ml_dir / f"xp_gw{gw}.parquet")
     out.parent.mkdir(parents=True, exist_ok=True)
     write_xp(scored, out)
     logger.info("wrote %s (%d players)", out, len(scored))

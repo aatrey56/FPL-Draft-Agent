@@ -266,8 +266,8 @@ live-season check has to be re-earned by live rows from GW6 on.
   - **Wire `trade_check` onto it** — `waiver_plan` and `my_week` now consume
     the per-GW xP (see "Weekly tools on match xP" below); `trade_check` still
     uses the heuristic.
-  - **Horizons**: xP is produced for one gameweek; the 3-GW and ROS horizons
-    in CLAUDE.md §5.2 are not built.
+  - **Horizons** (built 2026-10-06, see "Horizons" below): `waiver_plan`
+    carries next-GW / 3-GW / ROS gains and ranks on `--horizon`.
   - Club-move flag and `expected_minutes` surfaced (built 2026-10-06, see
     "Role signals": fixes the case where persistence carries a departed
     starter's role into a new season).
@@ -303,8 +303,9 @@ from the ownership snapshots and per-GW live files as they stood at
 points, and compares it with `no_change`, `std_points`, `form3` and my actual
 moves (`me`). Run `uv run python -m backend.ml.replay --season 2026-27
 --gws 2-5` from `apps/backend` (`--data-root` points at another checkout's
-`data/`); it writes `derived/2026-27/ml/waiver_replay_<scorer>.json`
-(`--scorer {heuristic,model}`). Availability is
+`data/`); it writes `derived/2026-27/ml/waiver_replay_heuristic.json` or
+`waiver_replay_model_h<horizon>.json` (`--scorer {heuristic,model}`,
+`--horizon {1,3,ros}`). Availability is
 neutralised (only the current status/news snapshot exists), so n=4 deadlines
 proves the harness runs, not the model. The as-of contract and caveats are in
 the module docstring.
@@ -345,11 +346,14 @@ Stage-1 gate saw the bootstrap of its build time. Waiver recs rank
 by `next1_gain`; a free agent with no ROS projection but a model `xp_next`
 (promoted clubs) is ranked too, with `season_gain` null and `season_unknown`
 true (it counts as 0 for the label and ordering, so at most a `stream`);
-`next3_xp` is still heuristic (horizons are a later section), so that free
-agent's `add_next3_xp` and `next3_gain` are null (unknown); the drop pick is
-described under "Role signals" below. Known scale mismatch: model xP averages higher than the
-`ros/38` heuristic fallback, so a heuristic-valued drop flatters model-valued
-adds until the horizons work removes most fallbacks.
+`next3_xp` was heuristic when this was wired, so that free agent's
+`add_next3_xp` and `next3_gain` were null (unknown); since the horizons work
+("Horizons" below) the model values the 3 GWs too and both are numbers. The
+drop pick is described under "Role signals" below. Known scale mismatch:
+model xP averages higher than the `ros/38` heuristic fallback, so a
+heuristic-valued drop flatters model-valued adds; with the horizon file
+every player with a club is model-valued over the 3 GWs, which leaves the
+fallback to positions the panel cannot fit.
 
 `replay --scorer model` rebuilds the match xP per deadline N from
 `archive panel UNION season panel[gw completed by T_N]` with the same neutral
@@ -366,8 +370,9 @@ a gate): heuristic **-15.0**, model **+8.0**; `std_points` +7.0, `form3` +7.0
 and `me` +2.0 are identical between scorers. Model history: +9.0 as first
 wired, +10.0 after the carried team-form fix, +8.0 once model-valued free
 agents without a ROS projection are ranked (they become the rank-1 pick at
-GW3-5: Slater, McAtee, McAtee). Outputs go to
-`waiver_replay_<scorer>.json`.
+GW3-5: Slater, McAtee, McAtee). That +8.0 is the next-GW ranking, now
+`--horizon 1`; outputs go to `waiver_replay_heuristic.json` and
+`waiver_replay_model_h<horizon>.json` (see "Horizons").
 
 ## Role signals
 
@@ -417,10 +422,12 @@ changed club). Three signals, all in `backend/ml/waiver.py`, used by
   then its mtime) and is `overrides_stale` after that. On the live file
   (`updated` 2026-08-27, no per-entry dates) every undated entry was written
   for GW2 and is stale for GW6.
-  Overrides touch the next GW only (not `next3_xp`, not ROS).
+  Overrides touch the next GW, and since the horizons work the model's
+  3-GW value event by event (see "Horizons"); never ROS, and never a
+  heuristic `next3_xp`.
 
 Replay (GW2-5, rank-1 `gw_gain`): `--scorer model` passes the as-of season
-panel (gw < N) to the role signals and scores **+8.0**, the same picks as
+panel (gameweeks completed by the waiver cutoff) to the role signals and scores **+8.0**, the same picks as
 before them (next-GW xP already ranks low-minute players down; the factor
 changes labels, `season_gain` and the heuristic fallback values).
 `--scorer heuristic` is kept as the pre-xP baseline: it runs without a
@@ -430,6 +437,63 @@ minutes before N keeps a player `u` in the neutral bootstrap) now also
 forces that player to be the drop pick in the heuristic run, as in the
 model run. On GW2-5 that changes no rank-1 pick, so the totals are equal.
 `role_overrides.json` is never replayed (it is knowledge as of today).
+
+## Horizons
+
+Built 2026-10-06. `matchmodel.build_horizon_xp` scores GW N, N+1 and N+2
+from one fit with **feature-freeze** — form as of GW N, only the fixture
+moves — and writes `xp_horizon_gw<N>.parquet` (one row per (code, event) plus
+`xp_h1`, `xp_h3`, `events_covered`); the contract, including the "same
+availability for all three events" assumption, is in MATCH_MODEL_SPEC.md
+("Horizons and outputs"). `xp_h1` equals `xp_gw<N>.xp` exactly (checked on
+the GW6 build: 667 players, max abs difference 0.0). `make derive` builds it
+on the same `-`-prefixed line as the panel and `xp_gw<N>`, so it fails with
+them and never blocks the weekly run; `make xp GW=n` builds both files.
+
+`waiver_plan` puts `gains = {gw1, gw3, ros}` on every rec (the flat
+`next1_gain` / `next3_gain` / `season_gain` stay) and ranks on
+`--horizon {1,3,ros}`, default 3, under the model scorer; `rank_by` records
+the ranking used. `gw3` is the horizon sum for every player the file covers
+(`add_next3_source: model`), which includes free agents with no ROS
+projection, so a promoted club's starter now has a 3-GW gain. Labels read
+the ranking's short horizon (`gw1` under `--horizon 1`, `gw3` otherwise)
+against the season gain. Fallbacks, both loud: no usable `xp_gw<N>` → the
+heuristic scorer and its unchanged legacy ranking, whatever `--horizon`
+says; `xp_gw<N>` but no usable horizon file (missing, unreadable, stale, or
+disagreeing with `xp_gw<N>` on the next GW) → `horizon_fallback: true`,
+heuristic 3-GW values, and `--horizon 3` ranks on the next GW as before.
+
+Role overrides and the horizon: an entry is applied per event with the same
+lifetime rules as for the next GW. An undated entry is live for GW N only
+(it is stale for N+1), so it changes one of the three events;
+`valid_through_gw` carries its `p_start` through that gameweek; `return_gw`
+zeroes every event before it and leaves the later ones at the model's
+value. An overridden event is worth `p_start × xp_started`, as for the next
+GW. A blocked entry (availability 0) changes nothing.
+
+Known limits: (1) feature-freeze — the horizon ranks schedules, not form
+trajectories; (2) one availability factor for three gameweeks — an injured
+drop candidate reads as 0 over the horizon, which inflates every `gw3` gain
+against him if he is back for N+1 (on the GW6 run the drop at MID is an
+injured player and every MID add shows about +10 for that reason: read
+`gains.gw3` next to the drop's news); (3) when the bootstrap holds fewer
+than three future events `xp_h3` covers fewer (`horizon_events` in the
+JSON).
+
+Replay (GW2-5, `waiver_plan` rank-1 picks, n=4, reported not gated; `gw3`
+totals cover GW2-3 only, the deadlines with three finished gameweeks):
+
+| run | `gw_gain` | `gw3_gain` |
+|---|---|---|
+| `--scorer heuristic` (ignores `--horizon`) | -15.0 | -14.0 |
+| `--scorer model --horizon 1` | +8.0 | +20.0 |
+| `--scorer model --horizon 3` | +7.0 | +27.0 |
+
+`--horizon 1` reproduces the pre-horizon model replay pick for pick. Ranking
+on 3 GWs changes one rank-1 pick (GW3: Ampadu for Slater): one point less
+that week, seven more over the three. Two deadlines is not evidence that the
+3-GW ranking is better; it is the default because a waiver add is held for
+more than one gameweek.
 
 ## Working rules
 

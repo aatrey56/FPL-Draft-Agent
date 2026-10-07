@@ -528,6 +528,48 @@ func TestWireRecWithUnknownNext3Gain(t *testing.T) {
 	}
 }
 
+// The 3-GW value says where it came from: the match model's horizon is
+// labelled as such, and a model-valued add without a ROS projection (season
+// unknown) still gets its 3-GW number. Files written before
+// add_next3_source existed read as the heuristic.
+func TestWireRecNamesTheMatchModelHorizon(t *testing.T) {
+	derived := t.TempDir()
+	write(t, filepath.Join(derived, "ml/waiver_plan.json"), map[string]any{
+		"rank_by": "next3",
+		"recommendations": []map[string]any{
+			{"add": "Promoted", "add_team": "HUL", "drop": "Weak", "label": "stream",
+				"season_gain": nil, "season_unknown": true, "add_ros": nil, "drop_ros": 40.0,
+				"next3_gain": 6.25, "add_next3_xp": 12.75, "add_next3_source": "model",
+				"gains": map[string]any{"gw1": 2.1, "gw3": 6.25, "ros": nil}},
+			{"add": "Uncovered", "add_team": "ARS", "drop": "Weak", "label": "upgrade",
+				"season_gain": 12.4, "add_ros": 52.4, "drop_ros": 40.0,
+				"next3_gain": 2.3, "add_next3_xp": 4.1, "add_next3_source": "heuristic"},
+			{"add": "OldFile", "add_team": "WOL", "drop": "Weak", "label": "upgrade",
+				"season_gain": 3.0, "add_ros": 43.0, "drop_ros": 40.0,
+				"next3_gain": 1.0, "add_next3_xp": 1.8},
+		},
+	})
+	m := newModel(fixtureDir(t), derived, 5, 501, 0)
+	m.w = 160
+	if err := m.reload(); err != nil {
+		t.Fatal(err)
+	}
+	const modelLine = "Next 3 GWs (match model"
+	m.sugSel = 0
+	body := m.sugDetailBody(120)
+	if !strings.Contains(body, modelLine) || !strings.Contains(body, "Promoted projects 12.8 xP, +6.2 over Weak") ||
+		!strings.Contains(body, "No rest-of-season projection for Promoted") {
+		t.Fatalf("model horizon for a season-unknown add:\n%s", body)
+	}
+	for sel, name := range map[int]string{1: "Uncovered", 2: "OldFile"} {
+		m.sugSel = sel
+		body := m.sugDetailBody(120)
+		if strings.Contains(body, modelLine) || !strings.Contains(body, "Next 3 GWs: "+name+" projects") {
+			t.Fatalf("%s must read as the heuristic 3-GW value:\n%s", name, body)
+		}
+	}
+}
+
 // A stream can lose ground over 3 GWs and the season: negative gains carry
 // one sign ("-1.8"), never "+-1.8".
 func TestWireRecNegativeGainsAreSignedOnce(t *testing.T) {
@@ -636,6 +678,46 @@ func TestSuggestionsHeaderMarksXPFallback(t *testing.T) {
 			if lipgloss.Width(line) > 40 {
 				t.Fatalf("rail line wider than the panel (%d): %q", lipgloss.Width(line), line)
 			}
+		}
+	}
+}
+
+// Regression: every season-unknown add was called a "next-GW stream", but
+// under the default 3-GW ranking one can be picked for N+1/N+2 while
+// blanking in N. The detail names the horizon rank_by says it was ranked
+// on; files without rank_by keep the next-GW wording.
+func TestSeasonUnknownWireRecNamesItsRankingHorizon(t *testing.T) {
+	cases := map[string]string{
+		"next3": "treat it as a stream over the next 3 GWs",
+		"ros":   "treat it as a stream over the next 3 GWs",
+		"next1": "treat it as a next-GW stream",
+		"":      "treat it as a next-GW stream",
+	}
+	for rankBy, want := range cases {
+		derived := t.TempDir()
+		plan := map[string]any{
+			"recommendations": []map[string]any{
+				{"add": "Promoted", "add_team": "HUL", "drop": "Weak", "label": "stream",
+					"season_gain": nil, "season_unknown": true, "add_ros": nil, "drop_ros": 40.0,
+					"next3_gain": 6.25, "add_next3_xp": 12.75, "add_next3_source": "model"},
+			},
+		}
+		if rankBy != "" {
+			plan["rank_by"] = rankBy
+		}
+		write(t, filepath.Join(derived, "ml/waiver_plan.json"), plan)
+		m := newModel(fixtureDir(t), derived, 5, 501, 0)
+		m.w = 160
+		if err := m.reload(); err != nil {
+			t.Fatal(err)
+		}
+		m.sugSel = 0
+		if m.snap.NeedsYou[len(m.snap.NeedsYou)-1].RankBy != rankBy {
+			t.Fatalf("rank_by %q not carried into the rail item", rankBy)
+		}
+		body := strings.Join(strings.Fields(m.sugDetailBody(120)), " ")
+		if !strings.Contains(body, want) {
+			t.Fatalf("rank_by %q: want %q in:\n%s", rankBy, want, body)
 		}
 	}
 }

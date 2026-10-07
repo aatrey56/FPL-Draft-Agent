@@ -4,7 +4,13 @@ import pandas as pd
 import pytest
 
 from backend.ml import matcheval as me
-from backend.ml.matchfeatures import add_fixture_context, build_match_frame, team_form
+from backend.ml.matchfeatures import (
+    add_fixture_context,
+    add_player_form,
+    build_match_frame,
+    player_form_columns,
+    team_form,
+)
 
 
 def _panel() -> pd.DataFrame:
@@ -230,3 +236,11 @@ def test_played_row_team_form_is_unchanged_snapshot():
         index=pd.MultiIndex.from_product([[1, 2], [1, 2, 3, 4]], names=["code", "gw"]),
     )
     pd.testing.assert_frame_equal(snapshot, expected, check_dtype=False)
+
+
+def test_player_form_columns_are_exactly_what_add_player_form_adds():
+    """Guard: stub_frame freezes this list per (player, gameweek) for doubles,
+    so a new form column missing from it would silently differ per fixture."""
+    panel = _panel()
+    added = [c for c in add_player_form(panel).columns if c not in panel.columns]
+    assert added == player_form_columns()

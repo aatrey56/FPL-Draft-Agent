@@ -20,7 +20,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from backend.ml import matchmodel as mm
-from backend.ml.matchfeatures import build_match_frame
+from backend.ml.matchfeatures import build_match_frame, player_form_columns
 
 SEASON = "2025-26"
 N_TEAMS = 10
@@ -932,3 +932,321 @@ def test_build_gw_xp_stamps_the_panels_last_finished_gw():
 
 def test_panel_max_gw_is_zero_for_a_season_with_no_rows():
     assert mm.panel_max_gw(_panel(), "2030-31") == 0
+
+
+# --- horizon: the next three gameweeks, features frozen at GW N --------------
+
+FIRST = N_GWS + 1
+
+
+def _round(event: int) -> list[dict]:
+    """One fixture per team for ``event``, with pairings that change by event
+    (odd teams at home; the away side rotates through the even teams)."""
+    shift = 2 * (event - FIRST)
+    return [{"team_h": home, "team_a": 1 + (home + shift) % N_TEAMS}
+            for home in range(1, N_TEAMS + 1, 2)]
+
+
+def _horizon_bootstrap(panel: pd.DataFrame, events: tuple[int, ...] = (FIRST, FIRST + 1, FIRST + 2),
+                       flagged: tuple[int, ...] = ()) -> dict:
+    """``_bootstrap`` holding a different round of fixtures for each of
+    ``events``, with a calendar that makes FIRST the next gameweek."""
+    bootstrap = _bootstrap(panel, FIRST, flagged=flagged)
+    bootstrap["fixtures"] = {str(event): _round(event) for event in events}
+    bootstrap["events"] = {"current": N_GWS, "next": FIRST, "data": []}
+    return bootstrap
+
+
+def _without_team(fixtures: list[dict], team: int) -> list[dict]:
+    return [f for f in fixtures if team not in (f["team_h"], f["team_a"])]
+
+
+def _event_xp(horizon: pd.DataFrame, event: int) -> pd.Series:
+    return horizon[horizon["event"] == event].set_index("code")["xp"].sort_index()
+
+
+def _as_gw(bootstrap: dict, event: int) -> dict:
+    """The bootstrap with ``event``'s fixtures played in gameweek FIRST instead:
+    what feature-freeze means, spelled out for ``build_gw_xp``."""
+    return {**bootstrap, "fixtures": {str(FIRST): bootstrap["fixtures"][str(event)]}}
+
+
+def test_horizon_sums_three_events_per_player():
+    panel = _panel()
+    horizon = mm.build_horizon_xp(panel, _horizon_bootstrap(panel), SEASON,
+                                  min_train_rows=SMALL_FIT)
+    assert sorted(horizon["event"].unique()) == [FIRST, FIRST + 1, FIRST + 2]
+    assert not horizon.duplicated(["code", "event"]).any()
+    assert horizon.groupby("code").size().eq(3).all()               # one row per (code, event)
+    assert horizon["code"].nunique() == panel["code"].nunique()
+    summed = _event_xp(horizon, FIRST) + _event_xp(horizon, FIRST + 1) + _event_xp(horizon, FIRST + 2)
+    summary = horizon.drop_duplicates("code").set_index("code").sort_index()
+    assert (summary["xp_h3"] == summed).all()                        # exact, not approx
+    assert (summary["xp_h1"] == _event_xp(horizon, FIRST)).all()
+    assert (horizon["events_covered"] == 3).all() and horizon["fitted"].all()
+    assert (horizon["gw"] == FIRST).all() and (horizon["panel_max_gw"] == N_GWS).all()
+    assert list(horizon.columns) == mm.HORIZON_COLUMNS
+    # a schedule view: the three events are not three copies of the first
+    assert not np.allclose(_event_xp(horizon, FIRST), _event_xp(horizon, FIRST + 1))
+
+
+def test_horizon_first_event_equals_the_gameweek_forecast_exactly():
+    """Regression contract: xp_h1 is xp_gw{N}.xp bit for bit."""
+    panel = _panel()
+    bootstrap = _horizon_bootstrap(panel, flagged=(1001, 1042))
+    horizon = mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    served = mm.build_gw_xp(panel, bootstrap, FIRST, SEASON, min_train_rows=SMALL_FIT)
+    first = horizon[horizon["event"] == FIRST].set_index("code")
+    served = served.set_index("code")
+    assert set(first.index) == set(served.index)
+    for column in ("xp", "p_start", "xp_started"):
+        assert (first.loc[served.index, column] == served[column]).all(), column
+    assert (first.loc[served.index, "xp_h1"] == served["xp"]).all()
+    assert (first.loc[served.index, "opponents"] == served["opponents"]).all()
+
+
+def test_horizon_later_event_is_its_fixtures_scored_with_features_frozen_at_gw_n():
+    """Feature-freeze: event N+2 is worth what its fixtures would be worth in
+    gameweek N — same form, only the opponent and venue move."""
+    panel = _panel()
+    bootstrap = _horizon_bootstrap(panel)
+    horizon = mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    frozen = mm.build_gw_xp(panel, _as_gw(bootstrap, FIRST + 2), FIRST, SEASON,
+                            min_train_rows=SMALL_FIT).set_index("code")["xp"].sort_index()
+    assert (_event_xp(horizon, FIRST + 2) == frozen).all()
+
+
+def test_horizon_blank_event_contributes_zero():
+    panel = _panel()
+    bootstrap = _horizon_bootstrap(panel)
+    bootstrap["fixtures"][str(FIRST + 1)] = _without_team(bootstrap["fixtures"][str(FIRST + 1)], 1)
+    horizon = mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    blanked = panel.loc[panel["team_id"] == 1, "code"].unique()
+    rows = horizon[horizon["code"].isin(blanked)]
+    blank = rows[rows["event"] == FIRST + 1]
+    assert len(blank) == len(blanked)                               # the blank still has a row
+    assert (blank["num_fixtures"] == 0).all() and (blank["xp"] == 0.0).all()
+    assert (blank["opponents"] == "").all() and blank["p_start"].isna().all()
+    xp = rows.pivot(index="code", columns="event", values="xp")
+    summary = rows.drop_duplicates("code").set_index("code").sort_index()
+    assert (summary["xp_h3"] == xp[FIRST] + xp[FIRST + 2]).all()     # xp_h1 + xp(N+2), exactly
+    assert (summary["xp_h3"] > summary["xp_h1"]).any()
+    assert (horizon["events_covered"] == 3).all()                    # the event itself is covered
+
+
+def test_horizon_double_gameweek_event_sums_two_fixture_rows():
+    panel = _panel()
+    bootstrap = _horizon_bootstrap(panel)
+    bootstrap["fixtures"][str(FIRST + 1)].append({"team_h": 3, "team_a": 4})   # 3 and 4 play twice
+    horizon = mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    doubled = panel.loc[panel["team_id"].isin([3, 4]), "code"].unique()
+    event = horizon[horizon["event"] == FIRST + 1].set_index("code")
+    assert (event.loc[doubled, "num_fixtures"] == 2).all()
+    assert event.loc[doubled, "opponents"].str.count(",").eq(1).all()     # "vT6, vT4"
+    assert (event.drop(index=doubled)["num_fixtures"] == 1).all()
+    assert not horizon.duplicated(["code", "event"]).any()                # summed, not two rows
+    stubs = mm.upcoming_fixture_rows(bootstrap, FIRST + 1, SEASON)
+    assert stubs[stubs["code"].isin(doubled)].groupby("code").size().eq(2).all()
+    summed = mm.build_gw_xp(panel, _as_gw(bootstrap, FIRST + 1), FIRST, SEASON,
+                            min_train_rows=SMALL_FIT).set_index("code")
+    assert (event.loc[doubled, "xp"] == summed.loc[doubled, "xp"]).all()
+    assert (event.loc[doubled, "xp_started"] == summed.loc[doubled, "xp_started"]).all()
+
+
+def test_horizon_with_only_two_events_in_the_bootstrap_warns_and_covers_two(caplog):
+    panel = _panel()
+    bootstrap = _horizon_bootstrap(panel, events=(FIRST, FIRST + 1))
+    with caplog.at_level("WARNING"):
+        horizon = mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    assert (horizon["events_covered"] == 2).all()
+    assert sorted(horizon["event"].unique()) == [FIRST, FIRST + 1]
+    assert f"no fixtures for gw {FIRST + 2}" in caplog.text and "2 of 3 events" in caplog.text
+    summary = horizon.drop_duplicates("code").set_index("code").sort_index()
+    assert (summary["xp_h3"] == _event_xp(horizon, FIRST) + _event_xp(horizon, FIRST + 1)).all()
+
+
+def test_horizon_team_without_any_fixture_scores_zero():
+    panel = _panel()
+    bootstrap = _horizon_bootstrap(panel)
+    bootstrap["fixtures"] = {event: _without_team(fixtures, 1)
+                             for event, fixtures in bootstrap["fixtures"].items()}
+    horizon = mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    idle = horizon[horizon["code"].isin(panel.loc[panel["team_id"] == 1, "code"])]
+    assert len(idle) == 3 * PER_POSITION * 4 // N_TEAMS             # still three rows each
+    assert (idle["xp_h3"] == 0.0).all() and (idle["xp_h1"] == 0.0).all()
+    assert (idle["num_fixtures"] == 0).all()
+
+
+def test_horizon_applies_the_same_availability_to_every_event():
+    panel = _panel()
+    flagged = 1001
+    horizon = mm.build_horizon_xp(panel, _horizon_bootstrap(panel, flagged=(flagged,)), SEASON,
+                                  min_train_rows=SMALL_FIT)
+    rows = horizon[horizon["code"] == flagged]
+    assert len(rows) == 3 and (rows["xp"] == 0.0).all() and (rows["p_start"] == 0.0).all()
+    assert (rows["xp_started"] > 0).all()         # the conditional is not gated, as in xp_gw
+    assert (rows["xp_h3"] == 0.0).all()
+
+
+def test_horizon_needs_fixtures_in_its_first_event():
+    panel = _panel()
+    bootstrap = _horizon_bootstrap(panel, events=(FIRST + 1, FIRST + 2))
+    with pytest.raises(ValueError, match=f"no fixtures for gameweek {FIRST}"):
+        mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+
+
+def test_horizon_default_gameweeks_come_from_the_bootstrap_calendar():
+    panel = _panel()
+    bootstrap = _horizon_bootstrap(panel)
+    default = mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    explicit = mm.build_horizon_xp(panel, bootstrap, SEASON, mm.horizon_gameweeks(FIRST),
+                                   min_train_rows=SMALL_FIT)
+    pd.testing.assert_frame_equal(default, explicit)
+    assert mm.horizon_gameweeks(6) == [6, 7, 8]
+
+
+def test_horizon_marks_an_unfitted_position_as_no_opinion():
+    """Edge: a position too thin to fit keeps its rows (xp 0.0, like xp_gw) but
+    says so, so a consumer does not read the zero as a prediction."""
+    panel = _panel()
+    thin = panel[(panel["element_type"] != 1) | (panel["gw"] > N_GWS - 1)]
+    horizon = mm.build_horizon_xp(thin, _horizon_bootstrap(panel), SEASON,
+                                  min_train_rows=SMALL_FIT)
+    keepers = horizon[horizon["element_type"] == 1]
+    assert not keepers.empty and not keepers["fitted"].any()
+    assert keepers["p_start"].isna().all() and (keepers["xp_h3"] == 0.0).all()
+    assert horizon[horizon["element_type"] != 1]["fitted"].all()
+
+
+def test_horizon_on_a_two_season_panel_uses_only_this_seasons_form():
+    """The later events are featurised from the season's own rows; that must
+    equal the full-panel path ``build_gw_xp`` takes for the same fixtures."""
+    panel = _two_season_panel()
+    live = panel[panel["season"] == LIVE_SEASON]
+    first = int(live["gw"].max()) + 1
+    _, bootstrap = _paired(live, first)
+    teams = sorted(int(t) for t in live["team_id"].unique())      # offset ids, see _live_panel
+    home, away = teams[::2], teams[1::2]
+    bootstrap["fixtures"] = {str(first + i): [
+        {"team_h": h, "team_a": away[(index + i) % len(away)]} for index, h in enumerate(home)]
+        for i in range(3)}
+    horizon = mm.build_horizon_xp(panel, bootstrap, LIVE_SEASON, mm.horizon_gameweeks(first),
+                                  min_train_rows=SMALL_FIT)
+    as_first = {**bootstrap, "fixtures": {str(first): bootstrap["fixtures"][str(first + 1)]}}
+    frozen = mm.build_gw_xp(panel, as_first, first, LIVE_SEASON,
+                            min_train_rows=SMALL_FIT).set_index("code")["xp"].sort_index()
+    assert (_event_xp(horizon, first + 1) == frozen).all()
+    assert (horizon["panel_max_gw"] == first - 1).all()
+
+
+def test_horizon_table_is_one_row_per_player_with_a_cell_per_event():
+    panel = _panel()
+    bootstrap = _horizon_bootstrap(panel)
+    bootstrap["fixtures"][str(FIRST + 1)] = _without_team(bootstrap["fixtures"][str(FIRST + 1)], 1)
+    table = mm.horizon_table(mm.build_horizon_xp(panel, bootstrap, SEASON,
+                                                 min_train_rows=SMALL_FIT))
+    assert table["code"].is_unique and len(table) == panel["code"].nunique()
+    assert {f"gw{FIRST}", f"gw{FIRST + 1}", f"gw{FIRST + 2}", "xp_h1", "xp_h3"} <= set(table.columns)
+    blanked = table[table["code"].isin(panel.loc[panel["team_id"] == 1, "code"])]
+    assert (blanked[f"gw{FIRST + 1}"] == "-").all()
+    assert table["xp_h3"].is_monotonic_decreasing
+
+
+def test_cli_horizon_writes_the_horizon_file_and_not_the_gameweek_one(tmp_path):
+    panel = _panel()
+    panel_path = tmp_path / "panel.parquet"
+    panel.to_parquet(panel_path)
+    bootstrap = _horizon_bootstrap(panel)
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text(json.dumps(bootstrap), encoding="utf-8")
+    out_dir = tmp_path / "ml"
+    out_dir.mkdir()
+    code = mm.main(["--gw", "next", "--horizon", "--season", SEASON, "--panel", str(panel_path),
+                    "--bootstrap", str(bootstrap_path), "--out", str(out_dir)])
+    assert code == 0
+    out = out_dir / f"xp_horizon_gw{FIRST}.parquet"
+    assert [p.name for p in out_dir.iterdir()] == [out.name]
+    written = pd.read_parquet(out)
+    assert list(written.columns) == mm.HORIZON_COLUMNS and len(written) == 3 * panel["code"].nunique()
+    stamp = pq.read_schema(out).metadata[mm.GENERATED_AT_KEY].decode()
+    assert datetime.fromisoformat(stamp).tzinfo is not None
+
+
+def test_horizon_ignores_post_deadline_rows_for_its_own_events(caplog):
+    """Regression: the builder had no cutoff of its own, so a panel already
+    holding GW N's outcomes trained on them and scored completed GW N rows as
+    targets. Adding post-deadline labels for N (and N+1) must change nothing."""
+    panel = _panel()
+    bootstrap = _horizon_bootstrap(panel)
+    clean = mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    later = (_panel(seed=99).assign(gw=lambda f: f["gw"] + N_GWS)
+             .query(f"gw in [{FIRST}, {FIRST + 1}]"))
+    leaky = pd.concat([panel, later], ignore_index=True)
+    with caplog.at_level("WARNING"):
+        dirty = mm.build_horizon_xp(leaky, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    pd.testing.assert_frame_equal(clean, dirty)
+    assert f"at gw >= {FIRST}" in caplog.text
+    served = mm.build_gw_xp(leaky, bootstrap, FIRST, SEASON, min_train_rows=SMALL_FIT)
+    first = dirty[dirty["event"] == FIRST].set_index("code")
+    assert (first.loc[served["code"], "xp"].to_numpy() == served["xp"].to_numpy()).all()
+    assert (served["panel_max_gw"] == N_GWS).all()
+
+
+def test_completed_before_keeps_other_seasons_and_earlier_gameweeks():
+    panel = pd.DataFrame({"season": ["2025-26", "2025-26", "2026-27", "2026-27"],
+                          "gw": [30, 6, 5, 6]})
+    kept = mm.completed_before(panel, "2026-27", 6)
+    assert kept.to_dict("records") == [{"season": "2025-26", "gw": 30},
+                                       {"season": "2025-26", "gw": 6},
+                                       {"season": "2026-27", "gw": 5}]
+    assert mm.completed_before(kept, "2026-27", 6) is kept      # nothing to drop: untouched
+
+
+def _double_bootstrap(panel: pd.DataFrame, event: int) -> dict:
+    """``_horizon_bootstrap`` with teams 3 and 6 playing twice in ``event``
+    (3 also meets 4 and 6 also meets 5, so each double has two opponents)."""
+    bootstrap = _horizon_bootstrap(panel)
+    bootstrap["fixtures"][str(event)].append({"team_h": 3, "team_a": 6})
+    return bootstrap
+
+
+def test_double_event_fixtures_share_the_single_fixture_player_form():
+    """Regression: player form was shifted/rolled over a double's two stub
+    rows, so the second fixture saw the first's missing outcome as its last
+    gameweek (mins_l1 NaN, one observation short in every window). Both
+    fixtures must carry the form a one-fixture stub gets — rebuilt here
+    straight from build_match_frame, not through stub_frame."""
+    panel = _panel()
+    bootstrap = _double_bootstrap(panel, FIRST)
+    stubs = mm.upcoming_fixture_rows(bootstrap, FIRST, SEASON)
+    _, target = mm.stub_frame(panel, stubs, SEASON, FIRST)
+    doubled = panel.loc[panel["team_id"].isin([3, 6]), "code"].unique()
+    assert target[target["code"].isin(doubled)].groupby("code").size().eq(2).all()
+
+    one_each = stubs.drop_duplicates(["code", "season", "gw"])
+    independent = build_match_frame(pd.concat([panel, one_each], ignore_index=True))
+    independent = independent[independent["gw"] == FIRST].set_index("code")
+    form = [*player_form_columns(), "is_startable", "has_history"]
+    for code in doubled:
+        rows = target[target["code"] == code]
+        expected = independent.loc[code, form]
+        for _, row in rows.iterrows():
+            pd.testing.assert_series_equal(row[form], expected, check_names=False,
+                                           check_dtype=False)
+    assert target.loc[target["code"].isin(doubled), "mins_l1"].notna().all()
+    # the fixture columns still differ: two opponents, each with its own strength
+    first = target[target["code"] == doubled[0]]
+    assert first["opponent_team"].nunique() == 2
+    assert first["opp_conceded_pg"].nunique() == 2
+
+
+def test_double_at_gw_n_keeps_xp_h1_equal_to_the_gameweek_forecast():
+    panel = _panel()
+    bootstrap = _double_bootstrap(panel, FIRST)
+    horizon = mm.build_horizon_xp(panel, bootstrap, SEASON, min_train_rows=SMALL_FIT)
+    served = mm.build_gw_xp(panel, bootstrap, FIRST, SEASON,
+                            min_train_rows=SMALL_FIT).set_index("code")
+    first = horizon[horizon["event"] == FIRST].set_index("code").loc[served.index]
+    assert (first["xp_h1"] == served["xp"]).all() and (first["xp"] == served["xp"]).all()
+    doubled = panel.loc[panel["team_id"].isin([3, 6]), "code"].unique()
+    assert (served.loc[doubled, "num_fixtures"] == 2).all()
