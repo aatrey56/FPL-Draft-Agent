@@ -34,7 +34,7 @@ from typing import Any
 import pandas as pd
 from dotenv import load_dotenv
 
-from backend.ml import jsonutil
+from backend.ml import jsonutil, paths
 from backend.ml import waiver as wv
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,8 @@ next_event = wv.next_event
 def gw_xp_table(bootstrap: dict, seasons: pd.DataFrame,
                 projections_path: Path, *,
                 gw_xp: pd.DataFrame | None = None,
-                season_panel: pd.DataFrame | None = None) -> pd.DataFrame:
+                season_panel: pd.DataFrame | None = None,
+                prior_season: str = wv.PRIOR_SEASON) -> pd.DataFrame:
     """Player table scored over the next single gameweek (gw_xp column).
 
     ``gw_xp`` is the match model's next-GW frame (see ``waiver.load_gw_xp``);
@@ -57,8 +58,8 @@ def gw_xp_table(bootstrap: dict, seasons: pd.DataFrame,
     the role signals (``waiver.build_player_table``).
     """
     players = wv.build_player_table(bootstrap, seasons, projections_path, gw_xp=gw_xp,
-                                    season_panel=season_panel)
-    strengths = wv.team_strengths(seasons, bootstrap.get("teams", []))
+                                    season_panel=season_panel, prior_season=prior_season)
+    strengths = wv.team_strengths(seasons, bootstrap.get("teams", []), prior_season)
     load1 = wv.next_fixture_load(bootstrap, strengths, n_events=1,
                                  fixtures_by_event=wv.upcoming_fixtures(bootstrap))
     team_load = {t["id"]: load1.get(t["id"], 0.0) for t in bootstrap.get("teams", [])}
@@ -217,18 +218,24 @@ def main(argv: list[str] | None = None) -> int:
     if not league or not entry:
         parser.error("--league and --entry required (or set LEAGUE_ID / ENTRY_ID)")
 
-    raw_root = args.data_root / "raw" / args.season
+    try:
+        projections_path = paths.projections_path(args.season, args.data_root)
+        prior_season = paths.prior_season(args.season)
+    except (FileNotFoundError, ValueError) as exc:
+        parser.exit(2, f"{parser.prog}: error: {exc}\n")  # one line, no usage dump
+    raw_root = paths.raw_root(args.season, args.data_root)
     bootstrap = json.loads((raw_root / "bootstrap/bootstrap-static.json").read_text(encoding="utf-8"))
     element_status = json.loads(
         (raw_root / f"league/{league}/element-status.json").read_text(encoding="utf-8"))
-    seasons = pd.read_parquet(args.data_root / "derived/ml/player_seasons.parquet")
-    ml_dir = args.data_root / "derived" / args.season / "ml"
+    seasons = pd.read_parquet(paths.seasons_table_path(args.data_root))
+    ml_dir = paths.derived_root(args.season, args.data_root) / "ml"
 
     gw_xp, scorer_meta = wv.resolve_scorer(args.scorer, bootstrap, ml_dir)
     players = gw_xp_table(
-        bootstrap, seasons, args.data_root / "derived/ml/projections_2627.json",
+        bootstrap, seasons, projections_path,
         gw_xp=gw_xp,
-        season_panel=wv.load_season_panel(ml_dir / "player_gameweeks.parquet", args.season))
+        season_panel=wv.load_season_panel(ml_dir / "player_gameweeks.parquet", args.season),
+        prior_season=prior_season)
     players, override_report = apply_role_overrides(
         players, wv.load_role_overrides(ml_dir / "role_overrides.json"), next_event(bootstrap),
         wv.event_deadlines(bootstrap))

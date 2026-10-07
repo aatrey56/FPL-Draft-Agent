@@ -105,7 +105,7 @@ from typing import Any
 import pandas as pd
 from dotenv import load_dotenv
 
-from backend.ml import jsonutil
+from backend.ml import jsonutil, paths
 from backend.ml.gameweeks import finished_gameweeks
 
 logger = logging.getLogger(__name__)
@@ -119,7 +119,8 @@ FIXTURE_MULT_MIN, FIXTURE_MULT_MAX = 0.85, 1.15
 HOME_NUDGE = 1.03
 # Valid draft formations: (DEF, MID, FWD) with exactly 1 GKP, 10 outfielders.
 FORMATIONS = [(3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2), (4, 5, 1), (5, 3, 2), (5, 4, 1)]
-# The season the projections and team strengths were measured on.
+# Default prior season (for 2026-27): the season team strengths and club
+# moves are measured on. Callers pass ``paths.prior_season(season)``.
 PRIOR_SEASON = "2025-26"
 # Role signals for club-movers (see module docstring). A player averaging
 # ROLE_MINUTES_FULL minutes over the last ROLE_MINUTES_WINDOW finished GWs
@@ -139,10 +140,12 @@ OVERRIDE_REPORT_KEYS = ("overrides_applied", "overrides_unmatched", "overrides_e
 # Building blocks
 # ---------------------------------------------------------------------------
 
-def team_strengths(seasons: pd.DataFrame, teams: list[dict]) -> dict[int, float]:
-    """26/27 team id -> strength score (sum of that club's player points in
-    25/26). Promoted/unseen clubs get a weak prior: 90% of the minimum."""
-    last = seasons[seasons["season"] == PRIOR_SEASON]
+def team_strengths(seasons: pd.DataFrame, teams: list[dict],
+                   prior_season: str = PRIOR_SEASON) -> dict[int, float]:
+    """Current team id -> strength score (sum of that club's player points in
+    ``prior_season``). Promoted/unseen clubs get a weak prior: 90% of the
+    minimum."""
+    last = seasons[seasons["season"] == prior_season]
     by_name = last.groupby("team_name")["total_points"].sum().to_dict()
     floor = 0.9 * min(by_name.values()) if by_name else 0.0
     return {t["id"]: float(by_name.get(t["name"], floor)) for t in teams}
@@ -492,7 +495,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
                        neutral_availability: bool = False,
                        gw_xp: pd.DataFrame | None = None,
                        season_panel: pd.DataFrame | None = None,
-                       horizon_xp: pd.DataFrame | None = None) -> pd.DataFrame:
+                       horizon_xp: pd.DataFrame | None = None,
+                       prior_season: str = PRIOR_SEASON) -> pd.DataFrame:
     """One row per 26/27 element: identity, availability, xP, ROS value.
 
     ``fixtures_by_event`` overrides the bootstrap schedule (default:
@@ -500,6 +504,8 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     ``neutral_availability`` forces availability to 1.0, except 0.0 for
     departed (status "u") players (both used by the
     replay harness, where only the current status/news snapshot exists).
+    ``prior_season`` is the season team strengths and club moves are read
+    from (``paths.prior_season`` of the season being scored).
 
     ``gw_xp`` is the match model's one-row-per-code next-GW frame (see
     ``matchmodel.build_gw_xp``). Joined on the permanent ``code``, it supplies
@@ -534,7 +540,7 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
     gameweek's fixtures when the xP frame carries it, else the heuristic at
     full availability.
     """
-    strengths = team_strengths(seasons, bootstrap.get("teams", []))
+    strengths = team_strengths(seasons, bootstrap.get("teams", []), prior_season)
     if fixtures_by_event is None:
         fixtures_by_event = upcoming_fixtures(bootstrap)
     load = next_fixture_load(bootstrap, strengths, fixtures_by_event=fixtures_by_event)
@@ -558,7 +564,7 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
 
     team_names = {t["id"]: t.get("short_name") or t.get("name")
                   for t in bootstrap.get("teams", [])}
-    moves = club_moves(bootstrap, seasons)
+    moves = club_moves(bootstrap, seasons, prior_season)
     profile = minutes_profile(season_panel)
     rows = []
     for el in bootstrap.get("elements", []):
@@ -1168,7 +1174,8 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
          season_panel: pd.DataFrame | None = None,
          role_overrides: list[dict] | None = None,
          horizon_xp: pd.DataFrame | None = None,
-         horizon: str = DEFAULT_HORIZON) -> dict[str, Any]:
+         horizon: str = DEFAULT_HORIZON,
+         prior_season: str = PRIOR_SEASON) -> dict[str, Any]:
     """Pure waiver plan: players table, my squad, best-XI xP, ranked recs.
 
     ``gw_xp`` (optional) is the match model's next-GW frame; see
@@ -1195,7 +1202,8 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
     players = build_player_table(
         bootstrap, seasons, projections_path,
         fixtures_by_event=fixtures_by_event, neutral_availability=neutral_availability,
-        gw_xp=gw_xp, season_panel=season_panel, horizon_xp=horizon_xp)
+        gw_xp=gw_xp, season_panel=season_panel, horizon_xp=horizon_xp,
+        prior_season=prior_season)
     players, override_report = apply_role_overrides(
         players, role_overrides or [], next_event(bootstrap), event_deadlines(bootstrap),
         horizon_xp)
@@ -1246,23 +1254,27 @@ def main(argv: list[str] | None = None) -> int:
     if not league or not entry:
         parser.error("--league and --entry required (or set LEAGUE_ID / ENTRY_ID)")
 
-    raw_root = args.data_root / "raw" / args.season
+    try:
+        projections_path = paths.projections_path(args.season, args.data_root)
+        prior_season = paths.prior_season(args.season)
+    except (FileNotFoundError, ValueError) as exc:
+        parser.exit(2, f"{parser.prog}: error: {exc}\n")  # one line, no usage dump
+    raw_root = paths.raw_root(args.season, args.data_root)
     bootstrap = json.loads((raw_root / "bootstrap/bootstrap-static.json").read_text(encoding="utf-8"))
     element_status = json.loads(
         (raw_root / f"league/{league}/element-status.json").read_text(encoding="utf-8"))
-    seasons = pd.read_parquet(args.data_root / "derived/ml/player_seasons.parquet")
-    ml_dir = args.data_root / "derived" / args.season / "ml"
+    seasons = pd.read_parquet(paths.seasons_table_path(args.data_root))
+    ml_dir = paths.derived_root(args.season, args.data_root) / "ml"
 
     gw_xp, scorer_meta = resolve_scorer(args.scorer, bootstrap, ml_dir)
     horizon_xp, horizon_meta = resolve_horizon(args.horizon, gw_xp, bootstrap, ml_dir)
     season_panel = load_season_panel(ml_dir / "player_gameweeks.parquet", args.season)
     minutes_through_gw = (int(season_panel["gw"].max())
                           if season_panel is not None and not season_panel.empty else None)
-    result = plan(bootstrap, element_status, seasons,
-                  args.data_root / "derived/ml/projections_2627.json",
+    result = plan(bootstrap, element_status, seasons, projections_path,
                   entry, args.top, gw_xp=gw_xp, season_panel=season_panel,
                   role_overrides=load_role_overrides(ml_dir / "role_overrides.json"),
-                  horizon_xp=horizon_xp, horizon=args.horizon)
+                  horizon_xp=horizon_xp, horizon=args.horizon, prior_season=prior_season)
     squad = result["squad"]
     xi, xi_total = best_xi(squad)
     bench = squad[~squad["element"].isin(xi["element"])]

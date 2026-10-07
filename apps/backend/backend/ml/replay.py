@@ -114,7 +114,7 @@ from typing import Any
 import pandas as pd
 from dotenv import load_dotenv
 
-from backend.ml import jsonutil
+from backend.ml import jsonutil, paths
 from backend.ml import matchmodel
 from backend.ml import waiver as wv
 
@@ -471,9 +471,9 @@ def score_actual(moves: list[tuple[int, int]], event: int, elements: dict[int, d
 # ---------------------------------------------------------------------------
 
 def _load_inputs(data_root: Path, season: str, league: int) -> dict:
-    raw = Path(data_root) / "raw" / season
+    raw = paths.raw_root(season, data_root)
     league_dir = raw / "league" / str(league)
-    seasons = pd.read_parquet(Path(data_root) / "derived/ml/player_seasons.parquet")
+    seasons = pd.read_parquet(paths.seasons_table_path(data_root))
     if (seasons["season"] == season).any():
         raise ValueError(f"player_seasons already contains {season}: not a pre-season table")
     return {
@@ -483,7 +483,7 @@ def _load_inputs(data_root: Path, season: str, league: int) -> dict:
         "transactions": json.loads(
             (league_dir / "transactions.json").read_text(encoding="utf-8")).get("transactions", []),
         "seasons": seasons,
-        "projections": Path(data_root) / "derived/ml/projections_2627.json",
+        "projections": paths.projections_path(season, data_root),
     }
 
 
@@ -503,9 +503,9 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
         raise ValueError(f"unknown horizon {horizon!r}")
     inputs = _load_inputs(data_root, season, league)
     if scorer == "model":
-        archive = pd.read_parquet(Path(data_root) / "derived/ml/player_gameweeks.parquet")
+        archive = pd.read_parquet(paths.archive_derived(data_root) / "ml/player_gameweeks.parquet")
         season_panel = pd.read_parquet(
-            Path(data_root) / "derived" / season / "ml/player_gameweeks.parquet")
+            paths.derived_root(season, data_root) / "ml/player_gameweeks.parquet")
     raw, bootstrap = inputs["raw"], inputs["bootstrap"]
     events = {e["id"]: e for e in bootstrap["events"]["data"]}
     elements = {el["id"]: el for el in neutralize_bootstrap(bootstrap)["elements"]}
@@ -540,7 +540,8 @@ def run(data_root: Path, season: str, league: int, entry: int, gws: list[int],
                          inputs["projections"], entry, MAX_CANDIDATES,
                          fixtures_by_event=fixtures,
                          neutral_availability=True, gw_xp=gw_xp,
-                         season_panel=minutes_panel, horizon_xp=horizon_xp, horizon=horizon)
+                         season_panel=minutes_panel, horizon_xp=horizon_xp, horizon=horizon,
+                         prior_season=paths.prior_season(season))
         rank_by = result["rank_by"]
         candidates = {
             "no_change": [],
@@ -647,7 +648,7 @@ def main(argv: list[str] | None = None) -> int:
     doc = run(args.data_root, args.season, league, entry, _parse_gws(args.gws), args.scorer,
               args.horizon)
     print(format_table(doc))
-    out = args.data_root / "derived" / args.season / "ml" / output_name(args.scorer, args.horizon)
+    out = paths.derived_root(args.season, args.data_root) / "ml" / output_name(args.scorer, args.horizon)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".tmp")
     try:
