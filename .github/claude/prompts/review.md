@@ -28,22 +28,20 @@ This is the most critical contract in the repo. Any change here is a **breaking 
 - MCP tool names (registered in `apps/mcp-server/fpl-server/main.go`)
 - MCP tool argument names and types (Go structs tagged `json:`)
 - MCP tool response field names and shapes (Go output structs)
-- How `apps/backend/backend/mcp.py` calls these tools
+- Fields the Go tools read from the derived artifacts written by `apps/backend/backend/ml/`
 
-A rename, removal, or type change in a Go tool arg/response is a breaking change for the Python agent.
+A rename, removal, or type change in a Go tool arg/response is a breaking change for MCP clients (Claude Desktop / Claude Code).
 
 ### Environment and Config
 Flag any changes to:
-- `apps/backend/backend/config.py` — new `SETTINGS` fields (are they required? do they have defaults?)
 - `apps/mcp-server/fpl-server/config.go` — new `ServerConfig` fields
-- Port assignments (default :8080 Go, :8000 Python)
+- Port assignments (default :8080 Go MCP server)
 - New required data directories or file paths
 - Any change that requires a deploy-time action (migrate data, set env var, restart service)
 
 ### Python Backend Stability
 - No network calls at module import time
-- MCP tool call shapes in `agent.py` must match Go server
-- Report output formats in `reports.py` must stay stable across GWs
+- Derived artifact schemas (`ml/*.json` / `*.parquet`) must stay compatible with the Go tools that serve them
 
 ### Test Coverage
 Flag changes that touch logic without a corresponding test update.
@@ -56,10 +54,7 @@ Use `Read`, `Glob`, and `Grep` to inspect changed or related files as needed bef
 
 Key files to check when relevant:
 - `apps/mcp-server/fpl-server/main.go` — tool registration
-- `apps/backend/backend/mcp.py` — tool call sites
-- `apps/backend/backend/agent.py` — routing and intent detection
-- `apps/backend/backend/config.py` — settings
-- `apps/backend/backend/constants.py` — shared constants
+- `apps/backend/backend/ml/` — derived artifacts the Go tools serve
 
 ---
 

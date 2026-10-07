@@ -44,10 +44,10 @@ Any change to how the system is configured or deployed:
 
 ### Ecosystem Effects
 Changes that affect the boundary between components:
-- Go MCP server ↔ Python agent contract (tool names, arg names, response fields)
+- Go MCP server ↔ MCP client contract (tool names, arg names, response fields)
+- Python ↔ Go artifact contract (derived `ml/` artifact fields the Go tools read)
 - FPL API data shape dependencies (fields read from bootstrap.json, live.json, etc.)
-- Scheduler behaviour changes (cron timing, refresh logic)
-- Report format changes (affects any downstream consumer of reports)
+- Refresh behaviour changes (autorefresh/autopilot timing, `make weekly`)
 
 ---
 
@@ -57,10 +57,7 @@ Use `Read`, `Glob`, and `Grep` to inspect files when you need more context than 
 
 Key files to check when relevant:
 - `apps/mcp-server/fpl-server/main.go` — registered tool names and schemas
-- `apps/backend/backend/mcp.py` — tool call sites (must match Go)
-- `apps/backend/backend/config.py` — SETTINGS fields (new required fields are breaking)
-- `apps/backend/backend/agent.py` — routing changes
-- `apps/backend/backend/constants.py` — shared constants
+- `apps/backend/backend/ml/` — derived artifacts the Go tools serve
 - `CLAUDE.md` — architecture reference
 
 ---

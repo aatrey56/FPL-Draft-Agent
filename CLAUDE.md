@@ -70,9 +70,9 @@ working here right now:
   `id` (which is reassigned yearly).
 - **Never commit real league/entry ids or league/team/manager names** — they
   live in `.env` (LEAGUE_ID / ENTRY_ID) and CLI flags only.
-- The legacy FastAPI/OpenAI chat stack (`server.py`, `agent.py`, `llm.py`,
-  `rag.py`, `scheduler.py`) is **deprecated** — kept compiling/tested but not
-  developed; do not build on it. Claude over MCP replaced it.
+- The legacy FastAPI/OpenAI chat stack and its `apps/web` UI were
+  **removed** (Claude over MCP replaced them; see git history). Do not
+  reintroduce an in-app chatbot or LLM client.
 - Build the ML/data foundation as **plain Python → parquet first**; dbt,
   Airflow, and a warehouse are possible later end-state, layered on
   later — do not introduce them unless a task explicitly asks.
@@ -407,26 +407,16 @@ fpl-draft-mcp/
 │   │       ├── current_roster.go        # Active roster tool
 │   │       ├── epl_*.go                 # Builders composed by epl
 │   │       └── *_test.go                # Go unit tests (no live calls)
-│   └── backend/             # Python FastAPI backend (port 8000)
-│       └── backend/
-│           ├── server.py        # FastAPI app, /chat endpoint (uvicorn backend.server:app)
-│           ├── agent.py         # AI agent routing + intent detection
-│           ├── mcp_client.py    # MCP client (calls Go server)
-│           ├── llm.py           # LLM client — OpenAI (gpt-4.1), NOT Claude
-│           ├── reports.py       # Report generation (markdown)
-│           ├── rag.py           # RAG index (file-backed)
-│           ├── scheduler.py     # APScheduler for data refresh (DORMANT in offseason)
-│           ├── cli.py           # CLI entrypoint
-│           ├── constants.py     # Shared constants (GW_PATTERN, POSITION_TYPE_LABELS)
-│           ├── config.py        # SETTINGS (env-backed)
-│           └── ml/              # Modelling: ingest → parquet, season projection,
-│                                #   match xP model (matchmodel.py), decision artifacts
+│   └── backend/             # Python ML pipeline (uv; no server, run via `make derive`)
+│       ├── backend/
+│       │   └── ml/              # Modelling: ingest → parquet, season projection,
+│       │                        #   match xP model (matchmodel.py), decision artifacts
+│       └── tests/               # pytest suite (no network)
 ├── data/                    # FPL raw + derived data (gitignored)
 │   ├── raw/                 # LEGACY flat layout = the 2025-26 archive (do not overwrite)
 │   │   └── <season>/        # 2026-27 onward: season-nested (fetcher --season flag)
 │   └── derived/             # same convention: flat = 2025-26, <season>/ = new seasons
-│       ├── summary/         # league/standings/transactions summaries
-│       └── reports/         # GW markdown reports
+│       └── summary/         # league/standings/transactions summaries
 ├── Makefile                 # all operations (serve/fetch/derive/weekly/tui/autopilot/update)
 ├── scripts/                 # autorefresh + autopilot install/uninstall + preflight + notifications
 ├── CLAUDE.md
@@ -457,14 +447,13 @@ Claude Desktop / Claude Code (the LLM client, user's Max plan)
 User
 ```
 
-(The FastAPI/OpenAI `/chat` flow this replaced is deprecated; see §2.1.)
-
 ## 12.3 Port Assignments
 
 | Service | Port | Notes |
 |---|---|---|
 | Go MCP Server | 8080 | HTTP, MCP protocol at `/mcp` |
-| Python FastAPI | 8000 | HTTP, /chat endpoint |
+
+The Python backend runs no server; it is a batch pipeline (`make derive`).
 
 ---
 
@@ -479,19 +468,16 @@ User
 **What lives in Python (Backend):**
 - All modeling and derived artifacts (`ml/`): ingestion, projection model,
   waiver_plan, my_week, drop-radar, serve_export
-- Report generation (`reports.py`)
-- DEPRECATED (kept green, not developed): intent routing (`agent.py`),
-  OpenAI LLM calls (`llm.py`), RAG (`rag.py`), APScheduler (`scheduler.py`),
-  FastAPI surface (`server.py`) — replaced by Claude over MCP
 
 **Crossing the boundary:**
-- Python → Go: HTTP POST to MCP server with tool name + JSON args
-- Go → Python: Never (Go is downstream, Python is orchestrator)
-- The MCP protocol is the only interface between the two
+- Python → Go: derived artifacts on disk (`data/derived[/<season>]/ml/`),
+  which the Go tools read
+- Go → Python: Never (Go is downstream, Python is the producer)
+- Clients (Claude Desktop / Claude Code) reach the system only through the
+  Go server's MCP protocol
 
 **Rules:**
 - Never add network calls to Go tools (they read local files only)
-- Never add file I/O to agent routing logic (agent calls tools, tools read files)
 - Never share state between tools (each tool invocation is stateless)
 
 ---
@@ -520,34 +506,18 @@ uv run pytest
 uv run ruff check .
 ```
 
-## Run Both Servers Locally
+## Run Locally
 
 ```bash
-# Terminal 1 — Go MCP server
-cd apps/mcp-server
-go run ./fpl-server
-
-# Terminal 2 — Python backend
-cd apps/backend
-uvicorn backend.server:app --reload --port 8000
+make serve     # Go MCP server on :8080 (reads data/raw + data/derived)
+make weekly    # fetch (Go cmd/dev) + derive (Python backend.ml) for SEASON
 ```
 
-## Test Chat Endpoint
+## Configuration (local dev)
 
-```bash
-curl -s -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "show standings", "session_id": "test"}' | jq .
-```
-
-## Data Directories (local dev)
-
-Set in `.env`:
-```
-DATA_DIR=/path/to/data
-REPORTS_DIR=/path/to/data/derived/reports
-MCP_URL=http://localhost:8080
-```
+Set in the repo `.env` (see `.env.example`): `LEAGUE_ID`, `ENTRY_ID`,
+`FPL_MCP_API_KEY`. Data roots default to `data/raw` and `data/derived`
+(server `--raw-root` / `--derived-root`; ML CLIs `--data-root`).
 
 ---
 
