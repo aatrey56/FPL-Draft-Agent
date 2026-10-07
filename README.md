@@ -102,9 +102,22 @@ preseason tool) still reads the flat 2026-27 projection directly.
   in `waiver.py`), and `season_gain`, the drop pick and the heuristic per-GW
   baseline use `ros_adj`; `ros_points` stays in the output. A club-mover
   whose status is not `a` (injured, doubtful, suspended) keeps factor 1.0:
-  the absence, not a lost role, explains his minutes. The drop pick sorts on
-  `(status != "u", ros_adj, xp_next)`: a departed squad player is always the
-  drop at his position, and `drop_candidates` lists the top 3 per position.
+  the absence, not a lost role, explains his minutes. A departed squad
+  player is always the drop at his position. Otherwise, under the model
+  scorer, the drop is the lowest value on the ranking horizon (`xp_next` /
+  `next3_xp` / `ros_adj` for `--horizon 1` / `3` / `ros`), ties by
+  `ros_adj` — so an injured or benched player with model xP but no ROS
+  projection can be the drop (that rec's season gain is then unknown:
+  `drop_ros_unknown`, `season_unknown`). A player with neither stays in
+  `unprojected_squad`, never auto-dropped. The heuristic scorer keeps its
+  frozen pick: ROS-projected players only, by `ros_adj`. `drop_candidates`
+  lists the top 3 per position in that order.
+- **Diversified top N + `best_by_position`**: under the model scorer
+  `recommendations` caps any one drop player at 3 recs (`MAX_RECS_PER_DROP`;
+  recs past the cap only backfill, after the others, when the list would be
+  short — rank 1 never moves). `best_by_position` lists the best 3 swaps per
+  position against that position's drop pick, for both scorers, so a run of
+  MID swaps cannot hide the best DEF/FWD move.
   An optional `data/derived/<season>/ml/role_overrides.json`
   (`{"overrides": [{"player": "<web_name>", "team": "<short name>",
   "p_start": 0.4, "fact": "...", "return_gw": 9, "valid_through_gw": 7,

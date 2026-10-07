@@ -71,10 +71,29 @@ Design (v1, pre-GW1-honest):
   suspended: the absence explains the minutes) — has factor 1.0. ``season_gain``, the drop pick and the heuristic
   per-GW baseline (``ros_adj / 38``) use ``ros_adj``; ``ros_points`` stays in
   the output. A general "benched at his old club too" factor is Phase B.
+* **The drop pick** (``drop_order``) follows the ranking horizon under the
+  model scorer: sort key ``(status != "u", value, ros_adj)`` where value is
+  ``xp_next`` (``--horizon 1``), ``next3_xp`` (``3``) or ``ros_adj``
+  (``ros``, tie-break ``next3_xp``). A missing value sorts last, so ROS only
+  breaks ties or orders players the horizon cannot value. Any squad player
+  with a model value OR a ROS projection is droppable — an injured 0-xP
+  player is the obvious drop, not an unknown. A player with neither stays in
+  ``unprojected_squad`` and is never auto-dropped. A drop without a ROS
+  projection makes the rec's season gain unknown (``season_unknown``).
+  The heuristic scorer (``legacy``) keeps its frozen pick: ROS-projected
+  players only, key ``(status != "u", ros_adj, next3_xp)``.
 * **Departed squad players** (status ``u``) have ``ros_adj`` 0 and are
-  always the drop at their position — sort key ``(status != "u", ros_adj,
-  xp_next)`` — with or without a projection. ``drop_candidates`` lists the
-  top ``DROP_CANDIDATES_PER_POSITION`` per position so the pick is auditable.
+  always the drop at their position, with or without a projection.
+  ``drop_candidates`` lists the top ``DROP_CANDIDATES_PER_POSITION`` per
+  position so the pick is auditable.
+* **Diversified top N** (model scorer): ``recommendations`` is the overall
+  ranking with at most ``MAX_RECS_PER_DROP`` recs per drop player — a rec
+  past the cap is held back and only used to backfill (in rank order, after
+  the capped picks) when fewer than ``top_n`` recs remain. Rank 1 never
+  changes. The heuristic scorer is not diversified (frozen baseline).
+  ``best_by_position`` lists the best ``BEST_BY_POSITION_N`` swaps per
+  position (each against that position's drop pick), undiversified, for
+  every scorer, so a run of MID swaps cannot hide the best DEF/FWD move.
 * **Role overrides** — ``data/derived/<season>/ml/role_overrides.json``
   (hand-maintained team news, optional) is applied to the next GW, and to
   the model's 3-GW value event by event: an undated entry touches GW N only,
@@ -130,6 +149,11 @@ ROLE_MINUTES_WINDOW = 5
 ROLE_MINUTES_FULL = 60.0
 ROLE_FLOOR = 0.15
 DROP_CANDIDATES_PER_POSITION = 3
+# Diversification of the overall top N (see module docstring): at most this
+# many recs may share one drop player before the rest are held for backfill.
+MAX_RECS_PER_DROP = 3
+# Swaps listed per position in best_by_position.
+BEST_BY_POSITION_N = 3
 # What ``apply_role_overrides`` did with each role_overrides.json entry, in
 # the order the output JSON and CLI list them.
 OVERRIDE_REPORT_KEYS = ("overrides_applied", "overrides_unmatched", "overrides_expired",
@@ -980,33 +1004,51 @@ def _flag_or_none(value: Any) -> bool | None:
     return None if pd.isna(value) else bool(value)
 
 
-def _drop_tiebreak(rank_by: str) -> str:
-    """Third drop-order key: the short-horizon value the ranking is built on
-    (the 3-GW value for every ranking except ``next1``)."""
-    return "xp_next" if rank_by == "next1" else "next3_xp"
+# Sort keys after "departed first" for each ranking (see ``drop_order``).
+_DROP_KEYS = {"legacy": ["ros_adj", "next3_xp"],
+              "next1": ["xp_next", "ros_adj"],
+              "next3": ["next3_xp", "ros_adj"],
+              "ros": ["ros_adj", "next3_xp"]}
 
 
-def drop_order(squad: pd.DataFrame, tiebreak: str = "xp_next") -> pd.DataFrame:
+def drop_order(squad: pd.DataFrame, rank_by: str = "legacy") -> pd.DataFrame:
     """Squad players who may be dropped, most droppable first.
 
-    Sort key ``(status != "u", ros_adj, tiebreak)``: a departed player is
-    always first, then the lowest role-adjusted season value. Only players
-    with a ROS projection are droppable — an unprojected teammate is unknown,
-    not worthless — except departed ones, who are droppable regardless.
+    A departed (status "u") player is always first, valued or not. Then:
+
+    * ``legacy`` (heuristic scorer, frozen): only ROS-projected players, by
+      ``(ros_adj, next3_xp)``.
+    * ``next1`` / ``next3`` / ``ros``: every player with a model value or a
+      ROS projection (``xp_next``, ``next3_xp`` or ``ros_points`` present),
+      by the ranking horizon's value — ``xp_next`` / ``next3_xp`` /
+      ``ros_adj`` — then ``ros_adj`` (``next3_xp`` under ``ros``). Missing
+      values sort last: a player the horizon cannot value is dropped only
+      after every player it can.
+
+    A player with no value at all is unknown, not worthless, and is never
+    returned (see ``unprojected_squad``).
     """
-    droppable = squad[squad["ros_points"].notna() | (squad["status"] == "u")]
+    if rank_by not in _DROP_KEYS:
+        raise ValueError(f"unknown rank_by {rank_by!r}")
+    departed = squad["status"] == "u"
+    if rank_by == "legacy":
+        valued = squad["ros_points"].notna()
+    else:
+        valued = (squad["ros_points"].notna() | squad["xp_next"].notna()
+                  | squad["next3_xp"].notna())
+    droppable = squad[valued | departed]
     return (droppable.assign(_kept=droppable["status"] != "u")
-            .sort_values(["_kept", "ros_adj", tiebreak])
+            .sort_values(["_kept", *_DROP_KEYS[rank_by]], na_position="last")
             .drop(columns="_kept"))
 
 
-def drop_candidates(squad: pd.DataFrame, tiebreak: str = "xp_next",
+def drop_candidates(squad: pd.DataFrame, rank_by: str = "legacy",
                     per_position: int = DROP_CANDIDATES_PER_POSITION) -> list[dict[str, Any]]:
     """The first ``per_position`` of ``drop_order`` at each position, so the
     drop pick behind every recommendation can be audited (and overruled)."""
     rows = []
     for position in POSITIONS.values():
-        ordered = drop_order(squad[squad["position"] == position], tiebreak)
+        ordered = drop_order(squad[squad["position"] == position], rank_by)
         for _, p in ordered.head(per_position).iterrows():
             rows.append({
                 "web_name": p["web_name"], "position": position, "team": p["team"],
@@ -1020,12 +1062,14 @@ def drop_candidates(squad: pd.DataFrame, tiebreak: str = "xp_next",
     return rows
 
 
-def recommend(players: pd.DataFrame, squad: pd.DataFrame,
-              top_n: int = 10, *, rank_by: str = "next1") -> list[dict[str, Any]]:
-    """Ranked add/drop pairs with the short-vs-long balance made explicit.
+def ranked_recs(players: pd.DataFrame, squad: pd.DataFrame,
+                *, rank_by: str = "next1") -> list[dict[str, Any]]:
+    """Every positive add/drop pair, ranked, with the short-vs-long balance
+    made explicit (``recommend`` caps and diversifies this list).
 
     For each free agent, pair with the first same-position player of
-    ``drop_order`` (a departed squad player, else the lowest ``ros_adj``).
+    ``drop_order`` (a departed squad player, else the most droppable on the
+    ranking horizon; see ``drop_order``).
     Three gains, each the add minus the drop, are carried on every rec as
     ``gains = {"gw1", "gw3", "ros"}`` and as the flat ``next1_gain`` /
     ``next3_gain`` / ``season_gain`` (same values, kept for older readers):
@@ -1036,9 +1080,10 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
       add has no 3-GW value at all — unknown, never "0 minus the drop".
     * ``ros`` — ``ros_adj`` difference (role-adjusted rest-of-season; a
       departed drop counts as 0). None, with ``season_unknown`` True, for a
-      free agent without a ROS projection; such a player is ranked only when
-      the match model values him (next GW or horizon) and his season gain
-      counts as 0 for the label and the ordering.
+      free agent without a ROS projection — such a player is ranked only
+      when the match model values him (next GW or horizon) — or for a drop
+      without one (``drop_ros_unknown``); the unknown season gain counts as
+      0 for the label and the ordering.
 
     Each rec also carries the add's role signals (``club_moved``,
     ``add_expected_minutes``, ``add_role_factor``, ``add_ros_adj``) next to
@@ -1060,14 +1105,13 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
     """
     # Free agents by definition have no owner, so my squad is already excluded.
     pool = players[players["is_free_agent"] & (players["status"] != "u")]
-    # Drop candidates come only from players the model can value. An
-    # unprojected teammate (under the minutes floor last season, promoted,
-    # or newly signed) is NOT worth zero — it is unknown, and auto-dropping
-    # a returning star on missing data is the one unrecoverable mistake.
-    # Those players go in the plan's unprojected_squad section instead.
-    # (A departed teammate is the exception: see drop_order.)
-    droppable = {position: drop_order(squad[squad["position"] == position],
-                                      _drop_tiebreak(rank_by))
+    # Drop candidates come only from players we can value (a model value or
+    # a ROS projection). A teammate with neither is NOT worth zero — it is
+    # unknown, and auto-dropping a returning star on missing data is the one
+    # unrecoverable mistake. Those players go in the plan's
+    # unprojected_squad section instead. (A departed teammate is the
+    # exception: see drop_order.)
+    droppable = {position: drop_order(squad[squad["position"] == position], rank_by)
                  for position in POSITIONS.values()}
     recs: list[dict[str, Any]] = []
     for _, fa in pool.iterrows():
@@ -1092,7 +1136,11 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
         # an unknown gain, not "0 minus the drop".
         next3_gain = (None if pd.isna(fa["next3_xp"])
                       else _v(fa["next3_xp"]) - _v(drop["next3_xp"]))
-        season_gain = 0.0 if model_only else _v(fa["ros_adj"]) - _v(drop["ros_adj"])
+        # A drop with no ROS projection (valued by the match model only) has
+        # an unknown season value: the season gain is unknown, not "add - 0".
+        drop_ros_unknown = bool(pd.isna(drop["ros_adj"]))
+        season_unknown = model_only or drop_ros_unknown
+        season_gain = 0.0 if season_unknown else _v(fa["ros_adj"]) - _v(drop["ros_adj"])
         short_gain = next1_gain if rank_by == "next1" else (next3_gain or 0.0)
         if short_gain <= 0 and season_gain <= 0:
             continue
@@ -1112,8 +1160,9 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             # rounded value and must not move), 2 once model values are in.
             "next3_gain": (None if next3_gain is None
                            else round(next3_gain, 1 if rank_by == "legacy" else 2)),
-            "season_gain": None if model_only else round(season_gain, 1),
-            "season_unknown": model_only,
+            "season_gain": None if season_unknown else round(season_gain, 1),
+            "season_unknown": season_unknown,
+            "drop_ros_unknown": drop_ros_unknown,
             "label": label,
             "add_xp_next": fa["xp_next"], "drop_xp_next": drop["xp_next"],
             "add_p_start": fa["p_start"], "add_xp_source": fa["xp_source"],
@@ -1123,7 +1172,7 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
             "drop_next3_xp": drop["next3_xp"], "drop_ros": drop["ros_points"],
             "add_ros_adj": _none_if_nan(fa["ros_adj"]),
             "drop_ros_adj": _none_if_nan(drop["ros_adj"]),
-            "drop_status": drop["status"],
+            "drop_status": drop["status"], "drop_xp_source": drop["xp_source"],
             "club_moved": _flag_or_none(fa["club_moved"]),
             "add_expected_minutes": _none_if_nan(fa["expected_minutes"]),
             "add_minutes_season": (None if pd.isna(fa["minutes_season"])
@@ -1148,7 +1197,49 @@ def recommend(players: pd.DataFrame, squad: pd.DataFrame,
         recs.sort(key=lambda r: (-(r["season_gain"] or 0.0), -(r["next3_gain"] or 0.0)))
     else:
         raise ValueError(f"unknown rank_by {rank_by!r}")
-    return recs[:top_n]
+    return recs
+
+
+def diversify(recs: list[dict[str, Any]], top_n: int,
+              per_drop: int = MAX_RECS_PER_DROP) -> list[dict[str, Any]]:
+    """The first ``top_n`` of ranked ``recs`` with at most ``per_drop`` per
+    drop player: a rec past its drop's cap is held back, and held recs only
+    backfill (in rank order, after the capped picks) when fewer than
+    ``top_n`` recs would remain. Rank 1 is always ``recs[0]``."""
+    picked: list[dict[str, Any]] = []
+    held: list[dict[str, Any]] = []
+    per_drop_count: dict[int, int] = {}
+    for rec in recs:
+        if len(picked) == top_n:
+            break
+        count = per_drop_count.get(rec["drop_element"], 0)
+        if count < per_drop:
+            picked.append(rec)
+            per_drop_count[rec["drop_element"]] = count + 1
+        else:
+            held.append(rec)
+    return (picked + held)[:top_n]
+
+
+def recommend(players: pd.DataFrame, squad: pd.DataFrame,
+              top_n: int = 10, *, rank_by: str = "next1") -> list[dict[str, Any]]:
+    """The overall top ``top_n`` of ``ranked_recs``, diversified by drop
+    (``diversify``) except under ``legacy``, the heuristic scorer's frozen
+    baseline, which stays a plain top N."""
+    recs = ranked_recs(players, squad, rank_by=rank_by)
+    return recs[:top_n] if rank_by == "legacy" else diversify(recs, top_n)
+
+
+def best_by_position(recs: list[dict[str, Any]],
+                     per_position: int = BEST_BY_POSITION_N) -> dict[str, list[dict[str, Any]]]:
+    """The best ``per_position`` of ranked ``recs`` at each position (every
+    position present, an empty list when nothing beats the drop there)."""
+    out: dict[str, list[dict[str, Any]]] = {position: [] for position in POSITIONS.values()}
+    for rec in recs:
+        bucket = out[rec["position"]]
+        if len(bucket) < per_position:
+            bucket.append(rec)
+    return out
 
 
 def unprojected_squad(squad: pd.DataFrame) -> list[dict[str, Any]]:
@@ -1156,9 +1247,9 @@ def unprojected_squad(squad: pd.DataFrame) -> list[dict[str, Any]]:
     xP (``xp_source == "none"``) — surfaced for human judgment instead of
     being silently treated as droppable zeros. Same definition as my_week's.
 
-    A player with model xP but no ROS projection is valued for the next GW
-    and so is not listed here; he is still never the drop candidate
-    (``recommend`` only drops players with a ROS projection)."""
+    A player with model xP but no ROS projection is valued by the match
+    model and so is not listed here; under the model scorer he may be the
+    drop (``drop_order``), under the heuristic scorer he never is."""
     rows = squad[squad["xp_source"] == "none"]
     return [{
         "web_name": p["web_name"], "position": p["position"], "team": p["team"],
@@ -1192,7 +1283,8 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
 
     Free agents are the element-status rows with no owner. Returns
     ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``rank_by``,
-    ``recommendations``, ``drop_candidates``, ``unprojected_squad``, the
+    ``recommendations``, ``best_by_position``, ``drop_candidates``,
+    ``unprojected_squad``, the
     ``OVERRIDE_REPORT_KEYS`` name lists and ``xp_reconciled`` (how many model
     rows were zeroed because the player is now ruled out; see
     ``build_player_table``). No I/O beyond reading ``projections_path``.
@@ -1213,10 +1305,13 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
     squad = my_squad(players, element_status, entry_id)
     _, xi_total = best_xi(squad)
     rank_by = rank_key(horizon, gw_xp, horizon_xp)
+    ranked = ranked_recs(players, squad, rank_by=rank_by)
     return {
         "players": players, "squad": squad, "xi_next3_xp": xi_total, "rank_by": rank_by,
-        "recommendations": recommend(players, squad, top_n, rank_by=rank_by),
-        "drop_candidates": drop_candidates(squad, _drop_tiebreak(rank_by)),
+        "recommendations": (ranked[:top_n] if rank_by == "legacy"
+                            else diversify(ranked, top_n)),
+        "best_by_position": best_by_position(ranked),
+        "drop_candidates": drop_candidates(squad, rank_by),
         "unprojected_squad": unprojected_squad(squad),
         **override_report,
         "xp_reconciled": int(players["xp_reconciled"].sum()),
@@ -1314,11 +1409,12 @@ def main(argv: list[str] | None = None) -> int:
         return "?" if x is None else ("yes" if x else "no")
 
     print(f"\n== DROP CANDIDATES (drop_candidates: top {DROP_CANDIDATES_PER_POSITION} per "
-          f"position; minutes through GW{minutes_through_gw}) ==")
-    print("   pos  player               team st  ros_adj    ROS xp_next moved exp_min")
+          f"position in drop order for {result['rank_by']}; minutes through GW{minutes_through_gw}) ==")
+    print("   pos  player               team st  ros_adj    ROS xp_next  next3 moved exp_min")
     for c in result["drop_candidates"]:
         print(f"  {c['position']:<4} {c['web_name']:<20} {c['team']:<4} {c['status']:<2} "
               f"{_num(c['ros_adj'], 8)} {_num(c['ros_points'])} {_num(c['xp_next'], 7)} "
+              f"{_num(c['next3_xp'])} "
               f"{_moved(c['club_moved']):<5} {_num(c['expected_minutes'], 7)}")
 
     recs = result["recommendations"]
@@ -1326,11 +1422,13 @@ def main(argv: list[str] | None = None) -> int:
                 if scorer_meta["xp_fallback"] else "")
     if horizon_meta["horizon_fallback"]:
         fallback += f" — HORIZON FALLBACK: {horizon_meta['horizon_fallback_reason']}"
-    print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}, scorer {scorer_meta['scorer']}, "
-          f"ranked by {result['rank_by']}{fallback}) ==")
-    print("   label    add                    ->  drop                  gw1    gw3      ros"
-          "  src1/src3            exp_min moved")
-    for r in recs:
+    diversified = "" if result["rank_by"] == "legacy" else f", max {MAX_RECS_PER_DROP} per drop"
+    print(f"\n== WAIVER RECOMMENDATIONS (top {args.top}{diversified}, scorer "
+          f"{scorer_meta['scorer']}, ranked by {result['rank_by']}{fallback}) ==")
+    rec_header = ("   label    add                    ->  drop                  gw1    gw3      ros"
+                  "  src1/src3            exp_min moved")
+
+    def _print_rec(r):
         flag = f"  [{r['availability']}] {r['news']}" if r["availability"] != "a" else ""
         if r["add_role_override"] is not None:
             flag += f"  (override: {r['add_role_override']})"
@@ -1342,11 +1440,26 @@ def main(argv: list[str] | None = None) -> int:
               f"  {sources:<19} {_num(r['add_expected_minutes'], 8)} "
               f"{_moved(r['club_moved'])}{flag}")
 
+    print(rec_header)
+    for r in recs:
+        _print_rec(r)
+
+    print(f"\n== BEST BY POSITION (best_by_position: top {BEST_BY_POSITION_N} per position, "
+          f"each vs that position's drop pick) ==")
+    print(rec_header)
+    for position, position_recs in result["best_by_position"].items():
+        if not position_recs:
+            print(f"  {position}: no swap beats the drop pick")
+        for r in position_recs:
+            _print_rec(r)
+
     out = args.out or ml_dir / "waiver_plan.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(jsonutil.dumps_strict(
         {**scorer_meta, **horizon_meta, "rank_by": result["rank_by"],
          "xi_next3_xp": xi_total, "recommendations": recs,
+         "max_recs_per_drop": None if result["rank_by"] == "legacy" else MAX_RECS_PER_DROP,
+         "best_by_position": result["best_by_position"],
          "drop_candidates": result["drop_candidates"],
          "minutes_through_gw": minutes_through_gw, **overrides,
          "unprojected_squad": unknown, "xp_reconciled": result["xp_reconciled"]}, indent=1))
