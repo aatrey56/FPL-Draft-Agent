@@ -1,6 +1,6 @@
 package main
 
-// Season decision tools: trade_check and league_pulse.
+// Season decision tools: trade_check, team_env and league_pulse.
 //
 // Same boundary as the rest of the decision layer — local JSON only:
 //
@@ -9,11 +9,15 @@ package main
 //	                fresh against the season bootstrap's next GW and last finished
 //	                GW (panel_max_gw); falls back to projections (season value +
 //	                VOR) with value_source "heuristic"
+//	team_env     <- data/derived/<season>/ml/team_env.json (Python
+//	                backend.ml.teamenv; errors when the season file is missing)
 //	league_pulse <- league details + transactions + game meta + ownership events
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"path/filepath"
 	"sort"
@@ -409,18 +413,32 @@ func heuristicTradeCheck(cfg ServerConfig, args TradeCheckArgs, reason string) (
 // ---------------------------------------------------------------------------
 
 type TeamEnvArgs struct {
-	Team string `json:"team,omitempty" jsonschema:"Optional team name filter (case-insensitive substring; empty = all 20 teams)"`
+	Team   string `json:"team,omitempty" jsonschema:"Optional team name filter (case-insensitive substring; empty = all 20 teams)"`
+	Season string `json:"season,omitempty" jsonschema:"Season to rate (default: server default season)"`
 }
 
+// teamEnvHandler serves <derived>/<season>/ml/team_env.json for the requested
+// season (the flat file for the 2025-26 archive). A missing season file is an
+// explicit error naming the regenerate command — never a silent fall back to
+// the archive, which would show last season's clubs (relegated teams present,
+// promoted ones missing). A file whose "season" disagrees with the request is
+// rejected for the same reason.
 func teamEnvHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest, TeamEnvArgs) (*mcp.CallToolResult, any, error) {
 	return func(_ context.Context, _ *mcp.CallToolRequest, args TeamEnvArgs) (*mcp.CallToolResult, any, error) {
+		season := cfg.season(args.Season)
 		var payload struct {
 			Season string                    `json:"season"`
 			Teams  map[string]map[string]any `json:"teams"`
 		}
-		path := filepath.Join(cfg.DerivedRoot, "ml/team_env.json")
+		path := filepath.Join(cfg.derivedDir(season), "ml/team_env.json")
 		if err := readJSONFile(path, &payload); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return toolError(fmt.Errorf("no team_env for season %s (%s missing); build it with: make derive SEASON=%s (or python -m backend.ml.teamenv --season %s)", season, path, season, season)), nil, nil
+			}
 			return toolError(err), nil, nil
+		}
+		if season != "" && payload.Season != season {
+			return toolError(fmt.Errorf("%s holds season %q, not the requested %s; rebuild it with: python -m backend.ml.teamenv --season %s", path, payload.Season, season, season)), nil, nil
 		}
 		teams := payload.Teams
 		if needle := strings.ToLower(strings.TrimSpace(args.Team)); needle != "" {
@@ -437,7 +455,7 @@ func teamEnvHandler(cfg ServerConfig) func(context.Context, *mcp.CallToolRequest
 		return toolMarshal(map[string]any{
 			"season": payload.Season,
 			"teams":  teams,
-			"note":   "Match-environment rates per fixture: attack (pts/xG generated) vs defense (pts/xG conceded, by position and venue). High combined attack xG = shootout potential (players feast); two strong defenses = stalemate risk. Regenerate with: python -m backend.ml.teamenv",
+			"note":   "Match-environment rates per fixture: attack (pts/xG generated) vs defense (pts/xG conceded, by position and venue). High combined attack xG = shootout potential (players feast); two strong defenses = stalemate risk. Early in a season the sample is a handful of fixtures per team — weigh it accordingly. Rebuilt by make derive (python -m backend.ml.teamenv --season <season>).",
 		})
 	}
 }

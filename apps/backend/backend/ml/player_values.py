@@ -32,8 +32,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -41,6 +39,7 @@ from typing import Any
 import pandas as pd
 
 from backend.ml import jsonutil, paths
+from backend.ml.jsonutil import write_atomic
 from backend.ml import waiver as wv
 
 logger = logging.getLogger(__name__)
@@ -76,19 +75,6 @@ def build_player_values(players: pd.DataFrame, *, season: str, gw: int | None,
             for row in frame.to_dict("records")]
     return {"season": season, "gw": gw, "panel_max_gw": panel_max_gw,
             "generated_at": generated_at, **meta, "players": rows}
-
-
-def write_atomic(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` via a temp file + rename (never half-written)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
 
 
 def _panel_max_gw(gw_xp: pd.DataFrame | None) -> int | None:

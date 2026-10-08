@@ -18,7 +18,15 @@ Method notes:
   documented, and fine: 25/26 has 409 DGW rows out of 29,747.
 * Keys are team *names* (stable across seasons), not per-season ids.
 
-CLI: python -m backend.ml.teamenv   (writes data/derived/ml/team_env.json)
+Season layout (CLAUDE.md §2.1): a current season reads its own panel and
+writes ``<data>/derived/<season>/ml/team_env.json``; only the 2025-26 archive
+season lives at the flat ``<data>/derived/ml/``. A current season is never
+written over the flat archive file, and a season with no panel rows is an
+error rather than an empty file (the Go tool would otherwise serve nothing,
+or worse, a stale archive).
+
+CLI: python -m backend.ml.teamenv --season 2026-27 [--data-root DIR] [--panel P] [--out O]
+(``make derive`` runs it for SEASON.)
 """
 
 from __future__ import annotations
@@ -30,7 +38,8 @@ from typing import Any
 
 import pandas as pd
 
-from backend.ml import jsonutil
+from backend.ml import jsonutil, paths
+from backend.ml.gameweeks import LOCAL_SEASON, guard_archive_write
 
 logger = logging.getLogger(__name__)
 
@@ -107,27 +116,42 @@ def expected_environment(env: dict[str, dict[str, Any]], home: str, away: str) -
     }
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+def season_ml_dir(season: str, data_root: Path | None = None) -> Path:
+    """The ``ml/`` dir holding ``season``'s panel and team_env: season-nested
+    for current seasons, the flat archive for 2025-26."""
+    if season == LOCAL_SEASON:
+        return paths.archive_derived(data_root) / "ml"
+    return paths.derived_root(season, data_root) / "ml"
 
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="team_env: per-team match-environment ratings")
-    parser.add_argument("--season", default="2025-26",
-                        help="panel season to rate (25/26 until the 26/27 panel accumulates)")
-    parser.add_argument("--panel", type=Path,
-                        default=_repo_root() / "data/derived/ml/player_gameweeks.parquet")
-    parser.add_argument("--out", type=Path,
-                        default=_repo_root() / "data/derived/ml/team_env.json")
+    parser.add_argument("--season", default="2026-27", help="season to rate (default 2026-27)")
+    parser.add_argument("--data-root", type=Path, default=paths.default_data_root())
+    parser.add_argument("--panel", type=Path, default=None,
+                        help="per-GW panel parquet (default <season ml dir>/player_gameweeks.parquet)")
+    parser.add_argument("--out", type=Path, default=None,
+                        help="output JSON (default <season ml dir>/team_env.json)")
     args = parser.parse_args(argv)
 
-    panel = pd.read_parquet(args.panel)
-    env = build_team_env(panel, args.season)
-    payload = {"season": args.season, "teams": env}
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(jsonutil.dumps_strict(payload, indent=1))
-    logger.info("wrote environment for %d teams -> %s", len(env), args.out)
+    ml_dir = season_ml_dir(args.season, args.data_root)
+    panel_path = args.panel or ml_dir / "player_gameweeks.parquet"
+    out = args.out or ml_dir / "team_env.json"
+    try:
+        guard_archive_write(out, args.season, season_ml_dir(LOCAL_SEASON, args.data_root) / "team_env.json")
+    except ValueError as exc:
+        parser.exit(2, f"{parser.prog}: error: {exc}\n")
+    if not panel_path.exists():
+        parser.exit(2, f"{parser.prog}: error: no panel for season {args.season}: {panel_path} "
+                       "(build it with backend.ml.gameweeks first)\n")
+
+    env = build_team_env(pd.read_parquet(panel_path), args.season)
+    if not env:
+        parser.exit(2, f"{parser.prog}: error: panel {panel_path} has no {args.season} fixtures; "
+                       f"{out} left untouched\n")
+    jsonutil.write_atomic(out, jsonutil.dumps_strict({"season": args.season, "teams": env}, indent=1))
+    logger.info("wrote environment for %d teams -> %s", len(env), out)
 
     ranked = sorted(env.items(), key=lambda kv: -kv[1]["attack"]["xg_pg"])
     print(f"\n== TEAM ENVIRONMENT ({args.season}) — attack xG/g | pts conceded/g ==")

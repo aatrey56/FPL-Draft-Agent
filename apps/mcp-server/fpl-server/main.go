@@ -143,7 +143,7 @@ func main() {
 
 	addTool(server, &registry, &mcp.Tool{
 		Name:        "team_env",
-		Description: "Per-team match environment: FPL points/xG generated and conceded (by position, home/away) — shootout vs stalemate context for fixtures",
+		Description: "Per-team match environment for a season (default: server default season): FPL points/xG generated and conceded (by position, home/away) — shootout vs stalemate context for fixtures",
 	}, teamEnvHandler(cfg))
 
 	addTool(server, &registry, &mcp.Tool{
