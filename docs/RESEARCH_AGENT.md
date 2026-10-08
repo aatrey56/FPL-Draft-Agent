@@ -22,10 +22,11 @@ make research-clear
 | Exit | Meaning |
 |---|---|
 | 0 | Success. This includes a run that stopped early at the run cap, and a run with zero players to research. |
-| 1 | Error: the bootstrap is missing or unreadable, there is no upcoming GW, or a fatal API error aborted the run (e.g. a rejected key). The spend so far is still recorded in the ledger. |
+| 1 | Error: the bootstrap is missing or unreadable, there is no upcoming GW, another run held the ledger lock for 15 minutes, or a fatal API error aborted the run (e.g. a rejected key). The spend so far is still recorded in the ledger. |
 | 2 | Bad arguments, or a bad `RESEARCH_*` value |
 | 3 | `ANTHROPIC_API_KEY` is not set, so research was skipped. A scheduler should treat this as "skip". |
 | 4 | The monthly cap is already reached. Nothing ran and nothing was written. |
+| 130 | Interrupted (Ctrl-C or SIGTERM). The spend is recorded; `role_overrides.research.json` is not touched. |
 
 `--gw` defaults to the bootstrap's next gameweek. `--league` / `--entry`
 default to `LEAGUE_ID` / `ENTRY_ID` from `.env`. `--dry-run` runs the triage,
@@ -67,7 +68,7 @@ phases it also holds up to 25 free agents from waiver_plan: the
 - he is a recommended add
 - he is a doubtful starter in my_week
 
-**Cap.** At most `RESEARCH_MAX_PLAYERS` (default 30) are researched, in this
+**Cap.** At most `RESEARCH_MAX_PLAYERS` (default 25) are researched, in this
 order:
 
 1. squad before free agents
@@ -117,7 +118,11 @@ published_at, quote}], summary (≤200 chars)}`.
 - an enum value is unknown
 - the summary is longer than 200 characters
 - no valid evidence is left. An evidence item is dropped if its URL was never
-  seen in the research, or if its date or quote is missing.
+  cited by the research or its quote is missing.
+
+The model's `published_at` is never trusted. It is kept as
+`llm_published_at` (ISO date or null) for audit only, and a missing or
+unparseable date does not drop the item.
 
 `return_gw` is set to null unless it is after the GW and the claim is an
 absence (`ruled_out` / `suspended`).
@@ -131,13 +136,37 @@ Code decides what gets applied, not the model.
   - **2:** established outlets and beat reporters (BBC, Sky, The Athletic,
     Guardian, regional Reach titles, …)
   - **3:** everything else
+- **Tier by parsed host.** The host comes from `urlsplit` and is matched on
+  label boundaries (`notbbc.co.uk` is not BBC, `bbc.co.uk.evil.example` is
+  not BBC). URLs with userinfo, a malformed port, a backslash authority or a
+  non-http(s) scheme are tier 3 (`invalid-url`).
 - **Verified.** A quote counts only if it appears verbatim in the page text
   the research retrieved: fetched page text, or the citation `cited_text`.
   Case, whitespace and curly quotes are ignored.
+- **Subject.** The quote must name the player (full, first or last name,
+  or `web_name`, accent-insensitive), or sit in a sentence of the page that
+  does (`names_player`).
+- **Status language.** The quote must use wording that fits the claim
+  (`STATUS_PHRASES`, negation-aware): `status_language` must be `supports`.
+  `none` (no status words) does not count, and a credible quote about the
+  player that `contradicts` the claim blocks `applied`.
+- **Independent verifier.** Each remaining tier-1/2 item (tier 1 first, at
+  most `MAX_VERIFY_PER_FINDING` = 4) goes to a separate `claude-haiku-5-5`
+  call that sees only the player, the claim and the passage, and must
+  answer `supports` (`verifier`). A verifier the cap refuses is recorded as
+  `not_run:run_cap`, and the finding can then be at best `proposed`.
+- **Source-backed dates.** Freshness comes only from the search result's
+  `page_age` for that URL (`page_age`, `source_published_at`), never from the
+  model's date or a fetch's `retrieved_at`. No date means not fresh. A date
+  more than an hour in the future rejects the item (`date_problem`).
+
+Each evidence item records every check (`tier`, `outlet`, `verified`,
+`names_player`, `status_language`, `fresh`, `verifier`, `checks_failed`) and
+whether it `counts` towards the gate.
 
 | Decision | Rule | Effect |
 |---|---|---|
-| `applied` | All of these: no reported conflict; confidence med or high; verified support from one tier-1 source or from tier-2 sources at two different outlets; and at least one supporting source published on or after the last finished GW's deadline. | Written to `role_overrides.research.json` |
+| `applied` | All of these: no reported conflict; confidence med or high; no credible quote contradicting the claim; items that pass **every** check above from one tier-1 source or from tier-2 sources at two different outlets; and at least one of them with a source-backed date on or after the last finished GW's deadline. | Written to `role_overrides.research.json` |
 | `proposed` | It has a verified tier-1 or tier-2 source but fails another rule. | Listed in the run file and on stdout as a decision diff (`model_p_start → p_start`), but **never applied**. To approve one, copy it into `role_overrides.json`. |
 | `watch` | No verified source is tier 1 or tier 2: rumour, or quotes that could not be verified. | Logged only |
 | `no_change` | `status_claim = no_new_info` | Nothing |
@@ -176,7 +205,7 @@ All outputs are written atomically (temp file, then rename).
   Entries from earlier runs are kept only while they are still live, and only
   for players this run did not re-apply.
 - `derived/<season>/ml/research/spend.jsonl` is the spend ledger, with one
-  line per run.
+  line per settled request (see Ledger below).
 
 ## Precedence in the derived artifacts
 
@@ -213,22 +242,53 @@ model's rate. A model missing from the table is priced at the highest rates
 in it.
 
 **Estimate.** `ESTIMATED_USAGE` assumes about 60k input and 6k output tokens
-plus 5 searches for the research call, and 4k input plus 1.5k output for the
-extraction call. That comes to **≈ $0.46 per player, or ≈ $13.7 for 30
-players**. Treat it as a prior: check it against the `cost` block of real
-runs.
+plus 5 searches for the research call, 4k input plus 1.5k output for the
+extraction call, and two small Haiku verifier calls. That comes to **≈ $0.46
+per player, or ≈ $11.4 for 25 players** (the verifier adds well under a
+cent). Treat it as a prior: check it against the `cost` block of real runs.
 
-**Run cap.** The run cap is `RESEARCH_MAX_USD` (default $12), or `--max-usd`.
-It is also limited to what is left of the monthly cap. A new player starts
-only if `spent + in-flight reservations + projected ≤ cap`, where
-`projected` is the mean actual cost so far, or the estimate before any
-player has finished. Once the cap refuses a player, no further player
-starts.
+**Worst-case reservations.** Before **every** request (research, each
+`pause_turn` continuation, extraction, verifier) its worst-case cost
+(`worst_case_usd`) is reserved. The request starts only if
+`spent + in-flight reservations + worst case ≤ cap`. Afterwards the
+reservation is swapped for the request's actual `usage` cost. The worst case
+prices the serialized prompt at `CHARS_PER_TOKEN` = 2 chars per token, plus a
+fixed overhead per request and per server tool, every search allowed by
+`max_uses` at `WEB_SEARCH_RESULT_TOKENS` each, every fetch at its
+`max_content_tokens`, and full `max_tokens` output. With the refusal fallback
+on, it adds the dearest fallback model's attempt. A first research request
+reserves about **$4.8**, so under the default $12 cap only two research
+requests are in flight at once. That keeps the cap a hard bound. A request
+that would never fit marks the run exhausted, and no further player starts.
+
+**Failures keep their cost.** A request that got a response is settled at
+its actual cost, even when the player then fails (refusal, bad JSON, crash).
+A request with no answer (timeout or connection error, possibly billed) is
+counted at its full reservation.
+
+**Run cap.** The run cap is `RESEARCH_MAX_USD` (default $12), or `--max-usd`,
+and is also limited to what is left of the monthly cap. NaN, infinite, zero
+and negative caps are rejected with exit 2.
 
 **Monthly cap.** The monthly cap is `RESEARCH_MONTHLY_USD` (default $90). It
-is summed per UTC calendar month from `spend.jsonl`. Once it is reached, the
-run refuses to start (exit 4). The Anthropic billing cycle may not match the
-calendar month, so leave headroom under the $100 credit.
+is summed from `spend.jsonl` over the billing period, which runs from
+`RESEARCH_BILLING_DAY` (default 1, 1..28) 00:00 UTC to the same day next
+month. Set it to your Anthropic billing-cycle day. Once the cap is reached,
+the run refuses to start (exit 4). Leave headroom under the $100 credit.
+
+**Ledger.** The whole run (monthly admission, every spend line and the final
+settlement) holds an exclusive `fcntl.flock` on `spend.jsonl.lock`, so
+overlapping runs (cron plus a manual run) serialize instead of both reading
+the same monthly total. A run that cannot get the lock within
+`LEDGER_LOCK_WAIT_S` (15 minutes) exits 1. Each settled request is appended
+as one line with `O_APPEND` and `fsync`, so a crash loses at most the
+request in flight.
+
+**Interruption.** Ctrl-C or SIGTERM stops new requests and gives in-flight
+ones `INTERRUPT_GRACE_S` (60 s) to finish. Anything still unsettled is
+written to the ledger at its reservation. The run file is written with
+`interrupted: true`, `role_overrides.research.json` is left untouched, and
+the exit code is 130.
 
 ## How to disable
 
