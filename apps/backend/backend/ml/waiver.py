@@ -533,7 +533,7 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
 
     ``gw_xp`` is the match model's one-row-per-code next-GW frame (see
     ``matchmodel.build_gw_xp``). Joined on the permanent ``code``, it supplies
-    ``xp_next, p_start, xp_floor, xp_ceiling, drivers, opponents`` with
+    ``xp_next, p_start, p_appear, xp_floor, xp_ceiling, drivers, opponents`` with
     ``xp_source == "model"``. A player it does not cover — no row, or a row
     without a prediction (``usable_gw_xp``) — gets the heuristic
     1-GW value (``ros/38 x next-event fixture load x availability``,
@@ -632,9 +632,14 @@ def build_player_table(bootstrap: dict, seasons: pd.DataFrame,
                 # file after a failed rebuild) must not keep a positive xP.
                 xp_next, reconciled = 0.0, True
                 xp_extra.update(p_start=0.0, xp_floor=0.0, xp_ceiling=0.0)
+            # Appearance chance (start or cameo) for auto-sub odds; NaN from an
+            # xP file written before it was carried.
+            p_appear = model.get("p_appear")
+            xp_extra["p_appear"] = (0.0 if reconciled else
+                                    float(p_appear) if pd.notna(p_appear) else float("nan"))
         else:
             xp_extra = {"p_start": None, "xp_floor": None, "xp_ceiling": None,
-                        "drivers": None, "opponents": None}
+                        "drivers": None, "opponents": None, "p_appear": None}
             if full_load1 is not None:
                 xp_next = full_load1 * avail
                 xp_source = "heuristic"
@@ -940,6 +945,10 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
             model_p_start = out.at[row, "p_start"]
             out.at[row, "role_override_p_start"] = p_override
             out.at[row, "p_start"] = p_override
+            if "p_appear" in out.columns:
+                # The override states a start chance and xp_next ignores the
+                # cameo, so the appearance chance follows it exactly.
+                out.at[row, "p_appear"] = p_override
             out.at[row, "xp_floor"] = out.at[row, "xp_ceiling"] = float("nan")
             out.at[row, "xp_next"] = _overridden_xp_next(
                 p_override, out.at[row, "xp_started"], out.at[row, "xp_next"],

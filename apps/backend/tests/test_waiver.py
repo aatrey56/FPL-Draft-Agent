@@ -1787,3 +1787,19 @@ def test_model_horizon_of_a_player_now_ruled_out_is_zeroed(tmp_path):
     assert result["recommendations"] == []
     fit = _by_name(_ruled_out_world(tmp_path, "a", horizon_xp=horizon)["players"])
     assert fit.loc["Streamer", "next3_xp"] == pytest.approx(18.5)
+
+
+def test_player_table_carries_p_appear_and_an_override_sets_it(tmp_path):
+    gw_xp = _gw_xp([(200, 6.5)]).assign(xp_started=7.0, xp_cameo=1.5, num_fixtures=1,
+                                         p_appear=0.95)
+    table = _xp_table(tmp_path, gw_xp)
+    assert _by_name(table).loc["SeasonStar", "p_appear"] == 0.95
+    assert pd.isna(_by_name(table).loc["Streamer", "p_appear"])     # heuristic row
+    overrides = [{"player": "SeasonStar", "team": "ARS", "p_start": 0.4, **FRESH}]
+    out, _ = wv.apply_role_overrides(table, overrides, target_gw=1)
+    assert _by_name(out).loc["SeasonStar", "p_appear"] == 0.4
+
+
+def test_player_table_p_appear_is_nan_for_an_xp_file_without_it(tmp_path):
+    table = _override_table(tmp_path)
+    assert pd.isna(_by_name(table).loc["SeasonStar", "p_appear"])
