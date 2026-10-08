@@ -397,7 +397,7 @@ fpl-draft-mcp/
 │   │   └── fpl-server/
 │   │       ├── main.go                  # Entry point, registers all 14 tools, auth, /mcp
 │   │       ├── draft_tools.go           # Decision layer: draft_board, player_card, waiver_plan, my_week, drop_radar (serve ML artifacts)
-│   │       ├── season_tools.go          # Decision layer: trade_check (player_values.json), league_pulse, team_env
+│   │       ├── season_tools.go          # Decision layer: trade_check (player_values.json), league_pulse, team_env (<season>/ml/team_env.json)
 │   │       ├── gw_live.go               # Decision layer: live H2H matchup tracker
 │   │       ├── gw_report.go             # Post-GW review (matchup breakdown + lineup efficiency)
 │   │       ├── manager_card.go          # One manager: record/form/schedule/H2H/draft (composes builders below)
@@ -437,7 +437,7 @@ Fetcher (Go, cmd/dev — the only component that hits live APIs:
   ▼
 Derive (Python, backend/ml/*)
   │  projections, player_history, ownership_events,
-  │  waiver_plan, my_week, player_values, xp_gw<N>, xp_horizon_gw<N>, track_record → data/derived[/<season>]/ml/
+  │  waiver_plan, my_week, player_values, team_env, xp_gw<N>, xp_horizon_gw<N>, track_record → data/derived[/<season>]/ml/
   ▼
 Go MCP Server (:8080)
   │  reads raw + derived (local JSON only)

@@ -1,6 +1,9 @@
 """Tests for team_env (backend.ml.teamenv). Fixtures only."""
 
+import json
+
 import pandas as pd
+import pytest
 
 from backend.ml import teamenv as te
 
@@ -63,3 +66,78 @@ def test_expected_environment_labels():
 
 def test_empty_season_returns_empty():
     assert te.build_team_env(_panel(), "2019-20") == {}
+
+
+def _promoted_panel():
+    """2026-27 rows only: Hull City (promoted) hosts Arsenal in GW1."""
+    return pd.DataFrame([
+        {"season": "2026-27", "gw": 1, "team_id": 9, "opponent_team": 1,
+         "opponent_name": "Arsenal", "was_home": True, "num_fixtures": 1,
+         "element_type": 4, "total_points": 5, "expected_goals": 0.4},
+        {"season": "2026-27", "gw": 1, "team_id": 1, "opponent_team": 9,
+         "opponent_name": "Hull City", "was_home": False, "num_fixtures": 1,
+         "element_type": 3, "total_points": 12, "expected_goals": 1.1},
+    ])
+
+
+def test_promoted_club_rated_in_current_season():
+    env = te.build_team_env(_promoted_panel(), "2026-27")
+    assert set(env) == {"Arsenal", "Hull City"}
+    assert env["Hull City"]["defense"]["pts_conceded_pg_at_home"] == 12.0
+
+
+def test_season_ml_dir_nests_current_seasons(tmp_path):
+    assert te.season_ml_dir("2026-27", tmp_path) == tmp_path / "derived/2026-27/ml"
+    assert te.season_ml_dir("2025-26", tmp_path) == tmp_path / "derived/ml"
+
+
+def _write_flat_archive(data_root):
+    flat = data_root / "derived/ml/team_env.json"
+    flat.parent.mkdir(parents=True)
+    flat.write_text('{"season": "2025-26", "teams": {"Wolves": {}}}')
+    return flat
+
+
+def test_main_writes_season_nested_and_leaves_archive(tmp_path):
+    flat = _write_flat_archive(tmp_path)
+    ml = tmp_path / "derived/2026-27/ml"
+    ml.mkdir(parents=True)
+    _promoted_panel().to_parquet(ml / "player_gameweeks.parquet", index=False)
+
+    assert te.main(["--season", "2026-27", "--data-root", str(tmp_path)]) == 0
+
+    doc = json.loads((ml / "team_env.json").read_text())
+    assert doc["season"] == "2026-27"
+    assert "Hull City" in doc["teams"] and "Wolves" not in doc["teams"]
+    assert json.loads(flat.read_text())["teams"] == {"Wolves": {}}
+
+
+def test_main_missing_season_panel_exits_without_writing(tmp_path, capsys):
+    flat = _write_flat_archive(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        te.main(["--season", "2026-27", "--data-root", str(tmp_path)])
+    assert exc.value.code == 2
+    assert "no panel for season 2026-27" in capsys.readouterr().err
+    assert not (tmp_path / "derived/2026-27/ml/team_env.json").exists()
+    assert json.loads(flat.read_text())["season"] == "2025-26"
+
+
+def test_main_panel_without_season_rows_is_an_error(tmp_path):
+    ml = tmp_path / "derived/2027-28/ml"
+    ml.mkdir(parents=True)
+    _promoted_panel().to_parquet(ml / "player_gameweeks.parquet", index=False)
+    with pytest.raises(SystemExit) as exc:
+        te.main(["--season", "2027-28", "--data-root", str(tmp_path)])
+    assert exc.value.code == 2
+    assert not (ml / "team_env.json").exists()
+
+
+def test_main_refuses_current_season_over_flat_archive(tmp_path):
+    flat = _write_flat_archive(tmp_path)
+    panel = tmp_path / "panel.parquet"
+    _promoted_panel().to_parquet(panel, index=False)
+    with pytest.raises(SystemExit) as exc:
+        te.main(["--season", "2026-27", "--data-root", str(tmp_path),
+                 "--panel", str(panel), "--out", str(flat)])
+    assert exc.value.code == 2
+    assert json.loads(flat.read_text())["season"] == "2025-26"

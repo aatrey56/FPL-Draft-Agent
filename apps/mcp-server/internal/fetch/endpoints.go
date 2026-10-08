@@ -57,11 +57,21 @@ func (c *Client) GameMeta(force bool) ([]byte, error) {
 	return c.FetchRaw("/game", "game/game.json", force)
 }
 
+// EventLivePath is where EventLive stores a GW's live points, relative to the store root.
+func EventLivePath(gw int) string {
+	return fmt.Sprintf("gw/%d/live.json", gw)
+}
+
+// EntryEventPath is where EntryEvent stores an entry's GW picks, relative to the store root.
+func EntryEventPath(entryID int, gw int) string {
+	return fmt.Sprintf("entry/%d/gw/%d.json", entryID, gw)
+}
+
 // /event/{gw}/live
 func (c *Client) EventLive(gw int, force bool) error {
 	_, err := c.FetchRaw(
 		fmt.Sprintf("/event/%d/live", gw),
-		fmt.Sprintf("gw/%d/live.json", gw),
+		EventLivePath(gw),
 		force,
 	)
 	return err
@@ -71,7 +81,7 @@ func (c *Client) EventLive(gw int, force bool) error {
 func (c *Client) EntryEvent(entryID int, gw int, force bool) error {
 	_, err := c.FetchRaw(
 		fmt.Sprintf("/entry/%d/event/%d", entryID, gw),
-		fmt.Sprintf("entry/%d/gw/%d.json", entryID, gw),
+		EntryEventPath(entryID, gw),
 		force,
 	)
 	return err

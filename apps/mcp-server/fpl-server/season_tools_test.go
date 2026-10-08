@@ -1,13 +1,16 @@
 package main
 
-// Tests for trade_check and league_pulse. Fixtures in t.TempDir() — no live calls.
+// Tests for trade_check, team_env and league_pulse. Fixtures in t.TempDir() — no live calls.
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestTradeCheckComparesSidesAndFlagsUnprojected(t *testing.T) {
@@ -302,8 +305,8 @@ func TestResolveProjectionExactNameBeatsSubstringAmbiguity(t *testing.T) {
 
 func TestTeamEnvServesAndFiltersTeams(t *testing.T) {
 	cfg := fixtureConfig(t)
-	writeFixture(t, filepath.Join(cfg.DerivedRoot, "ml/team_env.json"), map[string]any{
-		"season": "2025-26",
+	writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/team_env.json"), map[string]any{
+		"season": "2026-27",
 		"teams": map[string]any{
 			"Arsenal": map[string]any{"attack": map[string]any{"xg_pg": 1.76}},
 			"Wolves":  map[string]any{"attack": map[string]any{"xg_pg": 1.1}},
@@ -320,6 +323,80 @@ func TestTeamEnvServesAndFiltersTeams(t *testing.T) {
 	res, _, _ = teamEnvHandler(cfg)(context.Background(), nil, TeamEnvArgs{Team: "nope"})
 	if res == nil || !res.IsError {
 		t.Fatal("expected error for unknown team")
+	}
+}
+
+// Regression: team_env used to read the flat 2025-26 file whatever the
+// season, so a promoted club was missing and a relegated one still listed.
+func TestTeamEnvServesDefaultSeasonNotArchive(t *testing.T) {
+	cfg := fixtureConfig(t)
+	writeFixture(t, filepath.Join(cfg.DerivedRoot, "ml/team_env.json"), map[string]any{
+		"season": "2025-26",
+		"teams":  map[string]any{"Wolves": map[string]any{"attack": map[string]any{"xg_pg": 1.1}}},
+	})
+	writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/team_env.json"), map[string]any{
+		"season": "2026-27",
+		"teams":  map[string]any{"Hull City": map[string]any{"attack": map[string]any{"xg_pg": 1.2}}},
+	})
+	res, _, err := teamEnvHandler(cfg)(context.Background(), nil, TeamEnvArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Season string                    `json:"season"`
+		Teams  map[string]map[string]any `json:"teams"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, res)), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Season != "2026-27" {
+		t.Fatalf("season = %q, want the server default 2026-27", got.Season)
+	}
+	if _, ok := got.Teams["Hull City"]; !ok {
+		t.Fatalf("promoted club missing: %v", got.Teams)
+	}
+	if _, ok := got.Teams["Wolves"]; ok {
+		t.Fatalf("relegated club leaked from the archive: %v", got.Teams)
+	}
+
+	// An explicit archive season still reads the flat file.
+	res, _, _ = teamEnvHandler(cfg)(context.Background(), nil, TeamEnvArgs{Season: "2025-26"})
+	if text := resultText(t, res); !strings.Contains(text, "Wolves") {
+		t.Fatalf("archive season should serve the flat file: %s", text)
+	}
+}
+
+func TestTeamEnvMissingSeasonFileErrorsWithoutArchiveFallback(t *testing.T) {
+	cfg := fixtureConfig(t)
+	writeFixture(t, filepath.Join(cfg.DerivedRoot, "ml/team_env.json"), map[string]any{
+		"season": "2025-26",
+		"teams":  map[string]any{"Wolves": map[string]any{}},
+	})
+	res, _, err := teamEnvHandler(cfg)(context.Background(), nil, TeamEnvArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatal("missing season file must be a tool error, not the archive")
+	}
+	text := res.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "no team_env for season 2026-27") || !strings.Contains(text, "make derive SEASON=2026-27") {
+		t.Fatalf("error should name the season and the fix: %s", text)
+	}
+	if strings.Contains(text, "Wolves") {
+		t.Fatalf("archive data leaked into the error: %s", text)
+	}
+}
+
+func TestTeamEnvRejectsSeasonMismatch(t *testing.T) {
+	cfg := fixtureConfig(t)
+	writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/team_env.json"), map[string]any{
+		"season": "2025-26",
+		"teams":  map[string]any{"Wolves": map[string]any{}},
+	})
+	res, _, _ := teamEnvHandler(cfg)(context.Background(), nil, TeamEnvArgs{})
+	if res == nil || !res.IsError {
+		t.Fatal("a 2025-26 payload in the 2026-27 slot must be rejected")
 	}
 }
 

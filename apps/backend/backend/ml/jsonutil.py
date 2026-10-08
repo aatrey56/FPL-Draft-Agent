@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
 
@@ -27,3 +30,16 @@ def _sanitize(value: Any) -> Any:
 def dumps_strict(value: Any, **kwargs: Any) -> str:
     """json.dumps with NaN/Inf replaced by null; guaranteed strict-parseable."""
     return json.dumps(_sanitize(value), allow_nan=False, **kwargs)
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` via a temp file + rename (never half-written)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise

@@ -23,7 +23,7 @@ start/sit) → Go MCP server (:8080, 14 tools) → Claude Desktop / Claude Code
 | `my_week` | Who starts this GW? Best XI over every legal formation (`formation`), bench in auto-sub order, `if_out` (`if_out_mode: "autosub"` marks the automatic format) = what FPL auto-subs do automatically if a doubtful starter plays 0 minutes (blank-GW bench players never come on; a manual swap only when it gains >0.5 xP before lock), and attention flags (injuries, blanks, unknowns) |
 | `league_pulse` | What's happening? Standings, named transactions, game clock + this week's deadlines (trades/waivers/lineup lock, in EST) |
 | `drop_radar` | Who hit the wire? Ownership diffs from element-status snapshots |
-| `team_env` | Shootout or stalemate? Per-team points/xG generated and conceded, by position and venue |
+| `team_env` | Shootout or stalemate? Per-team points/xG generated and conceded this season (`season` arg, default the server season; rebuilt by `make derive`), by position and venue |
 | `gw_live` | How's my matchup going? Live H2H tracker: both XIs with in-play points (refresh mid-match) |
 
 **Game day:** `make tui` opens a live terminal dashboard — your H2H matchup
@@ -240,7 +240,39 @@ make autopilot-off
 ```
 
 Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
-derive: ownership, then season panel && next-GW xP && 3-GW horizon (`-`-prefixed: a failure warns and waiver/my_week fall back — to the heuristic without the xP file, to the next-GW ranking without the horizon file), then waiver and my_week with `SCORER={heuristic,model}` (waiver also `HORIZON={1,3,ros}`, default 3), then the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW's xP and horizon files) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
+derive: ownership, then season panel && next-GW xP && 3-GW horizon (`-`-prefixed: a failure warns and waiver/my_week fall back — to the heuristic without the xP file, to the next-GW ranking without the horizon file), then the season's `team_env.json` from that panel (also `-`-prefixed), then waiver and my_week with `SCORER={heuristic,model}` (waiver also `HORIZON={1,3,ros}`, default 3), then the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW's xP and horizon files) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
+
+`make fetch` skips settled gameweeks: a past GW whose bootstrap event is
+`finished` and whose cached `live.json` is a complete payload with every fixture
+`finished` (bonus confirmed, not just `finished_provisional`) is not
+re-downloaded, nor are its entry picks; the current GW and anything not yet
+settled are always refetched, and each run logs `requests_fetched` /
+`requests_skipped`. "Complete" means non-empty `elements`, each with integer
+(non-null, non-string, non-fractional) `stats.total_points` and `stats.minutes`,
+and — once that GW's entry picks are cached — an element for every player the
+league's entries picked. The draft API has no `data_checked` flag, so that is
+the settled test. `make fetch-all` (`--refetch-all`) forces the full per-GW
+pull, e.g. after an FPL points correction. Independently of settlement, a cached
+live file failing those checks, or an entry-event file that is malformed or not
+a full squad (15 picks, each with `element` > 0, `position` 1..15, no duplicate
+elements or positions), is re-downloaded on any run and logged as
+`forcing refetch` with its `reason`. The one exception is an empty picks
+response for a GW before the entry took part — before the league's
+`start_event` (`league/<id>/details.json`) or the entry's first
+`history.json` row (late joiners) — which is final and kept. If neither start
+is known, empty picks are treated as corrupt and refetched.
+
+A settled GW's entry picks are only skipped if they were downloaded *after* the
+GW was finalised: once a GW is over the draft API's picks include automatic
+substitutions (subs moved into positions 1–11), so a squad cached mid-GW would
+make the points builder drop the substitute (e.g. 60 instead of 69). The payload
+cannot reveal this (`subs` is `[]` both mid-GW and when no sub happened), so the
+first run to see a GW settled writes `gw/<n>/entries_final.json`; each non-empty
+entry-event file older than that marker is refetched once
+(`reason="picks fetched before GW finalised"`) and is newer than it afterwards.
+The empty pre-start picks above are exempt. Deleting the marker re-triggers one
+refetch of that GW's picks.
+
 Non-Mac or cron fans: schedule `scripts/autorefresh.sh` (crontab example inline).
 
 Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):

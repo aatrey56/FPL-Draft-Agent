@@ -5,17 +5,25 @@ RAW_SEASON := ../../data/raw/$(SEASON)
 DERIVED_SEASON := ../../data/derived/$(SEASON)
 GO_ROOTS := --raw-root ../../data/raw --derived-root ../../data/derived
 
-.PHONY: serve fetch derive weekly matchday preflight backtest xp
+.PHONY: serve fetch fetch-all derive weekly matchday preflight backtest xp
 
 ## serve: run the MCP server (Ctrl-C to stop; restart after every git pull)
 serve:
 	cd apps/mcp-server && go run ./fpl-server $(GO_ROOTS) --default-season $(SEASON)
 
-## fetch: refresh all raw data for the season (game, league, live GW, picks, element-status)
+## fetch: refresh all raw data for the season (game, league, live GW, picks, element-status).
+## Per-GW live points and entry picks are re-downloaded only for GWs that are not settled
+## (the current GW, and any GW whose bootstrap event is unfinished or whose cached live.json
+## still has a fixture without bonus confirmed); settled GWs already on disk are skipped and
+## the run logs requests_fetched / requests_skipped.
 fetch:
 	cd apps/mcp-server && go run ./cmd/dev --season $(SEASON) $(GO_ROOTS) --refresh-now
 
-## derive: rebuild the weekly artifacts for SEASON (ownership -> panel && next-GW xP && 3-GW horizon -> waiver -> my_week -> player_values -> track record)
+## fetch-all: fetch, but re-download every GW's live points and entry picks (settled GWs too)
+fetch-all:
+	cd apps/mcp-server && go run ./cmd/dev --season $(SEASON) $(GO_ROOTS) --refresh-now --refetch-all
+
+## derive: rebuild the weekly artifacts for SEASON (ownership -> panel && next-GW xP && 3-GW horizon -> team_env -> waiver -> my_week -> player_values -> track record)
 ## player_values.json (every player's xp_next / xp_h3 / ros_adj) feeds trade_check; it always asks for the model and falls back like waiver.
 ## waiver/my_week consume xp_gw<N>.parquet (SCORER=model) and fall back to the heuristic with a
 ## WARNING when it is missing or stale, so the panel && xP step is `-`-prefixed: a failure there
@@ -29,6 +37,9 @@ fetch:
 ## right after xp_gw<N> on the same line, so it fails together with it and never blocks
 ## waiver/my_week: without a fresh horizon file waiver ranks on the next GW and says so
 ## (horizon_fallback), without xp_gw<N> it falls back to the heuristic as above.
+## team_env.json (per-team match environment, served by the team_env tool) is rebuilt from the
+## season panel; it is `-`-prefixed so a missing panel warns instead of blocking the decision artifacts
+## (the tool then errors for SEASON rather than serving the 2025-26 archive).
 ## SCORER={heuristic,model} picks the next-GW xP source for waiver/my_week.
 ## HORIZON={1,3,ros} picks the gain waiver_plan ranks on under SCORER=model (default 3).
 ## Reads/writes season-nested paths only; the flat data/ layout is the 2025-26 archive.
@@ -43,6 +54,7 @@ derive:
 		&& uv run python -m backend.ml.matchmodel --gw next --horizon --season $(SEASON) \
 		--panel ../../data/derived/ml/player_gameweeks.parquet $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
 		--bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json
+	-cd apps/backend && uv run python -m backend.ml.teamenv --season $(SEASON) --data-root ../../data
 	cd apps/backend && uv run python -m backend.ml.waiver --season $(SEASON) --scorer $(SCORER) --horizon $(HORIZON)
 	cd apps/backend && uv run python -m backend.ml.myweek --season $(SEASON) --scorer $(SCORER)
 	cd apps/backend && uv run python -m backend.ml.player_values --season $(SEASON)

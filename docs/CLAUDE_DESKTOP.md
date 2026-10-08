@@ -95,8 +95,9 @@ uv run python -m backend.ml.projection --project
 uv run python -m backend.ml.serve_export
 ```
 
-(`team_env` additionally needs the 25/26 per-GW archive and won't regenerate
-on a fresh machine yet — its tool errors cleanly until then.)
+(`team_env` is built per season by `make derive` from that season's per-GW
+panel, so it needs one fetch + derive; until then the tool errors cleanly
+for the season instead of serving last season's clubs.)
 
 ## 4. Ask real questions
 
