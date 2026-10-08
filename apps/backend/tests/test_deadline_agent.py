@@ -755,4 +755,52 @@ def test_checklists_written_atomically(tmp_path):
     deadline = da.Deadline(3, "waivers", LINEUP_AT)
     path = da.write_checklist(tmp_path / "out", deadline, "hello\n")
     assert path.name == "gw3_waivers.md" and path.read_text() == "hello\n"
-    assert not list(path.parent.glob("*.tmp"))
+    assert list(path.parent.iterdir()) == [path]                # no temp left behind
+
+
+def test_atomic_write_uses_unique_temp_names(tmp_path, monkeypatch):
+    seen = []
+    real_replace = da.os.replace
+
+    def spy(src, dst):
+        seen.append(Path(src).name)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(da.os, "replace", spy)
+    target = tmp_path / "state.json"
+    da.atomic_write_text(target, "a")
+    da.save_state(target, {"b": 1})
+    assert len(set(seen)) == 2 and all(n.startswith(".state.json.") for n in seen)
+    assert json.loads(target.read_text()) == {"b": 1}
+
+
+def test_atomic_write_failure_cleans_temp_and_keeps_old_file(tmp_path, monkeypatch):
+    target = tmp_path / "state.json"
+    target.write_text("old")
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(da.os, "replace", boom)
+    with pytest.raises(OSError):
+        da.atomic_write_text(target, "new")
+    assert target.read_text() == "old" and list(tmp_path.iterdir()) == [target]
+
+
+def test_second_tick_while_lock_held_does_nothing(tmp_path):
+    env, recorder = make_env(tmp_path, make_world(tmp_path))
+    with da.tick_lock(env.state_path.with_suffix(".lock")) as held:
+        assert held
+        assert da.tick(env, DELIVER_AT) == ["another tick holds the lock; skipped"]
+    assert recorder.commands == [] and recorder.notes == [] and not env.state_path.exists()
+    da.tick(env, DELIVER_AT)                                    # lock released -> normal run
+    assert len(recorder.notes) == 1
+
+
+def test_tick_lock_is_released_on_error(tmp_path):
+    lock_path = tmp_path / "x.lock"
+    with pytest.raises(RuntimeError):
+        with da.tick_lock(lock_path):
+            raise RuntimeError("tick crashed")
+    with da.tick_lock(lock_path) as held:
+        assert held

@@ -59,7 +59,11 @@ hours — it is the machine working, not you).
 Run every 300 s by launchd (`scripts/deadline_tick.sh`), independent of the
 15-minute refresh, so timing is accurate to about five minutes. It is
 idempotent; state lives in `~/.fplcopilot/deadline_agent.json`, keyed by
-`<gw>:<kind>`:
+`<gw>:<kind>`. A tick holds an exclusive `flock` on
+`~/.fplcopilot/deadline_agent.lock` from loading the state to its final save:
+an overlapping tick (launchd + a manual run) logs *another tick holds the lock;
+skipped* and exits 0, so research and delivery never run twice. State and
+checklist files are written via a uniquely named temp file + rename.
 
 1. `now ≥ research_start` and research not done → run
    `uv run python -m backend.ml.research run --phase <waivers|lineup|trades> --gw N`

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import importlib.util
 import json
 import logging
@@ -300,17 +301,45 @@ def load_state(path: Path) -> dict[str, Any]:
     return state if isinstance(state, dict) else {}
 
 
-def save_state(path: Path, state: dict[str, Any]) -> None:
-    """Atomic write (temp file + rename)."""
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically: a uniquely named temp file in the
+    same directory, then ``os.replace`` — concurrent writers never share a temp."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp: Path | None = None
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, indent=1, sort_keys=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", suffix=".tmp",
+                                         delete=False) as handle:
+            tmp = Path(handle.name)
+            handle.write(text)
         os.replace(tmp, path)
     except BaseException:
-        Path(tmp).unlink(missing_ok=True)
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
         raise
+
+
+def save_state(path: Path, state: dict[str, Any]) -> None:
+    """Atomic write (unique temp file + rename)."""
+    atomic_write_text(path, json.dumps(state, indent=1, sort_keys=True))
+
+
+@contextlib.contextmanager
+def tick_lock(path: Path) -> Iterator[bool]:
+    """Exclusive, non-blocking ``flock`` on ``path``: yields True when held, False
+    when another tick (launchd + a manual run) holds it. The kernel drops the
+    lock when the holder exits, so a crashed tick never leaves it stale."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 # ---------------------------------------------------------------------------
@@ -608,10 +637,7 @@ def failed_channels(cfg: Config, notified: bool, pushed: bool) -> list[str]:
 def write_checklist(directory: Path, deadline: Deadline, markdown: str) -> Path:
     """``gw<N>_<kind>.md`` under ``directory`` (atomic)."""
     path = directory / f"gw{deadline.gw}_{deadline.kind}.md"
-    directory.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".md.tmp")
-    tmp.write_text(markdown, encoding="utf-8")
-    os.replace(tmp, path)
+    atomic_write_text(path, markdown)
     return path
 
 
@@ -759,8 +785,17 @@ def tick(env: Env, now: datetime) -> list[str]:
     Per ``gw:kind`` the state records ``research`` (outcome dict), ``sent``
     (ISO time) or ``missed``. Order: research once ``now >= research_start``,
     delivery once ``now >= deliver_at``; a deadline that has passed without a
-    delivery is logged as missed and never delivered.
+    delivery is logged as missed and never delivered. The whole pass — state
+    load through the final save — runs under :func:`tick_lock`, so overlapping
+    ticks never research or deliver the same deadline twice.
     """
+    with tick_lock(env.state_path.with_suffix(".lock")) as held:
+        if not held:
+            return ["another tick holds the lock; skipped"]
+        return _tick_locked(env, now)
+
+
+def _tick_locked(env: Env, now: datetime) -> list[str]:
     now = _aware_utc(now)
     state = load_state(env.state_path)
     log: list[str] = []
