@@ -23,11 +23,14 @@ Delivery-time algorithm (:func:`compute_delivery`, pure, DST-correct):
   ``[AWAKE_START, AWAKE_END - MIN_ACTION_MIN]``: a checklist that lands in the
   last ``MIN_ACTION_MIN`` before bedtime leaves no time to act on it. The
   window crosses midnight when ``AWAKE_END <= AWAKE_START`` (07:00-02:00).
+* Slots are scheduled at least one tick (``TICK_SLACK``, 5 min) inside a
+  window and before ``deadline - MIN_ACTION_MIN``, because ``tick`` refuses
+  to send outside them (:func:`delivery_slot`) and only runs every 5 min.
 * ``target`` inside a window -> deliver at ``target``.
 * Otherwise take the nearest window start after ``target`` when it still
-  leaves ``MIN_ACTION_MIN`` before the deadline (deadline 07:20, lead 45 ->
-  07:00); else the latest window end before ``target`` (deadline 04:30 ->
-  01:45 the night before).
+  leaves ``MIN_ACTION_MIN`` (+ one tick) before the deadline (deadline 07:20,
+  lead 45 -> 07:00); else the latest window end before ``target`` (deadline
+  04:30 -> 01:40 the night before).
 * No window slot within 24 h before the deadline -> the latest earlier slot,
   flagged ``early``.
 
@@ -77,6 +80,7 @@ LEAD_MIN_RANGE = (30, 60)
 EARLY_SEARCH_DAYS = 10          # how far back to look for any deliverable slot
 EARLY_HORIZON = timedelta(hours=24)
 MISSED_LOOKBACK = timedelta(hours=48)   # older unsent deadlines are history, not "missed"
+TICK_SLACK = timedelta(seconds=300)     # launchd tick interval (scripts/install-autopilot.sh)
 RESEARCH_TIMEOUT_S = 900
 DERIVE_TIMEOUT_S = 900
 DERIVE_LOCK_WAIT_S = 300
@@ -207,28 +211,74 @@ def deliverable_windows(cfg: Config, first_day: date, last_day: date) -> list[tu
     return windows
 
 
+def _schedulable(windows: list[tuple[datetime, datetime]], latest_ok: datetime) -> list[tuple[datetime, datetime]]:
+    """Windows cut at ``latest_ok`` and shortened by one tick interval.
+
+    ``tick`` runs every ``TICK_SLACK`` and refuses to send outside a window, so
+    a slot scheduled at a window's very end would almost always be missed;
+    scheduling at least one tick before the end guarantees a tick lands
+    inside. Windows left empty are dropped.
+    """
+    clipped = []
+    for start, end in windows:
+        end = min(end, latest_ok) - TICK_SLACK
+        if start <= end:
+            clipped.append((start, end))
+    return clipped
+
+
 def compute_delivery(deadline: datetime, cfg: Config) -> Delivery:
     """Delivery instant for one deadline (see the module docstring)."""
     deadline = _aware_utc(deadline)
     target = deadline - timedelta(minutes=cfg.lead_min)
     latest_ok = deadline - timedelta(minutes=cfg.min_action_min)
     local = deadline.astimezone(cfg.tz).date()
-    windows = deliverable_windows(
-        cfg, local - timedelta(days=EARLY_SEARCH_DAYS), local + timedelta(days=1))
+    windows = _schedulable(deliverable_windows(
+        cfg, local - timedelta(days=EARLY_SEARCH_DAYS), local + timedelta(days=1)), latest_ok)
 
     def make(at: datetime, early: bool = False) -> Delivery:
         return Delivery(deadline, target, at, at - timedelta(minutes=cfg.research_lead_min), early)
 
+    if not windows:     # no window at all (e.g. empty awake range): give up gracefully
+        return make(target, early=True)
     if any(start <= target <= end for start, end in windows):
         return make(target)
-    after = [start for start, _ in windows if start > target and start <= latest_ok]
+    after = [start for start, _ in windows if start > target]
     if after:
         return make(min(after))
-    before = [min(end, latest_ok) for start, end in windows if start <= latest_ok]
-    if not before:      # no window at all (e.g. empty awake range): give up gracefully
-        return make(target, early=True)
-    slot = max(before)
+    slot = max(end for _, end in windows)
     return make(slot, early=slot < deadline - EARLY_HORIZON)
+
+
+def delivery_slot(now: datetime, deadline: datetime, cfg: Config) -> datetime | None:
+    """The earliest instant ``>= now`` at which ``deadline``'s checklist may be sent.
+
+    Sendable means inside a deliverable window *and* at least
+    ``MIN_ACTION_MIN`` before the deadline. When ``now`` is not sendable (a
+    catch-up tick at 03:00), the answer is the next window start that still
+    leaves ``MIN_ACTION_MIN`` plus one tick; None when no such slot exists
+    before the deadline. A degenerate config with no window at all keeps
+    :func:`compute_delivery`'s give-up rule: only ``MIN_ACTION_MIN`` applies.
+    """
+    now, deadline = _aware_utc(now), _aware_utc(deadline)
+    latest_ok = deadline - timedelta(minutes=cfg.min_action_min)
+    if now > latest_ok:
+        return None
+    windows = deliverable_windows(cfg, now.astimezone(cfg.tz).date() - timedelta(days=1),
+                                  deadline.astimezone(cfg.tz).date() + timedelta(days=1))
+    if not windows or any(start <= now <= min(end, latest_ok) for start, end in windows):
+        return now
+    return min((start for start, _ in _schedulable(windows, latest_ok) if start > now), default=None)
+
+
+def missed_reason(now: datetime, deadline: datetime, cfg: Config) -> str | None:
+    """Why ``deadline``'s checklist can no longer be sent from ``now`` on (None = it still can)."""
+    if now >= deadline:
+        return "deadline passed before delivery"
+    if delivery_slot(now, deadline, cfg) is None:
+        return (f"no deliverable slot left at {fmt_local(now, cfg.tz)} (outside awake hours "
+                f"or < {cfg.min_action_min}m before the deadline)")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -811,26 +861,37 @@ class Env:
     lock: Callable[[Path], Any] = derive_lock
     notify: Callable[[str, str], bool] = notify_macos
     ntfy: Callable[[Config, Deadline, str], bool] = post_ntfy
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC)
 
 
-def tick(env: Env, now: datetime) -> list[str]:
+def tick(env: Env, now: datetime | None = None) -> list[str]:
     """One idempotent pass; returns human-readable log lines for what happened.
 
-    Per ``<season>:<gw>:<kind>`` the state records ``research`` (outcome dict), ``sent``
-    (ISO time) or ``missed``. Order: research once ``now >= research_start``,
-    delivery once ``now >= deliver_at``; a deadline that has passed without a
-    delivery is logged as missed and never delivered. The whole pass — state
-    load through the final save — runs under :func:`tick_lock`, so overlapping
-    ticks never research or deliver the same deadline twice.
+    Per ``<season>:<gw>:<kind>`` the state records ``research`` (outcome dict),
+    ``sent`` (the real send instant) or ``missed`` (+ ``missed_reason``).
+    Research runs once ``now >= research_start``; delivery once
+    ``now >= deliver_at``. The clock (``env.clock``; a given ``now`` pins it)
+    is re-read after research/derive and again immediately before sending,
+    and a checklist is sent only when that instant is inside a deliverable
+    window and ``MIN_ACTION_MIN`` before the deadline (:func:`delivery_slot`):
+    a catch-up tick outside the window waits for a later in-window slot, or
+    logs the deadline as missed when none is left. A missed checklist is never
+    delivered. The whole pass — state load through the final save — runs
+    under :func:`tick_lock`, so overlapping ticks never research or deliver
+    the same deadline twice.
     """
+    if now is None:
+        clock = env.clock
+    else:
+        fixed = _aware_utc(now)
+        clock = lambda: fixed  # noqa: E731
     with tick_lock(env.state_path.with_suffix(".lock")) as held:
         if not held:
             return ["another tick holds the lock; skipped"]
-        return _tick_locked(env, now)
+        return _tick_locked(env, lambda: _aware_utc(clock()))
 
 
-def _tick_locked(env: Env, now: datetime) -> list[str]:
-    now = _aware_utc(now)
+def _tick_locked(env: Env, clock: Callable[[], datetime]) -> list[str]:
     state = load_state(env.state_path)
     deadlines = deadlines_from_events(load_events(env.sources.raw_dir))
     log: list[str] = []
@@ -840,7 +901,15 @@ def _tick_locked(env: Env, now: datetime) -> list[str]:
         log.append(f"state: migrated {len(moved)} of {legacy} un-namespaced entries "
                    f"under {env.season}; dropped the rest as earlier-season history")
         save_state(env.state_path, state)
+
+    def missed(key: str, entry: dict, at: datetime, reason: str) -> None:
+        entry["missed"] = at.isoformat(timespec="seconds")
+        entry["missed_reason"] = reason
+        log.append(f"MISSED {key}: {reason}")
+        save_state(env.state_path, state)
+
     for deadline in deadlines:
+        now = clock()
         if deadline.at < now - MISSED_LOOKBACK:
             continue
         key = state_key(env.season, deadline)
@@ -848,32 +917,43 @@ def _tick_locked(env: Env, now: datetime) -> list[str]:
         if entry.get("sent") or entry.get("missed"):
             continue
         delivery = compute_delivery(deadline.at, env.cfg)
-        if now >= deadline.at:
-            entry["missed"] = now.isoformat(timespec="seconds")
-            log.append(f"MISSED {key}: deadline passed before delivery")
-            save_state(env.state_path, state)
+        if now < delivery.research_start:
             continue
-        if now >= delivery.research_start and "research" not in entry:
+        if reason := missed_reason(now, deadline.at, env.cfg):
+            missed(key, entry, now, reason)
+            continue
+        if "research" not in entry:
             entry["research"] = run_research_and_derive(
                 deadline, env.repo, env.season, env.runner, env.research_ok, env.lock)
             log.append(f"research {key}: {entry['research']}")
             save_state(env.state_path, state)
-        if now >= delivery.deliver_at:
-            since = parse_ts(state.get("last_checklist_at"))
-            note = outcome_note(entry.get("research") or {})
-            markdown = render_checklist(deadline, delivery, env.cfg, env.sources, now,
-                                        since=since, research_note=note)
-            path = write_checklist(env.checklist_dir / env.season, deadline, markdown)
-            failed = failed_channels(
-                env.cfg, env.notify("FPL Co-Pilot", summary_line(deadline, env.cfg, markdown)),
-                env.ntfy(env.cfg, deadline, markdown))
-            entry["sent"] = now.isoformat(timespec="seconds")
-            if failed:
-                entry["delivery_failed"] = failed
-            state["last_checklist_at"] = entry["sent"]
-            save_state(env.state_path, state)
-            suffix = f" (FAILED: {', '.join(failed)}; the file was written)" if failed else ""
-            log.append(f"delivered {key} -> {path}{suffix}")
+            now = clock()       # research + lock wait + derive can take many minutes
+            if reason := missed_reason(now, deadline.at, env.cfg):
+                missed(key, entry, now, reason)
+                continue
+        if now < delivery.deliver_at:
+            continue
+        sent_at = clock()       # re-read immediately before sending
+        if reason := missed_reason(sent_at, deadline.at, env.cfg):
+            missed(key, entry, sent_at, reason)
+            continue
+        if delivery_slot(sent_at, deadline.at, env.cfg) != sent_at:
+            continue            # catch-up outside the window: a later in-window slot exists
+        since = parse_ts(state.get("last_checklist_at"))
+        note = outcome_note(entry.get("research") or {})
+        markdown = render_checklist(deadline, delivery, env.cfg, env.sources, sent_at,
+                                    since=since, research_note=note)
+        path = write_checklist(env.checklist_dir / env.season, deadline, markdown)
+        failed = failed_channels(
+            env.cfg, env.notify("FPL Co-Pilot", summary_line(deadline, env.cfg, markdown)),
+            env.ntfy(env.cfg, deadline, markdown))
+        entry["sent"] = sent_at.isoformat(timespec="seconds")
+        if failed:
+            entry["delivery_failed"] = failed
+        state["last_checklist_at"] = entry["sent"]
+        save_state(env.state_path, state)
+        suffix = f" (FAILED: {', '.join(failed)}; the file was written)" if failed else ""
+        log.append(f"delivered {key} -> {path}{suffix}")
     return log
 
 
@@ -936,13 +1016,12 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
-    now = datetime.now(UTC)
     if args.command == "plan":
-        print("\n".join(plan_lines(env, now)))
+        print("\n".join(plan_lines(env, env.clock())))
     elif args.command == "preview":
-        print(preview(env, now, args.kind), end="")
+        print(preview(env, env.clock(), args.kind), end="")
     else:
-        for line in tick(env, now):
+        for line in tick(env):
             logger.info(line)
     return 0
 

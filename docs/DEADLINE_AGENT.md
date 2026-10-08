@@ -31,9 +31,14 @@ Equal times (`00:00`/`00:00`) mean **always awake**: there is no bedtime, so no
 buffer — the whole day is deliverable and only the `MIN_ACTION_MIN`-before-
 deadline rule applies.
 
-1. `target` inside a window → deliver at `target`.
+Because `tick` only runs every 5 minutes and refuses to send outside a window
+(see below), slots are **scheduled** with one tick of slack: each window is cut
+at `deadline − MIN_ACTION_MIN` and then shortened by 5 min, so a tick is
+guaranteed to land inside it.
+
+1. `target` inside a (scheduling) window → deliver at `target`.
 2. Otherwise, if the next window start after `target` still leaves
-   `MIN_ACTION_MIN` before the deadline → deliver at that window start.
+   `MIN_ACTION_MIN` + 5 min before the deadline → deliver at that window start.
 3. Otherwise → the latest window end before the deadline (the night before).
 4. If there is no window at all (degenerate config) or the slot is more than
    24 h before the deadline → deliver anyway and mark the checklist **early**.
@@ -44,9 +49,9 @@ Defaults (`America/New_York`, 07:00–02:00, lead 45, min action 15), local time
 |---|---|---|---|
 | 20:00 | 19:15 | **19:15** | inside the window |
 | 07:20 | 06:35 | **07:00** | asleep at target; 07:00 leaves 20 ≥ 15 min |
-| 07:10 | 06:25 | **01:45** (night before) | 07:00 would leave only 10 min |
-| 04:30 | 03:45 | **01:45** | window ends 02:00, minus the 15-min buffer |
-| 02:30 | 01:45 | **01:45** | exactly the end of the window |
+| 07:10 | 06:25 | **01:40** (night before) | 07:00 would leave only 10 min |
+| 04:30 | 03:45 | **01:40** | window ends 02:00, minus the 15-min buffer, minus one tick |
+| 02:30 | 01:45 | **01:40** | target is past the scheduling end (01:40) |
 
 Wall-clock times are resolved with `zoneinfo`, so DST changes are handled by
 the zone rules: on 2026-11-01 (fall back) that night's window is an hour longer
@@ -79,9 +84,18 @@ checklist files are written via a uniquely named temp file + rename.
    timeout; on timeout the whole group gets SIGTERM, then SIGKILL after 10 s,
    and is reaped before the derive lock is released — `make`'s children never
    keep writing behind a released lock.
-2. `now ≥ deliver_at` and not sent → render and deliver.
-3. `now ≥ deadline` and not sent → logged as **missed**; a checklist is never
-   delivered after its deadline.
+2. `now ≥ deliver_at` and not sent → re-read the clock and send only if that
+   instant is inside a deliverable window **and** at least `MIN_ACTION_MIN`
+   before the deadline (`delivery_slot`). The clock is injected (`Env.clock`)
+   and re-read after research/derive (which, with the lock wait, can take
+   ~35 min) and immediately before sending; `sent` records that real instant
+   and the checklist countdown is computed from it.
+3. A catch-up tick (the Mac was asleep at `deliver_at`) outside the window
+   never wakes you: if a later in-window slot still leaves `MIN_ACTION_MIN`
+   before the deadline (e.g. 07:00 for a 07:20 deadline) it waits for it;
+   otherwise the deadline is logged as **missed** with a `missed_reason`.
+4. `now ≥ deadline` and not sent → logged as **missed**; a checklist is never
+   delivered after its deadline. A missed deadline is not researched.
 
 ## Checklist content
 

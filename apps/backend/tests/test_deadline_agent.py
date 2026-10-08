@@ -80,12 +80,13 @@ def test_target_before_window_start_waits_for_start():
 
 
 def test_window_start_too_close_falls_back_to_previous_night():
-    # 07:00 would leave only 10 minutes -> window end - 15 min the night before.
-    assert deliver(local(NY, 2026, 10, 14, 7, 10)) == local(NY, 2026, 10, 14, 1, 45)
+    # 07:00 would leave only 10 minutes -> the night before: window end (02:00 -
+    # 15 min buffer = 01:45) minus one 5-min tick so a tick can land in the window.
+    assert deliver(local(NY, 2026, 10, 14, 7, 10)) == local(NY, 2026, 10, 14, 1, 40)
 
 
-def test_target_after_window_end_delivers_at_end_minus_buffer():
-    assert deliver(local(NY, 2026, 10, 14, 4, 30)) == local(NY, 2026, 10, 14, 1, 45)
+def test_target_after_window_end_delivers_one_tick_before_effective_end():
+    assert deliver(local(NY, 2026, 10, 14, 4, 30)) == local(NY, 2026, 10, 14, 1, 40)
 
 
 def test_midnight_crossing_window():
@@ -96,8 +97,10 @@ def test_midnight_crossing_window():
 @pytest.mark.parametrize("deadline, expected", [
     ((7, 45), (7, 0)),      # target exactly at window start -> inside
     ((7, 44), (7, 0)),      # target 06:59, one minute before start -> start
-    ((2, 30), (1, 45)),     # target exactly at effective end (02:00 - 15m) -> inside
-    ((2, 31), (1, 45)),     # target 01:46, one minute past -> clamped back
+    ((2, 25), (1, 40)),     # target exactly at schedulable end (02:00 - 15m - 1 tick)
+    ((2, 26), (1, 40)),     # target 01:41, one minute past -> clamped back
+    ((7, 20), (7, 0)),      # 07:00 + 1 tick == latest_ok (07:05) -> still waits for 07:00
+    ((7, 19), (1, 40)),     # one minute less -> the night before
 ])
 def test_window_boundaries(deadline, expected):
     assert deliver(local(NY, 2026, 10, 14, *deadline)) == local(NY, 2026, 10, 14, *expected)
@@ -118,7 +121,7 @@ def test_dst_fall_back_nov_1_2026():
                                         local(NY, 2026, 10, 31).date())[0]
     assert end - start == timedelta(hours=19, minutes=45)
     slot = da.compute_delivery(local(NY, 2026, 11, 1, 4, 30), cfg())
-    assert slot.deliver_at == datetime(2026, 11, 1, 6, 45, tzinfo=UTC)   # 01:45 EST
+    assert slot.deliver_at == datetime(2026, 11, 1, 6, 40, tzinfo=UTC)   # 01:40 EST
     # The day after is back to a normal 18h45 window.
     nov2 = local(NY, 2026, 11, 2).date()
     start, end = da.deliverable_windows(cfg(), nov2, nov2)[0]
@@ -128,7 +131,7 @@ def test_dst_fall_back_nov_1_2026():
 def test_dst_spring_forward_mar_2027():
     # 2027-03-14 02:00 EST does not exist; the old offset applies (07:00 UTC).
     slot = da.compute_delivery(local(NY, 2027, 3, 14, 4, 30), cfg())
-    assert slot.deliver_at == datetime(2027, 3, 14, 6, 45, tzinfo=UTC)
+    assert slot.deliver_at == datetime(2027, 3, 14, 6, 40, tzinfo=UTC)
     # After the change, 07:00 EDT == 11:00 UTC.
     slot = da.compute_delivery(local(NY, 2027, 3, 14, 7, 20), cfg())
     assert slot.deliver_at == datetime(2027, 3, 14, 11, 0, tzinfo=UTC)
@@ -378,17 +381,152 @@ def test_old_deadlines_are_history_not_missed(tmp_path):
     assert da.tick(env, LINEUP_AT + timedelta(days=5)) == []
 
 
-def test_delivery_never_before_slot_and_asleep_deadline_uses_buffer(tmp_path):
-    # Deadline 04:30 EDT (08:30Z): delivery at 01:45 EDT (05:45Z), not 03:45.
-    at = datetime(2026, 10, 17, 8, 30, tzinfo=UTC)
+NIGHT_DEADLINE = datetime(2026, 10, 17, 8, 30, tzinfo=UTC)      # 04:30 EDT
+
+
+def night_world(tmp_path, at=NIGHT_DEADLINE):
     world = make_world(tmp_path)
     (world.raw_dir / "bootstrap" / "bootstrap-static.json").write_text(
         json.dumps({"events": [{"id": GW, "deadline_time": iso(at)}]}))
-    env, recorder = make_env(tmp_path, world)
-    da.tick(env, datetime(2026, 10, 17, 5, 44, tzinfo=UTC))
+    return world
+
+
+def test_delivery_never_before_slot_and_asleep_deadline_uses_buffer(tmp_path):
+    # Deadline 04:30 EDT: delivery at 01:40 EDT (05:40Z), not 03:45.
+    env, recorder = make_env(tmp_path, night_world(tmp_path))
+    da.tick(env, datetime(2026, 10, 17, 5, 39, tzinfo=UTC))
     assert recorder.notes == []
-    da.tick(env, datetime(2026, 10, 17, 5, 45, tzinfo=UTC))
+    da.tick(env, datetime(2026, 10, 17, 5, 40, tzinfo=UTC))
     assert len(recorder.notes) == 1
+
+
+def test_any_tick_in_the_last_slack_before_window_end_still_delivers(tmp_path):
+    # 01:44:59 EDT: inside the 01:45 window end -> sent, stamped with that instant.
+    env, recorder = make_env(tmp_path, night_world(tmp_path))
+    at = datetime(2026, 10, 17, 5, 44, 59, tzinfo=UTC)
+    da.tick(env, at)
+    assert len(recorder.notes) == 1
+    assert da.load_state(env.state_path)["2026-27:9:lineup"]["sent"] == at.isoformat()
+
+
+def test_catch_up_while_asleep_is_missed_not_sent(tmp_path):
+    # Machine asleep through 01:40-01:45; the 03:00 EDT catch-up tick must not
+    # wake the user, and no awake slot is left before 04:30 -> missed.
+    env, recorder = make_env(tmp_path, night_world(tmp_path))
+    log = da.tick(env, datetime(2026, 10, 17, 7, 0, tzinfo=UTC))
+    assert recorder.notes == [] and recorder.pushes == [] and recorder.commands == []
+    assert len(log) == 1 and log[0].startswith("MISSED 2026-27:9:lineup: no deliverable slot left")
+    entry = da.load_state(env.state_path)["2026-27:9:lineup"]
+    assert "outside awake hours" in entry["missed_reason"]
+    assert da.tick(env, datetime(2026, 10, 17, 7, 30, tzinfo=UTC)) == []   # logged once only
+
+
+def test_catch_up_inside_window_is_sent(tmp_path):
+    env, recorder = make_env(tmp_path, make_world(tmp_path))
+    at = DELIVER_AT + timedelta(minutes=20)                   # 13:05 EDT, 25 min before lock
+    da.tick(env, at)
+    assert len(recorder.notes) == 1
+    assert da.load_state(env.state_path)["2026-27:9:lineup"]["sent"] == at.isoformat()
+
+
+def test_catch_up_with_less_than_min_action_left_is_missed(tmp_path):
+    env, recorder = make_env(tmp_path, make_world(tmp_path))
+    log = da.tick(env, LINEUP_AT - timedelta(minutes=10))
+    assert recorder.notes == [] and log[0].startswith("MISSED 2026-27:9:lineup: no deliverable")
+
+
+class FakeClock:
+    """A clock that ``advance`` moves (e.g. from inside a runner)."""
+
+    def __init__(self, now):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, **delta):
+        self.now += timedelta(**delta)
+
+
+def clocked_env(tmp_path, sources, start, advance_on_derive):
+    clock = FakeClock(start)
+    recorder = Recorder()
+
+    def runner(cmd, cwd, timeout):
+        if cmd[0] == "make":
+            clock.advance(**advance_on_derive)
+        return recorder.runner(cmd, cwd, timeout)
+
+    env, _ = make_env(tmp_path, sources, recorder)
+    env.runner, env.clock = runner, clock
+    return env, recorder, clock
+
+
+def test_clock_passing_deadline_during_derive_is_missed_not_sent(tmp_path):
+    env, recorder, clock = clocked_env(tmp_path, make_world(tmp_path), DELIVER_AT,
+                                       {"minutes": 50})
+    log = da.tick(env)
+    assert len(recorder.commands) == 2 and recorder.notes == [] and recorder.pushes == []
+    assert log[-1] == "MISSED 2026-27:9:lineup: deadline passed before delivery"
+    entry = da.load_state(env.state_path)["2026-27:9:lineup"]
+    assert entry["missed"] == clock.now.isoformat() and "sent" not in entry
+    assert not (env.checklist_dir / "2026-27" / "gw9_lineup.md").exists()
+
+
+def test_clock_leaving_window_during_derive_is_missed(tmp_path):
+    # Research at 01:15 EDT for the 04:30 deadline; derive runs until 02:05.
+    env, recorder, _ = clocked_env(tmp_path, night_world(tmp_path),
+                                   datetime(2026, 10, 17, 5, 15, tzinfo=UTC), {"minutes": 50})
+    log = da.tick(env)
+    assert recorder.notes == [] and log[-1].startswith("MISSED 2026-27:9:lineup: no deliverable")
+
+
+def test_sent_records_real_send_time_after_slow_derive(tmp_path):
+    env, recorder, clock = clocked_env(tmp_path, make_world(tmp_path), DELIVER_AT, {"minutes": 7})
+    da.tick(env)
+    assert len(recorder.notes) == 1
+    sent = da.load_state(env.state_path)["2026-27:9:lineup"]["sent"]
+    assert sent == (DELIVER_AT + timedelta(minutes=7)).isoformat() == clock.now.isoformat()
+    assert "(in 38m)" in recorder.pushes[0][1]               # countdown from the real time
+
+
+def test_catch_up_outside_window_waits_for_later_slot(tmp_path, monkeypatch):
+    # A slot that was due at 03:00 for a 07:30 deadline: 07:00 still leaves
+    # >= MIN_ACTION_MIN, so the 03:00 tick waits instead of sending or missing.
+    deadline = datetime(2026, 10, 17, 11, 30, tzinfo=UTC)    # 07:30 EDT
+    env, recorder = make_env(tmp_path, night_world(tmp_path, deadline))
+    early = da.Delivery(deadline, deadline, datetime(2026, 10, 17, 7, 0, tzinfo=UTC),
+                        datetime(2026, 10, 17, 6, 35, tzinfo=UTC))
+    monkeypatch.setattr(da, "compute_delivery", lambda at, config: early)
+    da.tick(env, datetime(2026, 10, 17, 7, 0, tzinfo=UTC))   # 03:00 EDT
+    assert recorder.notes == [] and "missed" not in da.load_state(env.state_path)["2026-27:9:lineup"]
+    da.tick(env, datetime(2026, 10, 17, 11, 0, tzinfo=UTC))  # 07:00 EDT
+    assert len(recorder.notes) == 1
+
+
+@pytest.mark.parametrize("now, deadline, expected", [
+    ((2026, 10, 14, 19, 0), (2026, 10, 14, 20, 0), (2026, 10, 14, 19, 0)),   # in window
+    ((2026, 10, 14, 3, 0), (2026, 10, 14, 7, 30), (2026, 10, 14, 7, 0)),     # wait for start
+    ((2026, 10, 14, 3, 0), (2026, 10, 14, 7, 20), (2026, 10, 14, 7, 0)),     # 07:00+5 <= 07:05
+    ((2026, 10, 14, 3, 0), (2026, 10, 14, 7, 10), None),                     # 07:00 too late
+    ((2026, 10, 14, 3, 0), (2026, 10, 14, 4, 30), None),                     # asleep till after
+    ((2026, 10, 14, 1, 45), (2026, 10, 14, 4, 30), (2026, 10, 14, 1, 45)),   # window end inclusive
+    ((2026, 10, 14, 19, 46), (2026, 10, 14, 20, 0), None),                   # < MIN_ACTION_MIN
+])
+def test_delivery_slot(now, deadline, expected):
+    got = da.delivery_slot(local(NY, *now), local(NY, *deadline), cfg())
+    assert got == (None if expected is None else local(NY, *expected))
+
+
+def test_delivery_slot_always_awake_and_degenerate():
+    always = cfg(start="00:00", end="00:00")
+    assert da.delivery_slot(local(NY, 2026, 10, 14, 3, 0), local(NY, 2026, 10, 14, 4, 30),
+                            always) == local(NY, 2026, 10, 14, 3, 0)
+    tiny = cfg(start="07:00", end="07:10")                   # no window at all
+    assert da.delivery_slot(local(NY, 2026, 10, 14, 3, 0), local(NY, 2026, 10, 14, 4, 30),
+                            tiny) == local(NY, 2026, 10, 14, 3, 0)
+    assert da.delivery_slot(local(NY, 2026, 10, 14, 4, 20), local(NY, 2026, 10, 14, 4, 30),
+                            tiny) is None
 
 
 def test_ntfy_failure_does_not_crash_tick(tmp_path):
