@@ -8,6 +8,7 @@ dependencies = [
     "pyarrow>=15",
     "requests==2.34.2",
     "python-dotenv==1.2.4",
+    "anthropic>=1.12.1",
 ]
 
 [dependency-groups]
