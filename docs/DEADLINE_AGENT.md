@@ -25,9 +25,11 @@ lineup checklist also lists free agents worth adding.
 `compute_delivery(deadline, cfg)` is a pure function. Let
 `target = deadline − CHECKLIST_LEAD_MIN` and let the **deliverable window** of
 a local day be `[AWAKE_START, AWAKE_END − MIN_ACTION_MIN]` (it crosses midnight
-when `AWAKE_END <= AWAKE_START`; equal times mean always awake). The buffer at
-the end is deliberate: a checklist that lands in the last minutes before bedtime
-leaves no time to act.
+when `AWAKE_END <= AWAKE_START`). The buffer at the end is deliberate: a
+checklist that lands in the last minutes before bedtime leaves no time to act.
+Equal times (`00:00`/`00:00`) mean **always awake**: there is no bedtime, so no
+buffer — the whole day is deliverable and only the `MIN_ACTION_MIN`-before-
+deadline rule applies.
 
 1. `target` inside a window → deliver at `target`.
 2. Otherwise, if the next window start after `target` still leaves
@@ -96,7 +98,10 @@ missing artifact becomes a one-line pointer rather than an error. ≤ ~25 lines.
 ## Delivery channels
 
 - File: `~/.fplcopilot/checklists/gw<N>_<kind>.md`.
-- macOS notification (`osascript`): title + one-line summary.
+- macOS notification (`osascript`): title + one-line summary. A nonzero
+  `osascript` exit (e.g. notifications not permitted) is logged with its stderr
+  and recorded as `delivery_failed: ["macos"]` on the state entry; the file and
+  ntfy are still delivered and the checklist is not re-sent.
 - ntfy (optional): set `NTFY_TOPIC`; the markdown is POSTed with
   `Markdown: yes`, priority high for the lineup lock. Network errors are
   logged and never crash the tick.

@@ -178,14 +178,16 @@ def deliverable_windows(cfg: Config, first_day: date, last_day: date) -> list[tu
 
     Day ``d``'s window is ``[AWAKE_START, AWAKE_END - MIN_ACTION_MIN]`` where
     ``AWAKE_END`` falls on ``d + 1`` when it is not after ``AWAKE_START``
-    (midnight-crossing). ``AWAKE_START == AWAKE_END`` means awake all day: the
-    window is the whole 24 h. Wall-clock times are resolved with the zone's
-    rules, so a DST change makes that day's window 1 h shorter/longer in real
-    time; a nonexistent wall time (spring forward) resolves with the old
-    offset (``fold=0``). Windows too short to leave ``MIN_ACTION_MIN`` are
-    dropped.
+    (midnight-crossing). ``AWAKE_START == AWAKE_END`` means awake all day:
+    there is no bedtime, so no buffer either, and consecutive windows touch —
+    only the MIN_ACTION_MIN-before-deadline rule of :func:`compute_delivery`
+    applies. Wall-clock times are resolved with the zone's rules, so a DST
+    change makes that day's window 1 h shorter/longer in real time; a
+    nonexistent wall time (spring forward) resolves with the old offset
+    (``fold=0``). Windows too short to leave ``MIN_ACTION_MIN`` are dropped.
     """
-    buffer = timedelta(minutes=cfg.min_action_min)
+    always_awake = cfg.awake_end == cfg.awake_start
+    buffer = timedelta(0) if always_awake else timedelta(minutes=cfg.min_action_min)
     crosses = cfg.awake_end <= cfg.awake_start
     windows = []
     day = first_day
@@ -563,9 +565,13 @@ def notify_macos(title: str, message: str, run: Callable[..., Any] = subprocess.
               "end run"]
     cmd = ["osascript"] + [part for line in script for part in ("-e", line)] + [message, title]
     try:
-        run(cmd, check=False, capture_output=True, timeout=10)
+        result = run(cmd, check=False, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("macOS notification failed: %s", exc)
+        return False
+    if result.returncode != 0:
+        logger.warning("macOS notification failed: osascript exited %s: %s",
+                       result.returncode, (result.stderr or "").strip()[:300])
         return False
     return True
 
@@ -586,6 +592,14 @@ def post_ntfy(cfg: Config, deadline: Deadline, markdown: str,
         logger.warning("ntfy delivery failed (%s): %s", type(exc).__name__, exc)
         return False
     return True
+
+
+def failed_channels(cfg: Config, notified: bool, pushed: bool) -> list[str]:
+    """Push channels that failed (ntfy only counts when ``NTFY_TOPIC`` is set)."""
+    failed = [] if notified else ["macos"]
+    if cfg.ntfy_topic and not pushed:
+        failed.append("ntfy")
+    return failed
 
 
 def write_checklist(directory: Path, deadline: Deadline, markdown: str) -> Path:
@@ -735,12 +749,16 @@ def tick(env: Env, now: datetime) -> list[str]:
             markdown = render_checklist(deadline, delivery, env.cfg, env.sources, now,
                                         since=since, research_note=note)
             path = write_checklist(env.checklist_dir, deadline, markdown)
-            env.notify("FPL Co-Pilot", summary_line(deadline, env.cfg, markdown))
-            env.ntfy(env.cfg, deadline, markdown)
+            failed = failed_channels(
+                env.cfg, env.notify("FPL Co-Pilot", summary_line(deadline, env.cfg, markdown)),
+                env.ntfy(env.cfg, deadline, markdown))
             entry["sent"] = now.isoformat(timespec="seconds")
+            if failed:
+                entry["delivery_failed"] = failed
             state["last_checklist_at"] = entry["sent"]
             save_state(env.state_path, state)
-            log.append(f"delivered {deadline.key} -> {path}")
+            suffix = f" (FAILED: {', '.join(failed)}; the file was written)" if failed else ""
+            log.append(f"delivered {deadline.key} -> {path}{suffix}")
     return log
 
 

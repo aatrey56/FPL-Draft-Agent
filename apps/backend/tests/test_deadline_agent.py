@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -151,6 +152,17 @@ def test_non_default_timezone_london():
 def test_always_awake_window_delivers_at_target():
     slot = da.compute_delivery(local(NY, 2026, 10, 14, 4, 30), cfg(start="00:00", end="00:00"))
     assert slot.deliver_at == local(NY, 2026, 10, 14, 3, 45) and not slot.early
+
+
+def test_always_awake_has_no_bedtime_buffer():
+    # Regression: 00:00/00:00 used to subtract the buffer, inventing an
+    # unavailable 23:45-00:00 every night (target 23:55 -> pushed to 00:00).
+    always = cfg(start="00:00", end="00:00", lead=60)
+    slot = da.compute_delivery(local(NY, 2026, 10, 15, 0, 55), always)
+    assert slot.deliver_at == local(NY, 2026, 10, 14, 23, 55) and not slot.early
+    day = local(NY, 2026, 10, 14).date()
+    (start, end), = da.deliverable_windows(always, day, day)
+    assert end - start == timedelta(hours=24)
 
 
 def test_no_deliverable_window_is_marked_early():
@@ -437,10 +449,18 @@ def test_post_ntfy_without_topic_or_on_http_error():
     assert not da.post_ntfy(cfg(ntfy_topic="t"), lineup, "x", post=bad)
 
 
+def completed(code=0, stderr=""):
+    return lambda cmd, **kw: subprocess.CompletedProcess(cmd, code, "", stderr)
+
+
 def test_notify_macos_passes_text_as_argv_and_survives_errors():
     seen = []
-    assert da.notify_macos('FPL "Co-Pilot"', 'say "hi"; do shell script "x"',
-                           run=lambda cmd, **kw: seen.append(cmd))
+
+    def run(cmd, **kw):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    assert da.notify_macos('FPL "Co-Pilot"', 'say "hi"; do shell script "x"', run=run)
     cmd = seen[0]
     assert cmd[0] == "osascript" and cmd[-2:] == ['say "hi"; do shell script "x"', 'FPL "Co-Pilot"']
     assert all('say "hi"' not in part for part in cmd[1:-2])    # never spliced into the script
@@ -449,6 +469,28 @@ def test_notify_macos_passes_text_as_argv_and_survives_errors():
         raise FileNotFoundError("osascript")
 
     assert da.notify_macos("t", "m", run=missing) is False
+
+
+def test_notify_macos_nonzero_exit_is_a_failure(caplog):
+    with caplog.at_level("WARNING"):
+        assert da.notify_macos("t", "m", run=completed(1, "execution error: -1743")) is False
+    assert "osascript exited 1" in caplog.text and "-1743" in caplog.text
+
+
+def test_tick_records_failed_notification_and_still_pushes_ntfy(tmp_path):
+    env, recorder = make_env(tmp_path, make_world(tmp_path), config=cfg(ntfy_topic="t"))
+    env.notify = lambda title, message: False
+    log = da.tick(env, DELIVER_AT)
+    assert len(recorder.pushes) == 1                          # ntfy still attempted
+    entry = next(v for k, v in da.load_state(env.state_path).items() if k.endswith("9:lineup"))
+    assert entry["delivery_failed"] == ["macos"] and entry["sent"]
+    assert "FAILED: macos" in log[-1]
+
+
+def test_failed_channels_ignores_unconfigured_ntfy():
+    assert da.failed_channels(cfg(), True, False) == []
+    assert da.failed_channels(cfg(ntfy_topic="t"), True, False) == ["ntfy"]
+    assert da.failed_channels(cfg(ntfy_topic="t"), False, False) == ["macos", "ntfy"]
 
 
 def test_derive_lock_is_exclusive(tmp_path):
