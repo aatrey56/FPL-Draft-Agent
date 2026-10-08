@@ -16,8 +16,8 @@ their ``fact`` is listed under ``attention``; a departed (status ``u``) squad
 player always appears there with the ``departed`` code.
 
 Lineup (``backend.ml.lineup``): the XI is the best of every legal formation
-(``formation``), the bench is in auto-sub order and ``if_out`` gives the
-fallback XI for each doubtful starter. Rows carry
+(``formation``), the bench is in auto-sub order and ``if_out`` gives, for
+each doubtful starter, the automatic FPL auto-sub result. Rows carry
 ``club_moved`` and ``expected_minutes`` from the season panel.
 
 Reads local files only. CLI:
@@ -161,8 +161,8 @@ def build_my_week(players: pd.DataFrame, element_status: dict,
 
     The XI and formation come from ``lineup.optimal_xi`` (every legal
     formation tried); ``bench`` is in auto-sub order (``bench_slot``,
-    ``sub_value``; names in ``bench_order``) and ``if_out`` holds the
-    fallback XI for each doubtful starter. ``formation`` is None only when
+    ``sub_value``; names in ``bench_order``) and ``if_out`` holds, for
+    each doubtful starter, the automatic FPL auto-sub result given that order. ``formation`` is None only when
     the squad cannot field a legal XI.
     """
     squad = wv.my_squad(players, element_status, entry_id)
@@ -217,6 +217,7 @@ def build_my_week(players: pd.DataFrame, element_status: dict,
         "xi": rows(xi), "bench": rows(bench, keep_order=True), "xi_gw_xp": xi_total,
         "formation": lineup.formation,
         "bench_order": bench["web_name"].tolist(),
+        "if_out_mode": lu.IF_OUT_MODE,
         "if_out": lu.if_out(squad, lineup, value_col="xi_value"),
         "attention": attention,
         "unprojected_squad": wv.unprojected_squad(squad),
@@ -286,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         gw_xp = "?" if p["gw_xp"] is None else p["gw_xp"]
         print(f"  {p['position']:<4} {p['web_name']:<20} {p['team']:<4} xP {gw_xp} [{p['xp_source']}]{flags}")
     for alt in week["if_out"]:
-        print(f"  ?? {alt.get('text') or alt['web_name'] + ': ' + alt['error']}")
+        print(f"  ?? {alt['text']}")
     if week["unprojected_squad"]:
         print(f"-- unprojected_squad: {len(week['unprojected_squad'])} --")
         for p in week["unprojected_squad"]:

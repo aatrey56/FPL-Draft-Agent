@@ -23,9 +23,16 @@ reserve GKP only ever replaces the starting GKP.
   before ``p_appear`` was carried); else, for a heuristic row, the
   ``availability`` factor (the bootstrap ``chance_of_playing_next_round``/100
   when flagged, see ``waiver.availability_factor``); else 1.
+* ``simulate_autosubs`` — what FPL does when starters play 0 minutes: walk
+  the bench in order, skip bench players assumed not to play, and bring on
+  the first one who keeps the formation legal (``_can_replace``).
 * ``if_out`` — for each doubtful starter (status ``d``, or p_start below
-  ``DOUBT_P_START`` with an availability flag or a role override) the best XI
-  with him removed, and who comes in.
+  ``DOUBT_P_START`` with an availability flag or a role override) what
+  *automatically* happens if he plays 0 minutes (``simulate_autosubs`` on the
+  bench order — the user does nothing). Only when re-optimising the XI by
+  hand beats that by more than ``MANUAL_GAIN_MIN`` xP is a
+  ``manual_if_ruled_out_before_lock`` suggestion added: the one case where
+  the user should act, and only if he is ruled out before the lock.
 
 Inputs are a squad frame with ``element``, ``web_name``, ``position``,
 ``gw_xp``, ``p_start``, ``status`` (``p_appear``, ``availability`` and
@@ -50,6 +57,12 @@ FORMATIONS = list(wv.FORMATIONS) + sorted(
      if 2 <= 10 - d - f <= 5} - set(wv.FORMATIONS))
 # A starter below this start chance is "doubtful" when something flags him.
 DOUBT_P_START = 0.5
+# A hand-made swap must beat the automatic result by more than this (xP) to
+# be worth telling the user to act.
+MANUAL_GAIN_MIN = 0.5
+# Schema marker written to my_week.json: if_out rows are automatic auto-subs
+# (older artifacts hold manual re-optimisation rows and lack the key).
+IF_OUT_MODE = "autosub"
 
 
 class LineupError(ValueError):
@@ -64,6 +77,13 @@ class Lineup:
     formation: str | None
     total: float
     bench: pd.DataFrame = field(default_factory=pd.DataFrame)
+
+
+def _blank_gw(row: pd.Series) -> bool:
+    """No fixture this GW (the ``blank_gw`` warning signal in ``myweek``:
+    ``gw_fixture_load`` of 0). A missing column means unknown, not blank."""
+    load = row.get("gw_fixture_load")
+    return load is not None and pd.notna(load) and float(load) == 0
 
 
 def _p_play(row: pd.Series) -> float:
@@ -160,32 +180,107 @@ def is_doubtful(row: pd.Series) -> bool:
     return flagged or row.get("status") not in ("a", None)
 
 
+def _formation_label(xi: pd.DataFrame) -> str:
+    counts = xi["position"].value_counts()
+    return "-".join(str(int(counts.get(pos, 0))) for pos in ("DEF", "MID", "FWD"))
+
+
+def _total_xp(frame: pd.DataFrame) -> float:
+    return round(sum(_xp(row) for _, row in frame.iterrows()), 1)
+
+
+def simulate_autosubs(xi: pd.DataFrame, bench: pd.DataFrame,
+                      out_elements: set[int]) -> dict[str, Any]:
+    """FPL's automatic substitutions for starters who play 0 minutes.
+
+    ``bench`` is in auto-sub order. Each ``out_elements`` starter (XI order)
+    is replaced by the first unused bench player who is assumed to play
+    (``_p_play`` above 0 and a fixture this GW — a blank-GW player cannot come on) and whose arrival keeps the XI legal — the reserve
+    GKP only for the GKP. A starter nobody can legally replace stays in the
+    XI on 0 points (``unreplaced``).
+
+    Returns ``xi`` (players who will play, outs removed), ``formation``
+    (shape of the XI the outs occupied, so an unreplaced starter still counts
+    toward it), ``total`` (gw_xp of ``xi``), ``subs`` ({"out", "in",
+    "bench_slot"} per swap, slot 1-based in ``bench``) and ``unreplaced``.
+    """
+    lineup = xi.copy()
+    available = [(slot, bench.iloc[[slot - 1]]) for slot in range(1, len(bench) + 1)
+                 if _p_play(bench.iloc[slot - 1]) > 0 and not _blank_gw(bench.iloc[slot - 1])]
+    subs: list[dict[str, Any]] = []
+    unreplaced: list[str] = []
+    for _, starter in xi.iterrows():
+        if starter["element"] not in out_elements:
+            continue
+        counts = lineup["position"].value_counts().to_dict()
+        for pos in POSITION_LIMITS:
+            counts.setdefault(pos, 0)
+        pick = next(((slot, sub) for slot, sub in available
+                     if _can_replace(sub.iloc[0]["position"], starter["position"], counts)),
+                    None)
+        if pick is None:
+            unreplaced.append(starter["web_name"])
+            continue
+        slot, sub = pick
+        available = [(s, r) for s, r in available if s != slot]
+        lineup = pd.concat([lineup[lineup["element"] != starter["element"]], sub])
+        subs.append({"out": starter["web_name"], "in": sub.iloc[0]["web_name"],
+                     "bench_slot": slot})
+    played = lineup[~lineup["element"].isin(out_elements)]
+    return {"xi": played, "formation": _formation_label(lineup), "total": _total_xp(played),
+            "subs": subs, "unreplaced": unreplaced}
+
+
 def if_out(squad: pd.DataFrame, lineup: Lineup,
            value_col: str = "gw_xp") -> list[dict[str, Any]]:
-    """Fallback XI for each doubtful starter, in XI order."""
-    base = set(lineup.xi["element"])
+    """What happens for each doubtful starter who plays 0 minutes, XI order.
+
+    The headline (``auto_sub``, ``automatic: true``, and the legacy
+    ``formation`` / ``in`` / ``xi_gw_xp`` / ``text`` keys) is the FPL
+    auto-sub result given the bench order — nothing for the user to do. If a
+    manual re-optimisation (``value_col`` selection, as ``optimal_xi``)
+    beats it by more than ``MANUAL_GAIN_MIN`` xP, ``manual_if_ruled_out_before_lock``
+    says what to swap by hand if he is ruled out before the lock.
+    """
     out = []
     for _, player in lineup.xi.iterrows():
         if not is_doubtful(player):
             continue
-        rest = squad[squad["element"] != player["element"]]
-        try:
-            alt = optimal_xi(rest, value_col)
-        except LineupError as exc:
-            out.append({"web_name": player["web_name"], "error": str(exc)})
-            continue
-        incoming = alt.xi[~alt.xi["element"].isin(base)]
-        dropped = lineup.xi[~lineup.xi["element"].isin(alt.xi["element"])
-                            & (lineup.xi["element"] != player["element"])]
-        names_in = incoming["web_name"].tolist()
-        text = f"if {player['web_name']} out: {alt.formation}"
-        text += f", {', '.join(names_in)} in" if names_in else ""
-        text += f", {', '.join(dropped['web_name'])} benched" if len(dropped) else ""
-        out.append({
-            "web_name": player["web_name"], "position": player["position"],
+        name = player["web_name"]
+        auto = simulate_autosubs(lineup.xi, lineup.bench, {player["element"]})
+        sub = auto["subs"][0] if auto["subs"] else None
+        if sub:
+            text = (f"If {name} plays 0 minutes, FPL auto-subs {sub['in']} in "
+                    f"(bench {sub['bench_slot']}) → {auto['formation']} "
+                    f"(xP {auto['total']}). Nothing to do.")
+        else:
+            text = (f"If {name} plays 0 minutes, no bench player can legally replace "
+                    f"him, so he stays in the XI on 0 → {auto['formation']} "
+                    f"(xP {auto['total']}).")
+        entry = {
+            "web_name": name, "position": player["position"],
             "p_start": None if pd.isna(player.get("p_start")) else float(player["p_start"]),
-            "formation": alt.formation, "xi_gw_xp": alt.total,
-            "in": names_in, "benched": dropped["web_name"].tolist(),
-            "text": f"{text} (xP {alt.total})",
-        })
+            "automatic": True,
+            "auto_sub": {"in": sub["in"] if sub else None, "formation": auto["formation"],
+                         "xi_gw_xp": auto["total"],
+                         "bench_slot": sub["bench_slot"] if sub else None},
+            "formation": auto["formation"], "xi_gw_xp": auto["total"],
+            "in": [sub["in"]] if sub else [], "benched": [], "text": text,
+        }
+        try:
+            alt = optimal_xi(squad[squad["element"] != player["element"]], value_col)
+        except LineupError:
+            alt = None  # no legal manual XI either; the auto result stands
+        gain = round(alt.total - auto["total"], 1) if alt is not None else 0.0
+        # Compare the rounded gain: raw float totals can show 0.5000000000000036.
+        if alt is not None and gain > MANUAL_GAIN_MIN:
+            names_in = alt.xi[~alt.xi["element"].isin(lineup.xi["element"])]["web_name"].tolist()
+            entry["manual_if_ruled_out_before_lock"] = {
+                "in": names_in, "formation": alt.formation,
+                "xi_gw_xp": alt.total, "gain": gain,
+                "text": (f"If he's ruled out before lock, swapping manually gains +{gain} "
+                         f"({alt.formation}, {', '.join(names_in)} in; xP {alt.total})"),
+            }
+            entry["text"] += f" {entry['manual_if_ruled_out_before_lock']['text']}."
+        out.append(entry)
     return out

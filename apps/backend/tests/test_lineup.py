@@ -97,7 +97,81 @@ def test_bench_puts_gk_first_then_most_likely_useful_outfielder():
     assert bench.iloc[-1]["sub_value"] == 0.0
 
 
-def test_if_out_gives_the_fallback_for_a_doubtful_starter():
+def _xi_bench(starters, bench):
+    """(xi, bench) frames from [(pos, xp, ...)] specs; bench is in the given order."""
+    frame = _squad(list(starters) + list(bench))
+    return frame.iloc[:len(starters)], frame.iloc[len(starters):]
+
+
+# A 5-3-2 XI (element 1 = GKP, 2-6 DEF, 7-9 MID, 10-11 FWD).
+FIVE_THREE_TWO = [("GKP", 3.0)] + [("DEF", 3.0)] * 5 + [("MID", 3.0)] * 3 + [("FWD", 3.0)] * 2
+
+
+def test_autosub_gk_out_takes_the_reserve_gk_not_an_outfielder():
+    xi, bench = _xi_bench(FIVE_THREE_TWO, [("MID", 5.0), ("GKP", 1.0)])
+    res = lu.simulate_autosubs(xi, bench, {1})
+    assert res["subs"] == [{"out": "GKP1", "in": "GKP13", "bench_slot": 2}]
+    assert res["formation"] == "5-3-2" and res["unreplaced"] == []
+    assert res["total"] == 31.0 and len(res["xi"]) == 11
+
+
+def test_autosub_def_out_at_three_def_skips_the_earlier_mid():
+    starters = [("GKP", 3.0)] + [("DEF", 3.0)] * 3 + [("MID", 3.0)] * 5 + [("FWD", 3.0)] * 2
+    xi, bench = _xi_bench(starters, [("MID", 9.0), ("DEF", 1.0), ("GKP", 1.0)])
+    res = lu.simulate_autosubs(xi, bench, {2})
+    assert res["subs"] == [{"out": "DEF2", "in": "DEF13", "bench_slot": 2}]
+    assert res["formation"] == "3-5-2"
+
+
+def test_autosub_skips_a_bench_player_who_will_not_play():
+    xi, bench = _xi_bench(FIVE_THREE_TWO, [("GKP", 1.0), ("MID", 5.0), ("MID", 2.0)])
+    bench = bench.assign(availability=[1.0, 0.0, 1.0])
+    res = lu.simulate_autosubs(xi, bench, {10})
+    assert res["subs"] == [{"out": "FWD10", "in": "MID14", "bench_slot": 3}]
+    assert res["formation"] == "5-4-1"
+    assert res["total"] == 32.0
+
+
+def test_autosub_leaves_a_starter_unreplaced_when_nobody_is_legal():
+    xi, bench = _xi_bench(FIVE_THREE_TWO, [("GKP", 1.0), ("FWD", 4.0), ("FWD", 4.0)])
+    # With a bench FWD available the MID is covered (5-2-3) ...
+    assert lu.simulate_autosubs(xi, bench, {8})["unreplaced"] == []
+    # ... but with only the reserve GKP left nobody can legally come on.
+    res = lu.simulate_autosubs(xi, bench.iloc[:1], {8})
+    assert res["subs"] == [] and res["unreplaced"] == ["MID8"]
+    assert res["formation"] == "5-3-2" and res["total"] == 30.0
+
+
+def test_autosub_never_brings_on_a_blank_gw_bench_player():
+    xi, bench = _xi_bench(FIVE_THREE_TWO, [("GKP", 1.0), ("FWD", 4.0), ("MID", 4.0)])
+    # Whole bench blanks: the FWD stays in the XI on 0, formation unchanged.
+    blank = bench.assign(gw_fixture_load=0.0)
+    res = lu.simulate_autosubs(xi, blank, {10})
+    assert res["subs"] == [] and res["unreplaced"] == ["FWD10"]
+    assert res["formation"] == "5-3-2"
+    # First bench candidate blanks: the next eligible one comes in.
+    mixed = bench.assign(gw_fixture_load=[1.0, 0.0, 1.0])
+    res = lu.simulate_autosubs(xi, mixed, {10})
+    assert res["subs"] == [{"out": "FWD10", "in": "MID14", "bench_slot": 3}]
+    assert res["formation"] == "5-4-1"
+
+
+def test_manual_gain_is_compared_after_rounding(monkeypatch):
+    # 32.2 - 31.7 == 0.5000000000000036 in floats; the displayed gain is 0.5,
+    # which is not "more than" MANUAL_GAIN_MIN.
+    assert 32.2 - 31.7 > 0.5
+    starters = [("GKP", 3.0)] + [("DEF", 3.0)] * 5 + [("MID", 3.0)] * 3 \
+        + [("FWD", 5.0, 0.4, "d", None), ("FWD", 3.0)]
+    xi, bench = _xi_bench(starters, [("GKP", 1.0), ("MID", 0.5), ("FWD", 6.0)])
+    lineup = lu.Lineup(xi=xi, formation="5-3-2", total=0.0, bench=bench)
+    manual = lu.Lineup(xi=xi, formation="5-3-2", total=32.2, bench=bench)
+    monkeypatch.setattr(lu, "optimal_xi", lambda *_a, **_k: manual)
+    monkeypatch.setattr(lu, "simulate_autosubs", lambda *_a, **_k: {
+        "subs": [], "formation": "5-3-2", "total": 31.7, "unreplaced": []})
+    assert "manual_if_ruled_out_before_lock" not in lu.if_out(pd.concat([xi, bench]), lineup)[0]
+
+
+def test_if_out_reports_the_automatic_result():
     spec = list(THIN_MIDS)
     spec[12] = ("FWD", 1.5, 0.35, "a", "hamstring")
     spec[10] = ("MID", 0.9)
@@ -105,8 +179,58 @@ def test_if_out_gives_the_fallback_for_a_doubtful_starter():
     lineup = lu.optimal_xi(squad)
     alts = lu.if_out(squad, lineup)
     assert [a["web_name"] for a in alts] == ["FWD13"]
-    assert alts[0]["formation"] == "5-4-1" and alts[0]["in"] == ["MID11"]
-    assert alts[0]["text"].startswith("if FWD13 out: 5-4-1, MID11 in")
+    alt = alts[0]
+    assert alt["automatic"] is True
+    assert alt["auto_sub"]["in"] == "MID11" and alt["auto_sub"]["bench_slot"] == 2
+    assert alt["formation"] == alt["auto_sub"]["formation"] == "5-4-1"
+    assert alt["in"] == ["MID11"]
+    assert alt["text"].startswith(
+        "If FWD13 plays 0 minutes, FPL auto-subs MID11 in (bench 2) → 5-4-1")
+    assert "Nothing to do." in alt["text"]
+
+
+def test_if_out_havertz_shape_five_three_two_becomes_five_four_one():
+    """Doubtful FWD in a 5-3-2: the first outfield bench player (a MID)
+    comes on automatically — GK1 on the bench is skipped."""
+    starters = [("GKP", 3.0)] + [("DEF", 3.0)] * 5 + [("MID", 3.0)] * 3 \
+        + [("FWD", 5.0, 0.4, "d", None), ("FWD", 3.0)]
+    xi, bench = _xi_bench(starters, [("GKP", 1.0), ("MID", 2.5), ("FWD", 2.0)])
+    squad = pd.concat([xi, bench])
+    lineup = lu.Lineup(xi=xi, formation="5-3-2", total=0.0, bench=bench)
+    (alt,) = lu.if_out(squad, lineup)
+    assert alt["auto_sub"] == {"in": "MID13", "formation": "5-4-1",
+                               "xi_gw_xp": 32.5, "bench_slot": 2}
+    assert alt["formation"] == "5-4-1" and alt["in"] == ["MID13"]
+    assert "manual_if_ruled_out_before_lock" not in alt
+
+
+def test_manual_suggestion_only_when_it_beats_the_auto_sub_by_more_than_threshold(
+        monkeypatch):
+    starters = [("GKP", 3.0)] + [("DEF", 3.0)] * 5 + [("MID", 3.0)] * 3 \
+        + [("FWD", 5.0, 0.4, "d", None), ("FWD", 3.0)]
+    # Bench order puts a weak MID ahead of a strong FWD: auto-sub is worse
+    # than swapping by hand (bench order here is deliberately bad).
+    xi, bench = _xi_bench(starters, [("GKP", 1.0), ("MID", 0.5), ("FWD", 6.0)])
+    lineup = lu.Lineup(xi=xi, formation="5-3-2", total=0.0, bench=bench)
+    (alt,) = lu.if_out(pd.concat([xi, bench]), lineup)
+    manual = alt["manual_if_ruled_out_before_lock"]
+    assert manual["in"] == ["FWD14"] and manual["gain"] == 5.5
+    assert manual["text"].startswith("If he's ruled out before lock, swapping manually gains +5.5")
+
+    # Sane bench order: the auto-sub already is the best XI -> no suggestion.
+    xi, bench = _xi_bench(starters, [("GKP", 1.0), ("FWD", 6.0), ("MID", 0.5)])
+    lineup = lu.Lineup(xi=xi, formation="5-3-2", total=0.0, bench=bench)
+    (alt,) = lu.if_out(pd.concat([xi, bench]), lineup)
+    assert "manual_if_ruled_out_before_lock" not in alt
+
+    # A gain equal to the threshold is not enough; just above it is.
+    xi, bench = _xi_bench(starters, [("GKP", 1.0), ("MID", 0.5), ("FWD", 6.0)])
+    lineup = lu.Lineup(xi=xi, formation="5-3-2", total=0.0, bench=bench)
+    squad = pd.concat([xi, bench])
+    monkeypatch.setattr(lu, "MANUAL_GAIN_MIN", 5.5)
+    assert "manual_if_ruled_out_before_lock" not in lu.if_out(squad, lineup)[0]
+    monkeypatch.setattr(lu, "MANUAL_GAIN_MIN", 5.4)
+    assert "manual_if_ruled_out_before_lock" in lu.if_out(squad, lineup)[0]
 
 
 def test_low_p_start_without_a_flag_is_not_doubtful():
