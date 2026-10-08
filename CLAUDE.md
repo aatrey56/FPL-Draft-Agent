@@ -55,14 +55,16 @@ client — there is no in-app chatbot). Practical implications for agents
 working here right now:
 
 - The **2026-27 season is live** (GW1: 2026-08-21). The weekly loop is:
-  fetch (cmd/dev) → derive (backend.ml.ownership / waiver / myweek) → serve
+  fetch (cmd/dev) → derive (backend.ml.ownership / waiver / myweek / player_values) → serve
   (Go MCP decision tools). Keep artifacts fresh before waiver deadlines.
 - ML work lives under `apps/backend/backend/ml/` with specs as contracts:
   HISTORY_INGEST, GAMEWEEK_INGEST, PROJECTION_MODEL (built), MATCH_MODEL
   (core built — `matchmodel.py`, backtested and beating the naive baselines;
   `waiver_plan` and `my_week` serve its next-GW xP, and `waiver_plan` its
-  3-GW horizon, with a loud heuristic fallback; `trade_check` still runs the
-  heuristic. Remaining work is listed in `docs/MODEL_ROADMAP.md`).
+  3-GW horizon, with a loud heuristic fallback; `trade_check` reads its
+  per-player values from `player_values.json` (next GW / 3 GW / ROS) and
+  falls back to projection + VOR with `value_source: "heuristic"` when that
+  file is missing or stale. Remaining work is listed in `docs/MODEL_ROADMAP.md`).
 - **Data layout:** flat `data/raw|derived/` = the 2025-26 archive (never
   overwrite); current seasons nest as `<root>/<season>/` (fetcher `--season`,
   server `--default-season`, `ArchiveSeason` const in Go).
@@ -395,7 +397,7 @@ fpl-draft-mcp/
 │   │   └── fpl-server/
 │   │       ├── main.go                  # Entry point, registers all 14 tools, auth, /mcp
 │   │       ├── draft_tools.go           # Decision layer: draft_board, player_card, waiver_plan, my_week, drop_radar (serve ML artifacts)
-│   │       ├── season_tools.go          # Decision layer: trade_check, league_pulse, team_env
+│   │       ├── season_tools.go          # Decision layer: trade_check (player_values.json), league_pulse, team_env
 │   │       ├── gw_live.go               # Decision layer: live H2H matchup tracker
 │   │       ├── gw_report.go             # Post-GW review (matchup breakdown + lineup efficiency)
 │   │       ├── manager_card.go          # One manager: record/form/schedule/H2H/draft (composes builders below)
@@ -435,7 +437,7 @@ Fetcher (Go, cmd/dev — the only component that hits live APIs:
   ▼
 Derive (Python, backend/ml/*)
   │  projections, player_history, ownership_events,
-  │  waiver_plan, my_week, xp_gw<N>, xp_horizon_gw<N>, track_record → data/derived[/<season>]/ml/
+  │  waiver_plan, my_week, player_values, xp_gw<N>, xp_horizon_gw<N>, track_record → data/derived[/<season>]/ml/
   ▼
 Go MCP Server (:8080)
   │  reads raw + derived (local JSON only)

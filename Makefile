@@ -15,7 +15,8 @@ serve:
 fetch:
 	cd apps/mcp-server && go run ./cmd/dev --season $(SEASON) $(GO_ROOTS) --refresh-now
 
-## derive: rebuild the weekly artifacts for SEASON (ownership -> panel && next-GW xP && 3-GW horizon -> waiver -> my_week -> track record)
+## derive: rebuild the weekly artifacts for SEASON (ownership -> panel && next-GW xP && 3-GW horizon -> waiver -> my_week -> player_values -> track record)
+## player_values.json (every player's xp_next / xp_h3 / ros_adj) feeds trade_check; it always asks for the model and falls back like waiver.
 ## waiver/my_week consume xp_gw<N>.parquet (SCORER=model) and fall back to the heuristic with a
 ## WARNING when it is missing or stale, so the panel && xP step is `-`-prefixed: a failure there
 ## (e.g. a missing archive panel, or no next GW after GW38) warns, and the decision artifacts and
@@ -44,6 +45,7 @@ derive:
 		--bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json
 	cd apps/backend && uv run python -m backend.ml.waiver --season $(SEASON) --scorer $(SCORER) --horizon $(HORIZON)
 	cd apps/backend && uv run python -m backend.ml.myweek --season $(SEASON) --scorer $(SCORER)
+	cd apps/backend && uv run python -m backend.ml.player_values --season $(SEASON)
 	cd apps/backend && uv run python -m backend.ml.trackrecord --season $(SEASON) --data-root ../../data
 
 ## weekly: the whole weekly loop (fetch + derive)

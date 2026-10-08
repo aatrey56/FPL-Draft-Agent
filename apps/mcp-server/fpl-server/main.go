@@ -138,7 +138,7 @@ func main() {
 
 	addTool(server, &registry, &mcp.Tool{
 		Name:        "trade_check",
-		Description: "Evaluate a proposed trade: give vs get compared on season projection and VOR (starter scarcity), with warnings for unprojected players",
+		Description: "Evaluate a proposed trade: give vs get on match-model xP (next GW, next 3 GWs) and role-adjusted rest-of-season value (player_values.json); falls back to season projection + VOR with value_source \"heuristic\" and a reason when that file is missing or stale",
 	}, tradeCheckHandler(cfg))
 
 	addTool(server, &registry, &mcp.Tool{
