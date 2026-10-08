@@ -42,7 +42,8 @@ func main() {
 		fastMode        = flag.Bool("fast", false, "fast refresh: only game meta + league transactions/trades + tx summary")
 		workers         = flag.Int("workers", 1, "parallel fetch workers for live/entry endpoints (default 1)")
 		live            = flag.Bool("live", false, "disable cache and disk writes")
-		refreshNow      = flag.Bool("refresh-now", false, "force refresh regardless of schedule")
+		refreshNow      = flag.Bool("refresh-now", false, "force refresh regardless of schedule (settled GWs already on disk are still skipped; see --refetch-all)")
+		refetchAll      = flag.Bool("refetch-all", false, "re-download every GW's live points and entry picks in range, including settled GWs (default: a settled GW whose files are on disk is skipped)")
 		deriveDraft     = flag.Bool("derive-draft", true, "build draft ledger from choices")
 		deriveSnaps     = flag.Bool("derive-snapshots", true, "build entry snapshots from raw entry events")
 		reconcileOn     = flag.Bool("reconcile", true, "compare draft ledger vs snapshots and write mismatch report")
@@ -128,7 +129,6 @@ func main() {
 	refreshTransactions := forceAll || (scheduledActive && game.WaiversProcessed)
 	refreshLeagueDetails := forceAll || (scheduledActive && (game.WaiversProcessed || game.CurrentEventFinished))
 	refreshLive := forceAll || (scheduledActive && game.CurrentEventFinished)
-	refreshEntry := refreshLive
 
 	log.Printf("Refresh mode=%s scheduled=%v finished=%v waivers=%v\n",
 		mode, scheduledActive, game.CurrentEventFinished, game.WaiversProcessed)
@@ -204,11 +204,14 @@ func main() {
 		minGW = 1
 	}
 
-	for gw := minGW; gw <= maxGW; gw++ {
-		log.Printf("Queueing GW %d live + entry events...\n", gw)
+	settled, err := settledGWs(st, game.CurrentEvent)
+	if err != nil {
+		log.Printf("settled-GW check failed, refetching every GW in range: %v", err)
 	}
 	refreshSquads(pulse.NewClient(), st, maxGW, time.Now())
-	if err := runFetchTasks(client, entryIDs, minGW, maxGW, refreshLive, refreshEntry, *workers); err != nil {
+	plan := planGWFetches(client, entryIDs, minGW, maxGW, refreshLive, *refetchAll, settled)
+	logGWFetchPlan(plan, minGW, maxGW, *refetchAll)
+	if err := runFetchTasks(plan.Tasks, *workers); err != nil {
 		log.Fatalf("fetch failed: %v", err)
 	}
 
@@ -363,26 +366,9 @@ type fetchTask struct {
 	fn    func() error
 }
 
-func runFetchTasks(client *fetch.Client, entryIDs []int, minGW int, maxGW int, refreshLive bool, refreshEntry bool, workers int) error {
-	tasks := make([]fetchTask, 0, (maxGW-minGW+1)*(1+len(entryIDs)))
-	for gw := minGW; gw <= maxGW; gw++ {
-		gw := gw
-		tasks = append(tasks, fetchTask{
-			label: fmt.Sprintf("event_live gw=%d", gw),
-			fn: func() error {
-				return client.EventLive(gw, refreshLive)
-			},
-		})
-		for _, entryID := range entryIDs {
-			entryID := entryID
-			tasks = append(tasks, fetchTask{
-				label: fmt.Sprintf("entry_event entry=%d gw=%d", entryID, gw),
-				fn: func() error {
-					return client.EntryEvent(entryID, gw, refreshEntry)
-				},
-			})
-		}
-	}
+// runFetchTasks runs tasks sequentially (workers <= 1) or on a worker pool,
+// returning the first error.
+func runFetchTasks(tasks []fetchTask, workers int) error {
 	if workers <= 1 {
 		for _, t := range tasks {
 			if err := t.fn(); err != nil {

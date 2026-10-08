@@ -5,15 +5,23 @@ RAW_SEASON := ../../data/raw/$(SEASON)
 DERIVED_SEASON := ../../data/derived/$(SEASON)
 GO_ROOTS := --raw-root ../../data/raw --derived-root ../../data/derived
 
-.PHONY: serve fetch derive weekly matchday preflight backtest xp
+.PHONY: serve fetch fetch-all derive weekly matchday preflight backtest xp
 
 ## serve: run the MCP server (Ctrl-C to stop; restart after every git pull)
 serve:
 	cd apps/mcp-server && go run ./fpl-server $(GO_ROOTS) --default-season $(SEASON)
 
-## fetch: refresh all raw data for the season (game, league, live GW, picks, element-status)
+## fetch: refresh all raw data for the season (game, league, live GW, picks, element-status).
+## Per-GW live points and entry picks are re-downloaded only for GWs that are not settled
+## (the current GW, and any GW whose bootstrap event is unfinished or whose cached live.json
+## still has a fixture without bonus confirmed); settled GWs already on disk are skipped and
+## the run logs requests_fetched / requests_skipped.
 fetch:
 	cd apps/mcp-server && go run ./cmd/dev --season $(SEASON) $(GO_ROOTS) --refresh-now
+
+## fetch-all: fetch, but re-download every GW's live points and entry picks (settled GWs too)
+fetch-all:
+	cd apps/mcp-server && go run ./cmd/dev --season $(SEASON) $(GO_ROOTS) --refresh-now --refetch-all
 
 ## derive: rebuild the weekly artifacts for SEASON (ownership -> panel && next-GW xP && 3-GW horizon -> team_env -> waiver -> my_week -> player_values -> track record)
 ## player_values.json (every player's xp_next / xp_h3 / ros_adj) feeds trade_check; it always asks for the model and falls back like waiver.
