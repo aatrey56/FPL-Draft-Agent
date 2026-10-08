@@ -477,3 +477,6 @@ def test_my_week_reports_formation_bench_order_and_if_out(tmp_path):
     assert week["bench_order"] == [p["web_name"] for p in week["bench"]]
     assert "P112" in {p["web_name"] for p in week["xi"]}
     assert [a["web_name"] for a in week["if_out"]] == ["P112"]
+    alt = week["if_out"][0]
+    assert alt["automatic"] is True and alt["auto_sub"]["in"] in week["bench_order"]
+    assert alt["text"].startswith("If P112 plays 0 minutes, FPL auto-subs")

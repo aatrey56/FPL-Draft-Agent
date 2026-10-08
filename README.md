@@ -20,7 +20,7 @@ start/sit) → Go MCP server (:8080, 14 tools) → Claude Desktop / Claude Code
 | `player_card` | Who is this player? Projection + 7-season history + live news (falls back to history for unprojected players) |
 | `waiver_plan` | Who do I add/drop? Roster-aware, labeled `upgrade` / `stream` / `hold`, with gains over three horizons (next GW / next 3 GWs / rest of season) |
 | `trade_check` | Is this trade good? Give vs get on match-model xP (next GW, next 3 GWs — fewer near season end, labelled via `horizon_events`) and role-adjusted rest-of-season value from `player_values.json`; falls back to projection + VOR (`value_source: "heuristic"` + reason) when that file is missing or stale (wrong GW, or a panel not through the last finished GW) |
-| `my_week` | Who starts this GW? Best XI over every legal formation (`formation`), bench in auto-sub order, `if_out` fallbacks for doubtful starters, and attention flags (injuries, blanks, unknowns) |
+| `my_week` | Who starts this GW? Best XI over every legal formation (`formation`), bench in auto-sub order, `if_out` = what FPL auto-subs do automatically if a doubtful starter plays 0 minutes (plus a manual swap only when it gains >0.5 xP before lock), and attention flags (injuries, blanks, unknowns) |
 | `league_pulse` | What's happening? Standings, named transactions, game clock + this week's deadlines (trades/waivers/lineup lock, in EST) |
 | `drop_radar` | Who hit the wire? Ownership diffs from element-status snapshots |
 | `team_env` | Shootout or stalemate? Per-team points/xG generated and conceded, by position and venue |
