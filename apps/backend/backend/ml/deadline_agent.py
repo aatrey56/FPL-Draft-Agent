@@ -43,6 +43,7 @@ import importlib.util
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,8 @@ MISSED_LOOKBACK = timedelta(hours=48)   # older unsent deadlines are history, no
 RESEARCH_TIMEOUT_S = 900
 DERIVE_TIMEOUT_S = 900
 DERIVE_LOCK_WAIT_S = 300
+KILL_GRACE_S = 10               # SIGTERM -> SIGKILL grace for a timed-out process group
+KILL_POLL_S = 0.2
 RESEARCH_NO_KEY_EXIT = 3        # backend.ml.research: no API key -> skip silently
 MAX_CLAIMS = 5
 MAX_BACKUPS = 3
@@ -615,13 +618,48 @@ def write_checklist(directory: Path, deadline: Deadline, markdown: str) -> Path:
 # ---------------------------------------------------------------------------
 # Research + derive
 # ---------------------------------------------------------------------------
-def default_runner(cmd: list[str], cwd: Path, timeout: int) -> int:
-    """Run ``cmd`` and return its exit code (-1 on timeout / missing binary)."""
+def default_runner(cmd: list[str], cwd: Path, timeout: int, *,
+                   popen: Callable[..., Any] = subprocess.Popen,
+                   killpg: Callable[[int, int], None] = os.killpg) -> int:
+    """Run ``cmd`` in its own process group; its exit code, -1 on timeout / missing binary.
+
+    ``make derive`` forks the real work, so killing only ``make`` on timeout
+    would leave its children writing artifacts after the caller releases the
+    derive lock. The command therefore starts a new session (its pid is the
+    process-group id) and a timeout terminates the whole group, reaped,
+    before this returns.
+    """
     try:
-        return subprocess.run(cmd, cwd=cwd, timeout=timeout, check=False).returncode
+        proc = popen(cmd, cwd=cwd, start_new_session=True)
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("%s failed to run: %s", cmd[0], exc)
         return -1
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logger.warning("%s timed out after %ss; terminating its process group", cmd[0], timeout)
+        terminate_group(proc, killpg)
+        return -1
+
+
+def terminate_group(proc: Any, killpg: Callable[[int, int], None] = os.killpg,
+                    grace_s: float = KILL_GRACE_S,
+                    sleep: Callable[[float], None] = time.sleep) -> None:
+    """SIGTERM ``proc``'s process group, give it ``grace_s`` to exit, SIGKILL
+    whatever is left, and reap ``proc``. ``killpg(pgid, 0)`` raising
+    ProcessLookupError means the group is gone."""
+    with contextlib.suppress(ProcessLookupError):
+        killpg(proc.pid, signal.SIGTERM)
+    for _ in range(max(int(grace_s / KILL_POLL_S), 1)):
+        proc.poll()                     # reap the leader so it does not keep the group alive
+        try:
+            killpg(proc.pid, 0)
+        except ProcessLookupError:
+            break
+        sleep(KILL_POLL_S)
+    with contextlib.suppress(ProcessLookupError):
+        killpg(proc.pid, signal.SIGKILL)
+    proc.wait()
 
 
 def research_available() -> bool:

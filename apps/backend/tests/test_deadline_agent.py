@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -504,6 +505,101 @@ def test_derive_lock_is_exclusive(tmp_path):
 
 def test_default_runner_reports_missing_binary(tmp_path):
     assert da.default_runner(["definitely-not-a-binary-xyz"], tmp_path, 5) == -1
+
+
+class FakeProc:
+    """Popen stand-in: ``wait`` times out ``timeouts`` times, then returns ``code``."""
+
+    def __init__(self, pid=4242, code=0, timeouts=0):
+        self.pid, self.code, self.timeouts = pid, code, timeouts
+        self.waits, self.polls = [], 0
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if self.timeouts:
+            self.timeouts -= 1
+            raise subprocess.TimeoutExpired("make", timeout)
+        return self.code
+
+    def poll(self):
+        self.polls += 1
+
+
+class FakeGroup:
+    """killpg stand-in: the group survives ``probes_alive`` liveness probes after SIGTERM."""
+
+    def __init__(self, probes_alive=0):
+        self.signals, self.probes_alive, self.dead = [], probes_alive, False
+
+    def __call__(self, pgid, sig):
+        self.signals.append((pgid, sig))
+        if sig == 0:
+            if self.probes_alive:
+                self.probes_alive -= 1
+                return
+            self.dead = True
+        if self.dead:
+            raise ProcessLookupError
+
+
+def test_default_runner_starts_own_session_and_returns_code(tmp_path):
+    seen = {}
+
+    def popen(cmd, **kw):
+        seen.update(kw)
+        return FakeProc(code=2)
+
+    group = FakeGroup()
+    assert da.default_runner(["make", "derive"], tmp_path, 5, popen=popen, killpg=group) == 2
+    assert seen == {"cwd": tmp_path, "start_new_session": True}
+    assert group.signals == []                                  # no timeout -> nothing killed
+
+
+def test_default_runner_timeout_kills_whole_group_and_reaps(tmp_path):
+    proc, group = FakeProc(timeouts=1), FakeGroup()
+    code = da.default_runner(["make"], tmp_path, 5, popen=lambda *a, **k: proc, killpg=group)
+    assert code == -1
+    assert group.signals[0] == (4242, signal.SIGTERM)
+    assert group.signals[-1] == (4242, signal.SIGKILL)          # stragglers swept up
+    assert proc.waits == [5, None]                              # leader reaped before return
+
+
+def test_terminate_group_escalates_when_sigterm_ignored():
+    proc, group, naps = FakeProc(), FakeGroup(probes_alive=1000), []
+    da.terminate_group(proc, group, grace_s=1, sleep=naps.append)
+    sigs = [sig for _, sig in group.signals]
+    assert sigs[0] == signal.SIGTERM and sigs[-1] == signal.SIGKILL
+    assert len(naps) == int(1 / da.KILL_POLL_S)                 # waited the full grace
+    assert proc.waits == [None] and proc.polls == len(naps)
+
+
+def test_derive_lock_held_until_timed_out_group_is_gone(tmp_path):
+    events = []
+
+    class LoggedProc(FakeProc):
+        def wait(self, timeout=None):
+            events.append(("wait", timeout))
+            return super().wait(timeout)
+
+    def killpg(pgid, sig):
+        events.append(("kill", sig))
+        if sig != signal.SIGTERM:
+            raise ProcessLookupError
+
+    @contextmanager
+    def lock(repo):
+        events.append("lock")
+        yield True
+        events.append("unlock")
+
+    proc = LoggedProc(timeouts=1)
+    runner = lambda cmd, cwd, timeout: da.default_runner(  # noqa: E731
+        cmd, cwd, timeout, popen=lambda *a, **k: proc, killpg=killpg)
+    da.run_research_and_derive(da.Deadline(9, "lineup", LINEUP_AT), tmp_path, "2026-27",
+                               runner=runner, research_ok=lambda: False, lock=lock)
+    assert events[0] == "lock" and events[-1] == "unlock"
+    assert ("kill", signal.SIGTERM) in events
+    assert events[-2] == ("wait", None)                         # reaped before the unlock
 
 
 # ---------------------------------------------------------------------------

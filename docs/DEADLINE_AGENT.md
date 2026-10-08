@@ -67,7 +67,10 @@ idempotent; state lives in `~/.fplcopilot/deadline_agent.json`, keyed by
    anything else → the checklist says *research failed*), then `make derive`
    (under `autorefresh.sh`'s lock so two derives never overlap; if the lock is
    busy for 5 min the derive is skipped and the artifacts from the last refresh
-   are used).
+   are used). Both commands run in their own process group with a 15-min
+   timeout; on timeout the whole group gets SIGTERM, then SIGKILL after 10 s,
+   and is reaped before the derive lock is released — `make`'s children never
+   keep writing behind a released lock.
 2. `now ≥ deliver_at` and not sent → render and deliver.
 3. `now ≥ deadline` and not sent → logged as **missed**; a checklist is never
    delivered after its deadline.
