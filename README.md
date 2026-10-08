@@ -161,6 +161,22 @@ preseason tool) still reads the flat 2026-27 projection directly.
   `code`, `player` and `team` must be non-empty strings. A protected player
   who has left the league shows as `departed_protected` (fix the entry), not
   `departed` (drop him). Re-run `make derive` after editing.
+- **Research agent (optional)**: `make research PHASE={waivers,lineup,trades}`
+  (`backend.ml.research`) checks the news before a deadline for flagged squad
+  players and top waiver targets (deterministic triage: status/news/chance,
+  live override, club move, low minutes, recommended add, doubtful starter;
+  max 30). It researches them with Claude (`claude-opus-5-5` + web search /
+  fetch, billed to the Max plan's API credit via `ANTHROPIC_API_KEY`) and
+  writes `role_overrides.research.json`. A code-side credibility gate applies
+  only verified tier-1 or two-outlet tier-2 news (official club > established
+  outlets > rumour, quotes checked verbatim); weaker findings are *proposed*
+  for approval and rumours are *watched*, so neither changes a pick. That
+  file ranks below `role_overrides.json`: a manual entry wins
+  (`overrides_superseded`), and research entries show up as `research:<player>`
+  in `overrides_*` and `research: …` in the override fact. Spend caps:
+  `RESEARCH_MAX_USD` per run (default $12) and `RESEARCH_MONTHLY_USD`
+  (default $90). Exit 3 = no key, so it is skipped. `make research-clear` turns it
+  off. Details: `docs/RESEARCH_AGENT.md`.
 - Players the model cannot value (long injury last season, promoted, new
   signings) are **surfaced for human judgment, never scored as zero** — the
   tools refuse to guess rather than quietly recommend dropping a returning star.
