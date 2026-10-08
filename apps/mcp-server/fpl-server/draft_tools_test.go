@@ -287,6 +287,40 @@ func TestMyWeekNoteNamesEverySharedWarningCode(t *testing.T) {
 	}
 }
 
+// TestMyWeekNoteFollowsIfOutMode: the note describes automatic if_out rows
+// only when the artifact carries the "autosub" marker; older artifacts keep
+// the manual-fallback wording.
+func TestMyWeekNoteFollowsIfOutMode(t *testing.T) {
+	cases := []struct {
+		name    string
+		week    map[string]any
+		want    string
+		notWant string
+	}{
+		{"marker", map[string]any{"gw": 1, "if_out_mode": "autosub"}, "AUTOMATICALLY", "predates automatic"},
+		{"legacy", map[string]any{"gw": 1}, "predates automatic if_out rows", "AUTOMATICALLY"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := fixtureConfig(t)
+			writeFixture(t, filepath.Join(cfg.DerivedRoot, "2026-27/ml/my_week.json"), tc.week)
+			res, _, err := myWeekHandler(cfg)(context.Background(), nil, MyWeekArgs{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var week struct {
+				Note string `json:"note"`
+			}
+			if err := json.Unmarshal([]byte(resultText(t, res)), &week); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(week.Note, tc.want) || strings.Contains(week.Note, tc.notWant) {
+				t.Fatalf("unexpected note for %s:\n%s", tc.name, week.Note)
+			}
+		})
+	}
+}
+
 func TestDropRadarReturnsMostRecentEvents(t *testing.T) {
 	cfg := fixtureConfig(t)
 	events := []map[string]any{

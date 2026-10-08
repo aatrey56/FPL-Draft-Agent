@@ -60,6 +60,9 @@ DOUBT_P_START = 0.5
 # A hand-made swap must beat the automatic result by more than this (xP) to
 # be worth telling the user to act.
 MANUAL_GAIN_MIN = 0.5
+# Schema marker written to my_week.json: if_out rows are automatic auto-subs
+# (older artifacts hold manual re-optimisation rows and lack the key).
+IF_OUT_MODE = "autosub"
 
 
 class LineupError(ValueError):
@@ -74,6 +77,13 @@ class Lineup:
     formation: str | None
     total: float
     bench: pd.DataFrame = field(default_factory=pd.DataFrame)
+
+
+def _blank_gw(row: pd.Series) -> bool:
+    """No fixture this GW (the ``blank_gw`` warning signal in ``myweek``:
+    ``gw_fixture_load`` of 0). A missing column means unknown, not blank."""
+    load = row.get("gw_fixture_load")
+    return load is not None and pd.notna(load) and float(load) == 0
 
 
 def _p_play(row: pd.Series) -> float:
@@ -185,7 +195,7 @@ def simulate_autosubs(xi: pd.DataFrame, bench: pd.DataFrame,
 
     ``bench`` is in auto-sub order. Each ``out_elements`` starter (XI order)
     is replaced by the first unused bench player who is assumed to play
-    (``_p_play`` above 0) and whose arrival keeps the XI legal — the reserve
+    (``_p_play`` above 0 and a fixture this GW — a blank-GW player cannot come on) and whose arrival keeps the XI legal — the reserve
     GKP only for the GKP. A starter nobody can legally replace stays in the
     XI on 0 points (``unreplaced``).
 
@@ -196,7 +206,7 @@ def simulate_autosubs(xi: pd.DataFrame, bench: pd.DataFrame,
     """
     lineup = xi.copy()
     available = [(slot, bench.iloc[[slot - 1]]) for slot in range(1, len(bench) + 1)
-                 if _p_play(bench.iloc[slot - 1]) > 0]
+                 if _p_play(bench.iloc[slot - 1]) > 0 and not _blank_gw(bench.iloc[slot - 1])]
     subs: list[dict[str, Any]] = []
     unreplaced: list[str] = []
     for _, starter in xi.iterrows():
@@ -261,8 +271,9 @@ def if_out(squad: pd.DataFrame, lineup: Lineup,
             alt = optimal_xi(squad[squad["element"] != player["element"]], value_col)
         except LineupError:
             alt = None  # no legal manual XI either; the auto result stands
-        if alt is not None and alt.total - auto["total"] > MANUAL_GAIN_MIN:
-            gain = round(alt.total - auto["total"], 1)
+        gain = round(alt.total - auto["total"], 1) if alt is not None else 0.0
+        # Compare the rounded gain: raw float totals can show 0.5000000000000036.
+        if alt is not None and gain > MANUAL_GAIN_MIN:
             names_in = alt.xi[~alt.xi["element"].isin(lineup.xi["element"])]["web_name"].tolist()
             entry["manual_if_ruled_out_before_lock"] = {
                 "in": names_in, "formation": alt.formation,

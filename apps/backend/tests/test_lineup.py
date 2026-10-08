@@ -142,6 +142,35 @@ def test_autosub_leaves_a_starter_unreplaced_when_nobody_is_legal():
     assert res["formation"] == "5-3-2" and res["total"] == 30.0
 
 
+def test_autosub_never_brings_on_a_blank_gw_bench_player():
+    xi, bench = _xi_bench(FIVE_THREE_TWO, [("GKP", 1.0), ("FWD", 4.0), ("MID", 4.0)])
+    # Whole bench blanks: the FWD stays in the XI on 0, formation unchanged.
+    blank = bench.assign(gw_fixture_load=0.0)
+    res = lu.simulate_autosubs(xi, blank, {10})
+    assert res["subs"] == [] and res["unreplaced"] == ["FWD10"]
+    assert res["formation"] == "5-3-2"
+    # First bench candidate blanks: the next eligible one comes in.
+    mixed = bench.assign(gw_fixture_load=[1.0, 0.0, 1.0])
+    res = lu.simulate_autosubs(xi, mixed, {10})
+    assert res["subs"] == [{"out": "FWD10", "in": "MID14", "bench_slot": 3}]
+    assert res["formation"] == "5-4-1"
+
+
+def test_manual_gain_is_compared_after_rounding(monkeypatch):
+    # 32.2 - 31.7 == 0.5000000000000036 in floats; the displayed gain is 0.5,
+    # which is not "more than" MANUAL_GAIN_MIN.
+    assert 32.2 - 31.7 > 0.5
+    starters = [("GKP", 3.0)] + [("DEF", 3.0)] * 5 + [("MID", 3.0)] * 3 \
+        + [("FWD", 5.0, 0.4, "d", None), ("FWD", 3.0)]
+    xi, bench = _xi_bench(starters, [("GKP", 1.0), ("MID", 0.5), ("FWD", 6.0)])
+    lineup = lu.Lineup(xi=xi, formation="5-3-2", total=0.0, bench=bench)
+    manual = lu.Lineup(xi=xi, formation="5-3-2", total=32.2, bench=bench)
+    monkeypatch.setattr(lu, "optimal_xi", lambda *_a, **_k: manual)
+    monkeypatch.setattr(lu, "simulate_autosubs", lambda *_a, **_k: {
+        "subs": [], "formation": "5-3-2", "total": 31.7, "unreplaced": []})
+    assert "manual_if_ruled_out_before_lock" not in lu.if_out(pd.concat([xi, bench]), lineup)[0]
+
+
 def test_if_out_reports_the_automatic_result():
     spec = list(THIN_MIDS)
     spec[12] = ("FWD", 1.5, 0.35, "a", "hamstring")
