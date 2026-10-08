@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,13 @@ import (
 )
 
 var planEntries = []int{101, 102}
+
+// liveElements is a minimal complete live payload body: one player with the
+// stats loadLiveStatsForPoints reads.
+const liveElements = `{"1":{"stats":{"minutes":90,"total_points":6}}}`
+
+// validEntryEvent is a full 15-pick draft squad.
+var validEntryEvent = `{"entry_history":{},"picks":[` + strings.TrimSuffix(strings.Repeat(`{"element":1},`, draftSquadSize), ",") + `],"subs":[]}`
 
 // seedSeason writes a three-GW season with current_event 3:
 //
@@ -39,20 +47,21 @@ func seedSeason(t *testing.T) *store.JSONStore {
 	}
 	write("bootstrap/bootstrap-static.json", `{"events":{"current":3,"next":4,"data":[
 		{"id":1,"finished":true},{"id":2,"finished":true},{"id":3,"finished":true},{"id":4,"finished":false}]}}`)
-	confirmed := `{"elements":{},"fixtures":[{"id":1,"finished":true,"finished_provisional":true},{"id":2,"finished":true,"finished_provisional":true}]}`
-	provisional := `{"elements":{},"fixtures":[{"id":3,"finished":true,"finished_provisional":true},{"id":4,"finished":false,"finished_provisional":true}]}`
+	confirmed := `{"elements":` + liveElements + `,"fixtures":[{"id":1,"finished":true,"finished_provisional":true},{"id":2,"finished":true,"finished_provisional":true}]}`
+	provisional := `{"elements":` + liveElements + `,"fixtures":[{"id":3,"finished":true,"finished_provisional":true},{"id":4,"finished":false,"finished_provisional":true}]}`
 	write(fetch.EventLivePath(1), confirmed)
 	write(fetch.EventLivePath(2), provisional)
 	write(fetch.EventLivePath(3), confirmed)
 	for gw := 1; gw <= 3; gw++ {
 		for _, id := range planEntries {
-			write(fetch.EntryEventPath(id, gw), `{"entry_history":{},"picks":[],"subs":[]}`)
+			write(fetch.EntryEventPath(id, gw), validEntryEvent)
 		}
 	}
 	return st
 }
 
-// fakeDraftAPI answers every GET with an empty JSON object and records the paths.
+// fakeDraftAPI answers every GET with a valid payload for its endpoint and
+// records the paths.
 func fakeDraftAPI(t *testing.T, st *store.JSONStore) (*fetch.Client, func() []string) {
 	t.Helper()
 	var (
@@ -63,7 +72,11 @@ func fakeDraftAPI(t *testing.T, st *store.JSONStore) (*fetch.Client, func() []st
 		mu.Lock()
 		hits = append(hits, r.URL.Path)
 		mu.Unlock()
-		fmt.Fprint(w, `{}`)
+		if strings.HasSuffix(r.URL.Path, "/live") {
+			fmt.Fprint(w, `{"elements":`+liveElements+`,"fixtures":[{"id":1,"finished":true}]}`)
+			return
+		}
+		fmt.Fprint(w, validEntryEvent)
 	}))
 	t.Cleanup(srv.Close)
 	client := fetch.NewClient(st)
@@ -167,7 +180,7 @@ func TestSettledGWsEdgeCases(t *testing.T) {
 		t.Fatalf("current_event 0 settled %v", settled)
 	}
 	// A live file listing no fixtures never settles.
-	if err := st.WriteRaw(fetch.EventLivePath(1), []byte(`{"elements":{}}`), false); err != nil {
+	if err := st.WriteRaw(fetch.EventLivePath(1), []byte(`{"elements":`+liveElements+`}`), false); err != nil {
 		t.Fatal(err)
 	}
 	if settled, _ := settledGWs(st, 3); settled[1] {
@@ -189,5 +202,126 @@ func TestLogGWFetchPlanIsStructured(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("log %q missing %q", out, want)
 		}
+	}
+}
+
+// Regression: a live payload with finished fixtures but no player points used
+// to settle the GW, so it was never refetched and BuildResult wrote zero totals.
+func TestSettledGWsRejectsPartialLivePayload(t *testing.T) {
+	fixtures := `"fixtures":[{"id":1,"finished":true}]`
+	cases := map[string]string{
+		"empty elements":        `{"elements":{},` + fixtures + `}`,
+		"missing elements":      `{` + fixtures + `}`,
+		"element without stats": `{"elements":{"1":{}},` + fixtures + `}`,
+		"missing total_points":  `{"elements":{"1":{"stats":{"minutes":90}}},` + fixtures + `}`,
+		"missing minutes":       `{"elements":{"1":{"stats":{"total_points":2}}},` + fixtures + `}`,
+		"malformed JSON":        `{"elements":`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			st := seedSeason(t)
+			if err := st.WriteRaw(fetch.EventLivePath(1), []byte(body), false); err != nil {
+				t.Fatal(err)
+			}
+			settled, err := settledGWs(st, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if settled[1] {
+				t.Fatalf("GW1 settled on partial live payload %s", body)
+			}
+		})
+	}
+}
+
+// A partial live payload is re-downloaded even on a run that is not a forced
+// refresh, and the download replaces the cached file.
+func TestPlanRefetchesPartialLivePayload(t *testing.T) {
+	partial := `{"elements":{},"fixtures":[{"id":1,"finished":true}]}`
+	seed := func() *store.JSONStore {
+		st := seedSeason(t)
+		if err := st.WriteRaw(fetch.EventLivePath(1), []byte(partial), false); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+
+	// Unforced: only the partial live file is fetched.
+	st := seed()
+	_, hits := runPlan(t, st, false, false)
+	if len(hits) != 1 || hits[0] != "/event/1/live" {
+		t.Fatalf("unforced requests = %v, want only /event/1/live", hits)
+	}
+	raw, err := st.ReadRaw(fetch.EventLivePath(1))
+	if err != nil || validateLivePayload(raw) != nil {
+		t.Fatalf("cached GW1 live not replaced by a valid payload: %s (%v)", raw, err)
+	}
+	if _, hits := runPlan(t, st, false, false); len(hits) != 0 {
+		t.Fatalf("repaired file refetched again: %v", hits)
+	}
+
+	// Forced refresh: GW1 is no longer settled, so it is refetched with GW2-3.
+	_, hits = runPlan(t, seed(), true, false)
+	if want := gwPaths(1, 2, 3); strings.Join(hits, ",") != strings.Join(want, ",") {
+		t.Fatalf("refresh requests = %v, want %v", hits, want)
+	}
+}
+
+func TestPlanRefetchesInvalidEntryEventOfSettledGW(t *testing.T) {
+	bodies := map[string]string{
+		"malformed JSON": `{"picks":[`,
+		"empty picks":    `{"entry_history":{},"picks":[],"subs":[]}`,
+		"missing picks":  `{"entry_history":{}}`,
+		"short squad":    `{"picks":[{"element":1}]}`,
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			st := seedSeason(t)
+			if err := st.WriteRaw(fetch.EntryEventPath(102, 1), []byte(body), false); err != nil {
+				t.Fatal(err)
+			}
+			// Settled GW1, forced refresh: only the invalid entry-event is downloaded.
+			_, hits := runPlan(t, st, true, false)
+			want := append(gwPaths(2, 3), "/entry/102/event/1")
+			sort.Strings(want)
+			if strings.Join(hits, ",") != strings.Join(want, ",") {
+				t.Fatalf("requests = %v, want %v", hits, want)
+			}
+			// Same with no refresh at all: the invalid file alone is fetched.
+			if err := st.WriteRaw(fetch.EntryEventPath(102, 1), []byte(body), false); err != nil {
+				t.Fatal(err)
+			}
+			plan, hits := runPlan(t, st, false, false)
+			if len(hits) != 1 || hits[0] != "/entry/102/event/1" || plan.Fetched != 1 || plan.Skipped != 8 {
+				t.Fatalf("unforced run: hits=%v fetched/skipped=%d/%d", hits, plan.Fetched, plan.Skipped)
+			}
+		})
+	}
+}
+
+func TestPlanLogsReasonForForcedRefetch(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	st := seedSeason(t)
+	if err := st.WriteRaw(fetch.EntryEventPath(101, 1), []byte(`{"picks":[]}`), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteRaw(fetch.EventLivePath(1), []byte(`{"elements":{}}`), false); err != nil {
+		t.Fatal(err)
+	}
+	runPlan(t, st, false, false)
+	out := buf.String()
+	for _, want := range []string{"forcing refetch", "entry_event entry=101 gw=1", "picks has 0 entries, want 15", "event_live gw=1", "no elements"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log %q missing %q", out, want)
+		}
+	}
+}
+
+func TestValidateEntryEventAcceptsFullSquad(t *testing.T) {
+	if err := validateEntryEvent([]byte(validEntryEvent)); err != nil {
+		t.Fatalf("full squad rejected: %v", err)
 	}
 }
