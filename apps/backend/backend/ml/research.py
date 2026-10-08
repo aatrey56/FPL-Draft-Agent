@@ -949,11 +949,14 @@ class LedgerBusy(Exception):
 
 
 @contextmanager
-def ledger_lock(ledger: Path, wait_s: float = LEDGER_LOCK_WAIT_S) -> Iterator[None]:
+def ledger_lock(ledger: Path, wait_s: float | None = None) -> Iterator[None]:
     """Hold an exclusive ``fcntl.flock`` on ``<ledger>.lock`` (next to
     ``spend.jsonl``) for the block: monthly admission, every spend line and
     settlement of one run happen under it, so overlapping runs serialize.
-    Raises ``LedgerBusy`` after ``wait_s`` seconds."""
+    Raises ``LedgerBusy`` after ``wait_s`` seconds (default: the module's
+    ``LEDGER_LOCK_WAIT_S``, read at call time)."""
+    if wait_s is None:
+        wait_s = LEDGER_LOCK_WAIT_S
     lock_path = ledger.with_name(ledger.name + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
@@ -1851,7 +1854,7 @@ class ResearchOutcome:
 
 def research_all(candidates: list[Candidate], research_one: Callable[[Candidate], PlayerResult],
                  guard: SpendGuard, concurrency: int,
-                 grace_s: float = INTERRUPT_GRACE_S) -> ResearchOutcome:
+                 grace_s: float | None = None) -> ResearchOutcome:
     """Research ``candidates`` with at most ``concurrency`` in flight.
 
     Every request is admitted by ``guard``. A player whose first request is
@@ -1863,6 +1866,8 @@ def research_all(candidates: list[Candidate], research_one: Callable[[Candidate]
     counts anything still unsettled (``SpendGuard.abandon_inflight``).
     A player that crashes keeps the cost the guard recorded for it.
     """
+    if grace_s is None:
+        grace_s = INTERRUPT_GRACE_S
     queue = deque(candidates)
     order = {c.element: i for i, c in enumerate(candidates)}
     results: list[PlayerResult] = []
