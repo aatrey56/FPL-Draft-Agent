@@ -22,12 +22,30 @@ import (
 
 var planEntries = []int{101, 102}
 
-// liveElements is a minimal complete live payload body: one player with the
+// liveElementsFor builds a live elements body holding elements 1..n with the
 // stats loadLiveStatsForPoints reads.
-const liveElements = `{"1":{"stats":{"minutes":90,"total_points":6}}}`
+func liveElementsFor(n int) string {
+	parts := make([]string, 0, n)
+	for id := 1; id <= n; id++ {
+		parts = append(parts, fmt.Sprintf(`"%d":{"stats":{"minutes":90,"total_points":6}}`, id))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// liveElements covers every player in validEntryEvent.
+var liveElements = liveElementsFor(draftSquadSize)
+
+// squadPicks is a picks array of n distinct players (elements and positions 1..n).
+func squadPicks(n int) string {
+	parts := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		parts = append(parts, fmt.Sprintf(`{"element":%d,"position":%d}`, i, i))
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
 
 // validEntryEvent is a full 15-pick draft squad.
-var validEntryEvent = `{"entry_history":{},"picks":[` + strings.TrimSuffix(strings.Repeat(`{"element":1},`, draftSquadSize), ",") + `],"subs":[]}`
+var validEntryEvent = `{"entry_history":{},"picks":` + squadPicks(draftSquadSize) + `,"subs":[]}`
 
 // seedSeason writes a three-GW season with current_event 3:
 //
@@ -95,12 +113,18 @@ func fakeDraftAPI(t *testing.T, st *store.JSONStore) (*fetch.Client, func() []st
 // runPlan settles, plans and executes GW1..3 the way main does.
 func runPlan(t *testing.T, st *store.JSONStore, refresh, refetchAll bool) (gwFetchPlan, []string) {
 	t.Helper()
+	return runPlanWith(t, st, refresh, refetchAll, participation{})
+}
+
+// runPlanWith is runPlan with explicit league participation context.
+func runPlanWith(t *testing.T, st *store.JSONStore, refresh, refetchAll bool, part participation) (gwFetchPlan, []string) {
+	t.Helper()
 	client, hits := fakeDraftAPI(t, st)
-	settled, err := settledGWs(st, 3)
+	settled, err := settledGWs(st, 3, planEntries)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := planGWFetches(client, planEntries, 1, 3, refresh, refetchAll, settled)
+	plan := planGWFetches(client, planEntries, 1, 3, refresh, refetchAll, settled, part)
 	if err := runFetchTasks(plan.Tasks, 2); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +144,7 @@ func gwPaths(gws ...int) []string {
 }
 
 func TestSettledGWsRequiresFinishedConfirmedAndPast(t *testing.T) {
-	settled, err := settledGWs(seedSeason(t), 3)
+	settled, err := settledGWs(seedSeason(t), 3, planEntries)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,18 +200,18 @@ func TestPlanWithoutRefreshServesCache(t *testing.T) {
 func TestSettledGWsEdgeCases(t *testing.T) {
 	st := seedSeason(t)
 	// Preseason / unknown current event: nothing is past, nothing is settled.
-	if settled, _ := settledGWs(st, 0); len(settled) != 0 {
+	if settled, _ := settledGWs(st, 0, planEntries); len(settled) != 0 {
 		t.Fatalf("current_event 0 settled %v", settled)
 	}
 	// A live file listing no fixtures never settles.
 	if err := st.WriteRaw(fetch.EventLivePath(1), []byte(`{"elements":`+liveElements+`}`), false); err != nil {
 		t.Fatal(err)
 	}
-	if settled, _ := settledGWs(st, 3); settled[1] {
+	if settled, _ := settledGWs(st, 3, planEntries); settled[1] {
 		t.Fatal("GW1 settled without any fixtures in its live file")
 	}
 	// No bootstrap: error (main then plans every GW as unsettled).
-	if _, err := settledGWs(store.NewJSONStore(t.TempDir()), 3); err == nil {
+	if _, err := settledGWs(store.NewJSONStore(t.TempDir()), 3, planEntries); err == nil {
 		t.Fatal("missing bootstrap should error")
 	}
 }
@@ -223,7 +247,7 @@ func TestSettledGWsRejectsPartialLivePayload(t *testing.T) {
 			if err := st.WriteRaw(fetch.EventLivePath(1), []byte(body), false); err != nil {
 				t.Fatal(err)
 			}
-			settled, err := settledGWs(st, 3)
+			settled, err := settledGWs(st, 3, planEntries)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -253,7 +277,7 @@ func TestPlanRefetchesPartialLivePayload(t *testing.T) {
 		t.Fatalf("unforced requests = %v, want only /event/1/live", hits)
 	}
 	raw, err := st.ReadRaw(fetch.EventLivePath(1))
-	if err != nil || validateLivePayload(raw) != nil {
+	if err != nil || validateLivePayload(raw, nil) != nil {
 		t.Fatalf("cached GW1 live not replaced by a valid payload: %s (%v)", raw, err)
 	}
 	if _, hits := runPlan(t, st, false, false); len(hits) != 0 {
@@ -321,7 +345,239 @@ func TestPlanLogsReasonForForcedRefetch(t *testing.T) {
 }
 
 func TestValidateEntryEventAcceptsFullSquad(t *testing.T) {
-	if err := validateEntryEvent([]byte(validEntryEvent)); err != nil {
+	if err := validateEntryEvent([]byte(validEntryEvent), false); err != nil {
 		t.Fatalf("full squad rejected: %v", err)
+	}
+}
+
+const gw1Fixtures = `"fixtures":[{"id":1,"finished":true}]`
+
+func writeRaw(t *testing.T, st *store.JSONStore, rel, body string) {
+	t.Helper()
+	if err := st.WriteRaw(rel, []byte(body), false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A live payload holding only some players used to settle the GW and give the
+// missing roster players zero points.
+func TestLiveCoverageOfPickedPlayers(t *testing.T) {
+	subset := `{"elements":` + liveElementsFor(draftSquadSize-1) + `,` + gw1Fixtures + `}`
+	full := `{"elements":` + liveElementsFor(draftSquadSize+5) + `,` + gw1Fixtures + `}`
+
+	t.Run("subset missing a picked player is not settled and is refetched", func(t *testing.T) {
+		st := seedSeason(t)
+		writeRaw(t, st, fetch.EventLivePath(1), subset)
+		if settled, _ := settledGWs(st, 3, planEntries); settled[1] {
+			t.Fatal("GW1 settled on a live payload missing picked player 15")
+		}
+		_, hits := runPlan(t, st, false, false)
+		if len(hits) != 1 || hits[0] != "/event/1/live" {
+			t.Fatalf("unforced requests = %v, want only /event/1/live", hits)
+		}
+		raw, _ := st.ReadRaw(fetch.EventLivePath(1))
+		if err := validateLivePayload(raw, requiredElements(st, planEntries, 1)); err != nil {
+			t.Fatalf("refetched payload still incomplete: %v", err)
+		}
+	})
+
+	t.Run("full coverage settles", func(t *testing.T) {
+		st := seedSeason(t)
+		writeRaw(t, st, fetch.EventLivePath(1), full)
+		if settled, _ := settledGWs(st, 3, planEntries); !settled[1] {
+			t.Fatal("GW1 not settled despite covering every picked player")
+		}
+		if _, hits := runPlan(t, st, false, false); len(hits) != 0 {
+			t.Fatalf("complete payload refetched: %v", hits)
+		}
+	})
+
+	t.Run("no entry-event files falls back to the payload-only check", func(t *testing.T) {
+		st := seedSeason(t)
+		writeRaw(t, st, fetch.EventLivePath(1), subset)
+		if settled, _ := settledGWs(st, 3, []int{999}); !settled[1] {
+			t.Fatal("GW1 with no cached picks should fall back to the non-empty check")
+		}
+	})
+
+	t.Run("refetch reason names the missing players", func(t *testing.T) {
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+		t.Cleanup(func() { slog.SetDefault(prev) })
+		st := seedSeason(t)
+		writeRaw(t, st, fetch.EventLivePath(1), subset)
+		runPlan(t, st, false, false)
+		if out := buf.String(); !strings.Contains(out, "1 picked players missing from live payload (first: 15)") {
+			t.Fatalf("log %q missing coverage reason", out)
+		}
+	})
+}
+
+func TestValidateLivePayloadStatValues(t *testing.T) {
+	stats := func(minutes, total string) string {
+		return `{"elements":{"1":{"stats":{"minutes":` + minutes + `,"total_points":` + total + `}}}}`
+	}
+	invalid := map[string]string{
+		"null minutes":         stats(`null`, `6`),
+		"null total_points":    stats(`90`, `null`),
+		"string minutes":       stats(`"90"`, `6`),
+		"string total_points":  stats(`90`, `"6"`),
+		"object total_points":  stats(`90`, `{"v":6}`),
+		"array minutes":        stats(`[90]`, `6`),
+		"fractional points":    stats(`90`, `6.5`),
+		"fractional minutes":   stats(`89.5`, `6`),
+		"boolean total_points": stats(`90`, `true`),
+	}
+	for name, body := range invalid {
+		t.Run(name, func(t *testing.T) {
+			if err := validateLivePayload([]byte(body), nil); err == nil {
+				t.Fatalf("accepted %s", body)
+			}
+		})
+	}
+	if err := validateLivePayload([]byte(stats(`0`, `-2`)), nil); err != nil {
+		t.Fatalf("zero minutes / negative points are legitimate: %v", err)
+	}
+}
+
+func TestValidateEntryEventPicks(t *testing.T) {
+	picks := func(p string) string { return `{"picks":` + p + `}` }
+	repeat := func(item string) string {
+		return "[" + strings.TrimSuffix(strings.Repeat(item+",", draftSquadSize), ",") + "]"
+	}
+	// Valid squad with one pick replaced.
+	withPick := func(i int, item string) string {
+		parts := make([]string, draftSquadSize)
+		for n := range parts {
+			parts[n] = fmt.Sprintf(`{"element":%d,"position":%d}`, n+1, n+1)
+		}
+		parts[i] = item
+		return "[" + strings.Join(parts, ",") + "]"
+	}
+	invalid := map[string]string{
+		"15 nulls":               picks(repeat(`null`)),
+		"15 empty objects":       picks(repeat(`{}`)),
+		"wrongly typed picks":    picks(repeat(`"x"`)),
+		"string element":         picks(withPick(0, `{"element":"1","position":1}`)),
+		"zero element":           picks(withPick(3, `{"element":0,"position":4}`)),
+		"negative element":       picks(withPick(3, `{"element":-5,"position":4}`)),
+		"duplicate element":      picks(withPick(1, `{"element":1,"position":2}`)),
+		"duplicate position":     picks(withPick(1, `{"element":99,"position":1}`)),
+		"position zero":          picks(withPick(0, `{"element":1,"position":0}`)),
+		"position out of range":  picks(withPick(14, `{"element":15,"position":16}`)),
+		"missing position":       picks(withPick(2, `{"element":3}`)),
+		"too many picks":         picks(squadPicks(draftSquadSize + 1)),
+		"picks not an array":     picks(`{}`),
+		"picks null":             picks(`null`),
+		"malformed JSON":         `{"picks":[`,
+		"empty picks, no waiver": picks(`[]`),
+	}
+	for name, body := range invalid {
+		t.Run(name, func(t *testing.T) {
+			if err := validateEntryEvent([]byte(body), false); err == nil {
+				t.Fatalf("accepted %s", body)
+			}
+		})
+	}
+	if err := validateEntryEvent([]byte(picks(squadPicks(draftSquadSize))), false); err != nil {
+		t.Fatalf("valid squad rejected: %v", err)
+	}
+	// allowEmpty relaxes only the no-picks case, not malformed or partial squads.
+	for _, body := range []string{picks(`[]`), picks(`null`), `{"entry_history":{}}`} {
+		if err := validateEntryEvent([]byte(body), true); err != nil {
+			t.Fatalf("allowEmpty rejected %s: %v", body, err)
+		}
+	}
+	for _, body := range []string{picks(repeat(`null`)), picks(squadPicks(3)), `{"picks":[`} {
+		if err := validateEntryEvent([]byte(body), true); err == nil {
+			t.Fatalf("allowEmpty accepted %s", body)
+		}
+	}
+}
+
+const emptyPicks = `{"entry_history":null,"picks":[],"subs":[]}`
+
+// Entries in a league that started after GW1 have empty picks for earlier GWs;
+// those immutable responses must not be refetched on every run.
+func TestPlanDoesNotRefetchEmptyPicksBeforeLeagueStart(t *testing.T) {
+	st := seedSeason(t)
+	for _, id := range planEntries {
+		writeRaw(t, st, fetch.EntryEventPath(id, 1), emptyPicks)
+		writeRaw(t, st, fetch.EntryEventPath(id, 2), emptyPicks)
+	}
+	writeRaw(t, st, "league/7/details.json", `{"league":{"id":7,"start_event":3},"league_entries":[]}`)
+	part := loadParticipation(st, 7, planEntries)
+
+	plan, hits := runPlanWith(t, st, false, false, part)
+	if len(hits) != 0 || plan.Skipped != 9 {
+		t.Fatalf("pre-start empty picks refetched: hits=%v skipped=%d", hits, plan.Skipped)
+	}
+
+	// A forced refresh still skips settled GW1's empty picks.
+	_, hits = runPlanWith(t, st, true, false, part)
+	for _, h := range hits {
+		if strings.HasSuffix(h, "/event/1") {
+			t.Fatalf("settled pre-start GW1 entry refetched on refresh: %v", hits)
+		}
+	}
+}
+
+func TestPlanRefetchesEmptyPicksInParticipatingGW(t *testing.T) {
+	st := seedSeason(t)
+	writeRaw(t, st, fetch.EntryEventPath(101, 3), emptyPicks)
+	writeRaw(t, st, "league/7/details.json", `{"league":{"id":7,"start_event":2}}`)
+	part := loadParticipation(st, 7, planEntries)
+
+	_, hits := runPlanWith(t, st, false, false, part)
+	if len(hits) != 1 || hits[0] != "/entry/101/event/3" {
+		t.Fatalf("requests = %v, want only the empty participating-GW picks", hits)
+	}
+}
+
+// Without league context an empty picks response cannot be shown to be
+// legitimate, so it is refetched (the pre-existing strict behaviour).
+func TestPlanRefetchesEmptyPicksWhenStartUnknown(t *testing.T) {
+	st := seedSeason(t)
+	writeRaw(t, st, fetch.EntryEventPath(101, 1), emptyPicks)
+	part := loadParticipation(st, 7, planEntries) // no details.json / history.json on disk
+	if part.firstGW(101) != 0 {
+		t.Fatalf("firstGW = %d, want unknown (0)", part.firstGW(101))
+	}
+	_, hits := runPlanWith(t, st, false, false, part)
+	if len(hits) != 1 || hits[0] != "/entry/101/event/1" {
+		t.Fatalf("requests = %v, want only /entry/101/event/1", hits)
+	}
+}
+
+// A manager who joined mid-season: their own history starts at GW2 even though
+// the league started at GW1, so only their GW1 empty picks are exempt.
+func TestPlanLateJoinerEmptyPicksUseEntryHistory(t *testing.T) {
+	st := seedSeason(t)
+	writeRaw(t, st, fetch.EntryEventPath(101, 1), emptyPicks)
+	writeRaw(t, st, fetch.EntryEventPath(102, 1), emptyPicks)
+	writeRaw(t, st, "league/7/details.json", `{"league":{"id":7,"start_event":1}}`)
+	writeRaw(t, st, "entry/102/history.json", `{"entry":102,"history":[{"event":2},{"event":3}]}`)
+	part := loadParticipation(st, 7, planEntries)
+	if part.firstGW(101) != 1 || part.firstGW(102) != 2 {
+		t.Fatalf("firstGW = %d/%d, want 1/2", part.firstGW(101), part.firstGW(102))
+	}
+	_, hits := runPlanWith(t, st, false, false, part)
+	if len(hits) != 1 || hits[0] != "/entry/101/event/1" {
+		t.Fatalf("requests = %v, want only the league-start entry's empty GW1 picks", hits)
+	}
+}
+
+func TestLoadParticipationEdgeCases(t *testing.T) {
+	st := store.NewJSONStore(t.TempDir())
+	writeRaw(t, st, "league/7/details.json", `{"league":`)
+	writeRaw(t, st, "entry/101/history.json", `{"history":[{"event":5},{"event":4},{"event":0}]}`)
+	writeRaw(t, st, "entry/102/history.json", `{"history":[]}`)
+	part := loadParticipation(st, 7, planEntries)
+	if part.leagueStart != 0 || part.firstGW(101) != 4 || part.firstGW(102) != 0 {
+		t.Fatalf("participation = %+v (101 -> %d, 102 -> %d)", part, part.firstGW(101), part.firstGW(102))
+	}
+	if part.beforeStart(102, 1) || !part.beforeStart(101, 3) || part.beforeStart(101, 4) {
+		t.Fatal("beforeStart boundary wrong")
 	}
 }

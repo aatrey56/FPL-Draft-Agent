@@ -204,12 +204,12 @@ func main() {
 		minGW = 1
 	}
 
-	settled, err := settledGWs(st, game.CurrentEvent)
+	settled, err := settledGWs(st, game.CurrentEvent, entryIDs)
 	if err != nil {
 		log.Printf("settled-GW check failed, refetching every GW in range: %v", err)
 	}
 	refreshSquads(pulse.NewClient(), st, maxGW, time.Now())
-	plan := planGWFetches(client, entryIDs, minGW, maxGW, refreshLive, *refetchAll, settled)
+	plan := planGWFetches(client, entryIDs, minGW, maxGW, refreshLive, *refetchAll, settled, loadParticipation(st, *leagueID, entryIDs))
 	logGWFetchPlan(plan, minGW, maxGW, *refetchAll)
 	if err := runFetchTasks(plan.Tasks, *workers); err != nil {
 		log.Fatalf("fetch failed: %v", err)

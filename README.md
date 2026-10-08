@@ -243,16 +243,24 @@ Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
 derive: ownership, then season panel && next-GW xP && 3-GW horizon (`-`-prefixed: a failure warns and waiver/my_week fall back — to the heuristic without the xP file, to the next-GW ranking without the horizon file), then the season's `team_env.json` from that panel (also `-`-prefixed), then waiver and my_week with `SCORER={heuristic,model}` (waiver also `HORIZON={1,3,ros}`, default 3), then the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW's xP and horizon files) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
 
 `make fetch` skips settled gameweeks: a past GW whose bootstrap event is
-`finished` and whose cached `live.json` is a complete payload (non-empty `elements`, each
-with `stats.total_points` and `stats.minutes`) with every fixture `finished`
-(bonus confirmed, not just `finished_provisional`) is not re-downloaded, nor are
-its entry picks; the current GW and anything not yet settled are always refetched,
-and each run logs `requests_fetched` / `requests_skipped`. The draft API has no
-`data_checked` flag, so that is the settled test. `make fetch-all` (`--refetch-all`)
-forces the full per-GW pull, e.g. after an FPL points correction. Independently
-of settlement, a cached live file without player stats, or an entry-event file
-that is malformed or lacks the full 15-pick squad, is re-downloaded on any run
-and logged as `forcing refetch` with its `reason`.
+`finished` and whose cached `live.json` is a complete payload with every fixture
+`finished` (bonus confirmed, not just `finished_provisional`) is not
+re-downloaded, nor are its entry picks; the current GW and anything not yet
+settled are always refetched, and each run logs `requests_fetched` /
+`requests_skipped`. "Complete" means non-empty `elements`, each with integer
+(non-null, non-string, non-fractional) `stats.total_points` and `stats.minutes`,
+and — once that GW's entry picks are cached — an element for every player the
+league's entries picked. The draft API has no `data_checked` flag, so that is
+the settled test. `make fetch-all` (`--refetch-all`) forces the full per-GW
+pull, e.g. after an FPL points correction. Independently of settlement, a cached
+live file failing those checks, or an entry-event file that is malformed or not
+a full squad (15 picks, each with `element` > 0, `position` 1..15, no duplicate
+elements or positions), is re-downloaded on any run and logged as
+`forcing refetch` with its `reason`. The one exception is an empty picks
+response for a GW before the entry took part — before the league's
+`start_event` (`league/<id>/details.json`) or the entry's first
+`history.json` row (late joiners) — which is final and kept. If neither start
+is known, empty picks are treated as corrupt and refetched.
 
 Non-Mac or cron fans: schedule `scripts/autorefresh.sh` (crontab example inline).
 
