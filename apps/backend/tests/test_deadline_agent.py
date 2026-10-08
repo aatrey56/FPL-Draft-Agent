@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+import shutil
 import signal
 import subprocess
 from contextlib import contextmanager
@@ -1039,3 +1041,26 @@ def test_tick_lock_is_released_on_error(tmp_path):
             raise RuntimeError("tick crashed")
     with da.tick_lock(lock_path) as held:
         assert held
+
+
+def test_derive_command_keeps_a_spaced_data_root_as_one_argv_item(tmp_path):
+    root = tmp_path / "fpl review-data"
+    assert da.derive_command("2026-27", root) == [
+        "make", "derive", "SEASON=2026-27", f"DATA_DIR={root.resolve()}"]
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make not installed")
+def test_make_derive_quotes_a_data_root_with_spaces(tmp_path):
+    """Regression: unquoted $(DATA_DIR) split a spaced root into several arguments."""
+    repo = Path(__file__).resolve().parents[3]
+    root = str(tmp_path / "fpl review-data")
+    out = subprocess.run(
+        ["make", "-n", "derive", f"DATA_DIR={root}", "SEASON=2026-27"],
+        cwd=repo, capture_output=True, text=True, check=True).stdout
+    printed = [ln for ln in out.replace("\\\n", " ").splitlines() if "backend.ml" in ln]
+    assert printed, out
+    for line in printed:
+        tokens = shlex.split(line)
+        assert "review-data" not in tokens, line
+        assert not any(t.startswith("review-data") for t in tokens), line
+        assert any(root in t for t in tokens), line
