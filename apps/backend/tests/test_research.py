@@ -257,8 +257,11 @@ AGES = {url: [PAGE_AGE] for url in SEEN}
 
 def _decide(evidence, seen=SEEN, cutoff="2026-09-26", ages=AGES, verdict="supports", cand=None,
             **fields):
-    """Run the whole gate: deterministic checks, a stub verifier, decide."""
-    finding = _finding(evidence=evidence, **fields)
+    """Run the whole gate as ``run`` does: validate, deterministic checks, a
+    stub verifier, decide."""
+    finding, error = rs.validate_finding(_finding(evidence=evidence, **fields), cand or _cand(), GW,
+                                         allowed_urls=set(SEEN) | set(seen))
+    assert error is None, error
     rs.annotate_evidence(finding, seen, ages, names=rs.player_names(cand or _cand()), now=NOW,
                          cutoff=cutoff)
     for item in rs.verification_queue(finding):
@@ -299,7 +302,7 @@ def test_verified_tier_one_source_is_applied_and_evidence_annotated():
         "tier": 1, "outlet": "wolves", "verified": True, "names_player": True,
         "status_language": "supports", "page_age": PAGE_AGE, "source_published_at": "2026-10-07",
         "date_problem": None, "fresh": True, "verifier": "supports", "counts": True,
-        "checks_failed": [], "llm_published_at": None}
+        "checks_failed": [], "llm_published_at": "2026-10-07"}
 
 
 def test_two_independent_tier_two_outlets_are_applied_but_one_outlet_twice_is_not():
@@ -1212,7 +1215,8 @@ def test_main_exit_codes(tmp_path, monkeypatch):
 def test_non_finite_or_non_positive_caps_exit_2(tmp_path, monkeypatch, value):
     root = _data_root(tmp_path)
     base = ["run", "--phase", "lineup", "--data-root", str(root)]
-    assert rs.main(base + ["--max-usd", value]) == rs.EXIT_USAGE
+    # "--max-usd=-inf": argparse would read a bare "-inf" as an option flag
+    assert rs.main(base + [f"--max-usd={value}"]) == rs.EXIT_USAGE
     monkeypatch.setenv("RESEARCH_MAX_USD", value)
     assert rs.main(base) == rs.EXIT_USAGE
     monkeypatch.delenv("RESEARCH_MAX_USD")
