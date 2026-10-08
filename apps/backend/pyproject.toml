@@ -6,8 +6,8 @@ requires-python = ">=3.11"
 dependencies = [
     "pandas>=2.2",
     "pyarrow>=15",
-    "requests==2.32.5",
-    "python-dotenv==1.2.3",
+    "requests==2.34.2",
+    "python-dotenv==1.2.4",
 ]
 
 [dependency-groups]
