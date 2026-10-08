@@ -34,6 +34,7 @@ def dumps_strict(value: Any, **kwargs: Any) -> str:
 
 def write_atomic(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` via a temp file + rename (never half-written)."""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
