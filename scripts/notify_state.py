@@ -9,8 +9,11 @@ state in ~/.fplcopilot/notify_state.json, and emits macOS notifications
   * gameweek finished          -> "GW N final — ask Claude for gw_report + waiver plan"
   * waivers processed          -> "free agency open until lineup lock"
   * trades due   in <24h       (once per event)
-  * waivers due  in <24h, <3h  (once each per event)
-  * lineup lock  in <24h, <2h  (once each per event)
+  * waivers due  in <24h       (once per event)
+  * lineup lock  in <24h       (once per event)
+
+The close-to-deadline reminders (3h / 2h) moved to backend.ml.deadline_agent,
+which delivers a researched checklist inside the user's awake hours instead.
 
 Pure logic lives in compute_notifications() so it can be unit-tested;
 side effects (files, osascript) stay in main().
@@ -26,8 +29,8 @@ from pathlib import Path
 
 THRESHOLDS = {
     "trades_time": [("24h", timedelta(hours=24))],
-    "waivers_time": [("24h", timedelta(hours=24)), ("3h", timedelta(hours=3))],
-    "deadline_time": [("24h", timedelta(hours=24)), ("2h", timedelta(hours=2))],
+    "waivers_time": [("24h", timedelta(hours=24))],
+    "deadline_time": [("24h", timedelta(hours=24))],
 }
 LABELS = {"trades_time": "trades due", "waivers_time": "waivers due",
           "deadline_time": "lineup lock"}

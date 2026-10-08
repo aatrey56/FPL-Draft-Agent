@@ -13,6 +13,10 @@
   tz-correct) + macOS notifications.
 - Ops: root Makefile, macOS autopilot (always-on server + 15-min refresh),
   Python packaging moved to uv (pyproject + lockfile).
+- Deadline checklist agent (`backend.ml.deadline_agent`, `docs/DEADLINE_AGENT.md`):
+  researched, awake-hours-aware checklists before each deadline via a 5-minute
+  launchd tick (`com.fplcopilot.deadline`); `notify_state.py` no longer sends
+  the 3h/2h reminders.
 - Tool surface consolidated 34 → 14; legacy OpenAI/FastAPI chat stack deprecated.
 
 ## 0.2.0

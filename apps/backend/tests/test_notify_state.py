@@ -18,17 +18,22 @@ EVENTS = [{
 
 def test_threshold_notifications_fire_once():
     msgs, state = compute_notifications(EVENTS, {}, {}, NOW)
-    # waivers within 24h fires; 3h not yet; lineup lock 29.5h away -> nothing.
+    # waivers within 24h fires; lineup lock 29.5h away -> nothing.
     assert any("waivers due" in m and "within 24h" in m for m in msgs)
     assert not any("lineup lock" in m for m in msgs)
     # Re-run with same state: nothing repeats.
     msgs2, _ = compute_notifications(EVENTS, {}, state, NOW)
     assert msgs2 == []
-    # Later, inside 3h: the tighter warning fires exactly once.
-    msgs3, state3 = compute_notifications(EVENTS, {}, state, NOW + timedelta(hours=3))
-    assert any("under 3h left" in m for m in msgs3)
-    msgs4, _ = compute_notifications(EVENTS, {}, state3, NOW + timedelta(hours=3, minutes=5))
+    # Inside 3h of the waiver deadline there is no extra reminder any more
+    # (the deadline agent owns that), and the lineup lock's 24h notice fires once.
+    msgs3, state3 = compute_notifications(EVENTS, {}, state, NOW + timedelta(hours=7))
+    assert [m for m in msgs3 if "lineup lock" in m and "within 24h" in m]
+    assert not any("under" in m for m in msgs3)
+    msgs4, _ = compute_notifications(EVENTS, {}, state3, NOW + timedelta(hours=9))
     assert msgs4 == []
+    # Two hours before the lineup lock: still no tight-window reminder.
+    msgs5, _ = compute_notifications(EVENTS, {}, state3, NOW + timedelta(hours=27))
+    assert msgs5 == []
 
 
 def test_transition_notifications():

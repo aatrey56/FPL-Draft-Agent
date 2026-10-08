@@ -5,7 +5,7 @@ RAW_SEASON := ../../data/raw/$(SEASON)
 DERIVED_SEASON := ../../data/derived/$(SEASON)
 GO_ROOTS := --raw-root ../../data/raw --derived-root ../../data/derived
 
-.PHONY: serve fetch fetch-all derive weekly matchday preflight backtest xp
+.PHONY: serve fetch fetch-all derive weekly matchday preflight backtest xp checklist-preview checklist-plan
 
 ## serve: run the MCP server (Ctrl-C to stop; restart after every git pull)
 serve:
@@ -114,9 +114,20 @@ update:
 stop:
 	-launchctl bootout gui/$$(id -u)/com.fplcopilot.server
 	-launchctl bootout gui/$$(id -u)/com.fplcopilot.refresh
+	-launchctl bootout gui/$$(id -u)/com.fplcopilot.deadline
 start:
 	launchctl bootstrap gui/$$(id -u) $$HOME/Library/LaunchAgents/com.fplcopilot.server.plist
 	launchctl bootstrap gui/$$(id -u) $$HOME/Library/LaunchAgents/com.fplcopilot.refresh.plist
+	launchctl bootstrap gui/$$(id -u) $$HOME/Library/LaunchAgents/com.fplcopilot.deadline.plist
+
+## checklist-preview: render the next deadline's checklist to stdout, sending nothing
+## (KIND={trades,waivers,lineup} picks the kind; default: whichever deadline is next)
+checklist-preview:
+	cd apps/backend && uv run python -m backend.ml.deadline_agent preview --season $(SEASON) $(if $(KIND),--kind $(KIND))
+
+## checklist-plan: the next deadlines with their computed research + delivery times
+checklist-plan:
+	cd apps/backend && uv run python -m backend.ml.deadline_agent plan --season $(SEASON)
 
 ## tui: live matchup dashboard in the terminal (game days; ←/→ switch matchup, r refresh, q quit)
 tui:
