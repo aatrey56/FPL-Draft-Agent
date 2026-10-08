@@ -910,13 +910,14 @@ def test_expensive_request_is_never_started_over_the_cap():
 
 def test_continuation_and_extraction_are_each_admitted(monkeypatch):
     monkeypatch.setattr(rs, "worst_case_usd", lambda params, fallback: 0.5)
-    # research costs ~$0.08 per response; a $0.6 cap admits the first request only
+    # each request reserves $0.5 and research settles at ~$0.08: a $0.55 cap
+    # admits the first request but not a second ($0.08 spent + $0.5 > $0.55)
     pause = FakeClient(research=lambda call: _research_response("pause_turn"))
-    result = rs.research_player(pause, _cand(), CTX, rs.Config(), _guard(cap=0.6))
+    result = rs.research_player(pause, _cand(), CTX, rs.Config(), _guard(cap=0.55))
     assert result.status == "budget" and "research not started" in result.reason
     assert len(pause.calls) == 1 and result.cost_usd == pytest.approx(RESEARCH_USD)
     done = FakeClient()
-    result = rs.research_player(done, _cand(), CTX, rs.Config(), _guard(cap=0.6))
+    result = rs.research_player(done, _cand(), CTX, rs.Config(), _guard(cap=0.55))
     assert result.status == "budget" and "extract not started" in result.reason
     assert len(done.calls) == 1 and result.cost_usd == pytest.approx(RESEARCH_USD)
 
