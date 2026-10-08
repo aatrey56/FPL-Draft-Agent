@@ -571,6 +571,64 @@ def test_legacy_key_for_this_seasons_deadline_is_migrated(tmp_path):
     assert state["2026-27:9:lineup"] == {"sent": sent} and "9:lineup" not in state
 
 
+@pytest.mark.parametrize("break_calendar", [
+    lambda path: path.unlink(),
+    lambda path: path.write_text("{not json"),
+    lambda path: path.write_text(json.dumps({"events": []})),
+], ids=["missing", "corrupt", "empty"])
+def test_legacy_state_is_untouched_without_a_calendar_then_migrated_not_resent(
+        tmp_path, break_calendar):
+    sources = make_world(tmp_path)
+    env, recorder = make_env(tmp_path, sources)
+    calendar = sources.raw_dir / "bootstrap" / "bootstrap-static.json"
+    good_calendar = calendar.read_text()
+    sent = iso(DELIVER_AT)
+    legacy_state = {"9:lineup": {"sent": sent}, "last_checklist_at": sent}
+    da.save_state(env.state_path, legacy_state)
+    saved = env.state_path.read_text()
+
+    break_calendar(calendar)
+    log = da.tick(env, DELIVER_AT + timedelta(minutes=5))
+    assert recorder.notes == [] and recorder.commands == [] and recorder.pushes == []
+    assert env.state_path.read_text() == saved                      # not even rewritten
+    assert log == ["state: 1 un-namespaced entries left untouched (no 2026-27 calendar loaded)"]
+    assert not env.checklist_dir.exists()
+
+    calendar.write_text(good_calendar)
+    da.tick(env, DELIVER_AT + timedelta(minutes=10))
+    assert recorder.notes == [] and recorder.commands == []         # already sent: no re-send
+    state = da.load_state(env.state_path)
+    assert state["2026-27:9:lineup"] == {"sent": sent} and "9:lineup" not in state
+
+
+def test_derive_command_default_and_custom_root(tmp_path):
+    assert da.derive_command("2026-27") == ["make", "derive", "SEASON=2026-27"]
+    custom = tmp_path / "other" / "data"
+    assert da.derive_command("2026-27", custom) == [
+        "make", "derive", "SEASON=2026-27", f"DATA_DIR={custom.resolve()}"]
+
+
+def test_tick_passes_a_custom_data_root_to_derive(tmp_path):
+    custom = tmp_path / "custom-data"
+    env, recorder = make_env(tmp_path, make_world(tmp_path))
+    env.data_root = custom
+    da.tick(env, DELIVER_AT)
+    derive = [cmd for cmd, _ in recorder.commands if cmd[:2] == ["make", "derive"]]
+    assert derive == [["make", "derive", "SEASON=2026-27", f"DATA_DIR={custom.resolve()}"]]
+
+
+def test_tick_without_a_data_root_leaves_derive_unchanged(tmp_path):
+    env, recorder = make_env(tmp_path, make_world(tmp_path))
+    da.tick(env, DELIVER_AT)
+    derive = [cmd for cmd, _ in recorder.commands if cmd[:2] == ["make", "derive"]]
+    assert derive == [["make", "derive", "SEASON=2026-27"]]
+
+
+def test_build_env_records_only_an_explicit_data_root(tmp_path):
+    assert da.build_env("2026-27", state_dir=tmp_path).data_root is None
+    assert da.build_env("2026-27", tmp_path / "d", state_dir=tmp_path).data_root == tmp_path / "d"
+
+
 def test_migrate_legacy_state_rules():
     deadline = da.Deadline(9, "lineup", LINEUP_AT)
     state = {"9:lineup": {"research": {"research": "ok"}},        # no timestamp -> dropped

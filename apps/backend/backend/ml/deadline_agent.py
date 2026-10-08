@@ -811,11 +811,25 @@ def derive_lock(repo: Path, wait_s: int = DERIVE_LOCK_WAIT_S,
                 lock.rmdir()
 
 
+def derive_command(season: str, data_root: Path | None = None) -> list[str]:
+    """``make derive`` for ``season``; a custom ``data_root`` is passed as the
+    absolute ``DATA_DIR`` so every stage reads and writes the same tree the
+    checklist is rendered from (no root -> the Makefile's default ``data/``)."""
+    command = ["make", "derive", f"SEASON={season}"]
+    if data_root is not None:
+        command.append(f"DATA_DIR={Path(data_root).resolve()}")
+    return command
+
+
 def run_research_and_derive(deadline: Deadline, repo: Path, season: str,
                             runner: Callable[[list[str], Path, int], int] = default_runner,
                             research_ok: Callable[[], bool] = research_available,
-                            lock: Callable[[Path], Any] = derive_lock) -> dict[str, str]:
-    """-> ``{"research": ok|skipped|failed|absent, "derive": ok|failed|busy}``."""
+                            lock: Callable[[Path], Any] = derive_lock,
+                            data_root: Path | None = None) -> dict[str, str]:
+    """-> ``{"research": ok|skipped|failed|absent, "derive": ok|failed|busy}``.
+
+    ``data_root`` (``None`` = the repo's ``data/``) is handed to ``make derive``.
+    """
     outcome = {"research": "absent", "derive": "failed"}
     backend = repo / "apps" / "backend"
     if research_ok():
@@ -828,7 +842,7 @@ def run_research_and_derive(deadline: Deadline, repo: Path, season: str,
         if not held:
             outcome["derive"] = "busy"
         else:
-            code = runner(["make", "derive", f"SEASON={season}"], repo, DERIVE_TIMEOUT_S)
+            code = runner(derive_command(season, data_root), repo, DERIVE_TIMEOUT_S)
             outcome["derive"] = "ok" if code == 0 else "failed"
     return outcome
 
@@ -856,6 +870,7 @@ class Env:
     sources: Sources
     state_path: Path
     checklist_dir: Path
+    data_root: Path | None = None     # custom --data-root; None = <repo>/data
     runner: Callable[[list[str], Path, int], int] = default_runner
     research_ok: Callable[[], bool] = research_available
     lock: Callable[[Path], Any] = derive_lock
@@ -896,7 +911,12 @@ def _tick_locked(env: Env, clock: Callable[[], datetime]) -> list[str]:
     deadlines = deadlines_from_events(load_events(env.sources.raw_dir))
     log: list[str] = []
     legacy = len([k for k in state if LEGACY_KEY.match(k)])
-    if legacy:
+    if legacy and not deadlines:
+        # Without this season's calendar nothing can be matched; migrating now
+        # would drop an already-sent entry and re-send it once the calendar returns.
+        log.append(f"state: {legacy} un-namespaced entries left untouched "
+                   f"(no {env.season} calendar loaded)")
+    elif legacy:
         moved = migrate_legacy_state(state, env.season, deadlines)
         log.append(f"state: migrated {len(moved)} of {legacy} un-namespaced entries "
                    f"under {env.season}; dropped the rest as earlier-season history")
@@ -924,7 +944,8 @@ def _tick_locked(env: Env, clock: Callable[[], datetime]) -> list[str]:
             continue
         if "research" not in entry:
             entry["research"] = run_research_and_derive(
-                deadline, env.repo, env.season, env.runner, env.research_ok, env.lock)
+                deadline, env.repo, env.season, env.runner, env.research_ok, env.lock,
+                env.data_root)
             log.append(f"research {key}: {entry['research']}")
             save_state(env.state_path, state)
             now = clock()       # research + lock wait + derive can take many minutes
@@ -999,7 +1020,8 @@ def build_env(season: str, data_root: Path | None = None, state_dir: Path = STAT
                         league_id=os.getenv("LEAGUE_ID") or None,
                         entry_id=os.getenv("ENTRY_ID") or None),
         state_path=state_dir / "deadline_agent.json",
-        checklist_dir=state_dir / "checklists")
+        checklist_dir=state_dir / "checklists",
+        data_root=data_root)
 
 
 def main(argv: list[str] | None = None) -> int:

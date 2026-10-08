@@ -1,8 +1,11 @@
 SEASON ?= 2026-27
 SCORER ?= model
 HORIZON ?= 3
-RAW_SEASON := ../../data/raw/$(SEASON)
-DERIVED_SEASON := ../../data/derived/$(SEASON)
+# DATA_DIR is the data root as seen from apps/backend (override with an absolute path);
+# `derive` reads and writes only under it.
+DATA_DIR ?= ../../data
+RAW_SEASON := $(DATA_DIR)/raw/$(SEASON)
+DERIVED_SEASON := $(DATA_DIR)/derived/$(SEASON)
 GO_ROOTS := --raw-root ../../data/raw --derived-root ../../data/derived
 
 .PHONY: serve fetch fetch-all derive weekly matchday preflight backtest xp checklist-preview checklist-plan
@@ -43,22 +46,23 @@ fetch-all:
 ## SCORER={heuristic,model} picks the next-GW xP source for waiver/my_week.
 ## HORIZON={1,3,ros} picks the gain waiver_plan ranks on under SCORER=model (default 3).
 ## Reads/writes season-nested paths only; the flat data/ layout is the 2025-26 archive.
+## DATA_DIR=<root> redirects every stage (the archive panel/seasons table are read from it too).
 derive:
-	cd apps/backend && uv run python -m backend.ml.ownership --season $(SEASON)
+	cd apps/backend && uv run python -m backend.ml.ownership --season $(SEASON) --data-root $(DATA_DIR)
 	-cd apps/backend && uv run python -m backend.ml.gameweeks --season $(SEASON) \
 		--out $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
 		--gw-root $(RAW_SEASON)/gw --bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json \
-		&& uv run python -m backend.ml.matchmodel --gw next --season $(SEASON) \
-		--panel ../../data/derived/ml/player_gameweeks.parquet $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
+		&& uv run python -m backend.ml.matchmodel --gw next --season $(SEASON) --out $(DERIVED_SEASON)/ml \
+		--panel $(DATA_DIR)/derived/ml/player_gameweeks.parquet $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
 		--bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json \
-		&& uv run python -m backend.ml.matchmodel --gw next --horizon --season $(SEASON) \
-		--panel ../../data/derived/ml/player_gameweeks.parquet $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
+		&& uv run python -m backend.ml.matchmodel --gw next --horizon --season $(SEASON) --out $(DERIVED_SEASON)/ml \
+		--panel $(DATA_DIR)/derived/ml/player_gameweeks.parquet $(DERIVED_SEASON)/ml/player_gameweeks.parquet \
 		--bootstrap $(RAW_SEASON)/bootstrap/bootstrap-static.json
-	-cd apps/backend && uv run python -m backend.ml.teamenv --season $(SEASON) --data-root ../../data
-	cd apps/backend && uv run python -m backend.ml.waiver --season $(SEASON) --scorer $(SCORER) --horizon $(HORIZON)
-	cd apps/backend && uv run python -m backend.ml.myweek --season $(SEASON) --scorer $(SCORER)
-	cd apps/backend && uv run python -m backend.ml.player_values --season $(SEASON)
-	cd apps/backend && uv run python -m backend.ml.trackrecord --season $(SEASON) --data-root ../../data
+	-cd apps/backend && uv run python -m backend.ml.teamenv --season $(SEASON) --data-root $(DATA_DIR)
+	cd apps/backend && uv run python -m backend.ml.waiver --season $(SEASON) --scorer $(SCORER) --horizon $(HORIZON) --data-root $(DATA_DIR)
+	cd apps/backend && uv run python -m backend.ml.myweek --season $(SEASON) --scorer $(SCORER) --data-root $(DATA_DIR)
+	cd apps/backend && uv run python -m backend.ml.player_values --season $(SEASON) --data-root $(DATA_DIR)
+	cd apps/backend && uv run python -m backend.ml.trackrecord --season $(SEASON) --data-root $(DATA_DIR)
 
 ## weekly: the whole weekly loop (fetch + derive)
 weekly: fetch derive

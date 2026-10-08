@@ -68,7 +68,11 @@ idempotent; state lives in `~/.fplcopilot/deadline_agent.json`, keyed by
 suppresses this season's). Pre-namespacing `<gw>:<kind>` entries are migrated
 under the current season only when their sent/missed time is within 11 days
 before / 48 h after this season's matching deadline; anything else is dropped
-as earlier-season history. A tick holds an exclusive `flock` on
+as earlier-season history. The migration runs only once this season's calendar
+loads with at least one deadline; with the calendar missing/unreadable the
+legacy entries are left untouched (nothing is migrated, dropped, sent or
+marked) so an already-sent checklist is not re-sent when the calendar returns.
+A tick holds an exclusive `flock` on
 `~/.fplcopilot/deadline_agent.lock` from loading the state to its final save:
 an overlapping tick (launchd + a manual run) logs *another tick holds the lock;
 skipped* and exits 0, so research and delivery never run twice. State and
@@ -78,7 +82,10 @@ checklist files are written via a uniquely named temp file + rename.
    `uv run python -m backend.ml.research run --phase <waivers|lineup|trades> --gw N`
    if that module exists (exit 0 ok, exit 3 = no API key → skipped silently,
    anything else → the checklist says *research failed*), then `make derive`
-   (under `autorefresh.sh`'s lock so two derives never overlap; if the lock is
+   (with `--data-root /custom` it runs `make derive DATA_DIR=<abs custom root>`,
+   which redirects every stage — ownership, panel, xP, waiver, my_week,
+   player_values, track record — to that tree; without the flag the Makefile
+   default `data/` is used) (under `autorefresh.sh`'s lock so two derives never overlap; if the lock is
    busy for 5 min the derive is skipped and the artifacts from the last refresh
    are used). Both commands run in their own process group with a 15-min
    timeout; on timeout the whole group gets SIGTERM, then SIGKILL after 10 s,
