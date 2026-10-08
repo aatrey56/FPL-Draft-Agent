@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -12,11 +13,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/fetch"
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/ledger"
+	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/points"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/store"
 )
 
@@ -75,7 +80,30 @@ func seedSeason(t *testing.T) *store.JSONStore {
 			write(fetch.EntryEventPath(id, gw), validEntryEvent)
 		}
 	}
+	// GW1 was already seen settled an hour ago, before the entry files above
+	// were (notionally) fetched, so its picks count as post-finalisation.
+	markFinalisedAt(t, st, 1, time.Now().Add(-time.Hour))
 	return st
+}
+
+// markFinalisedAt writes gw's finalisation marker with the given mtime.
+func markFinalisedAt(t *testing.T, st *store.JSONStore, gw int, at time.Time) {
+	t.Helper()
+	if err := st.WriteRaw(entriesFinalPath(gw), []byte(`{}`), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(st.Path(entriesFinalPath(gw)), at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ageFile backdates a cached raw file's mtime.
+func ageFile(t *testing.T, st *store.JSONStore, rel string, age time.Duration) {
+	t.Helper()
+	at := time.Now().Add(-age)
+	if err := os.Chtimes(st.Path(rel), at, at); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // fakeDraftAPI answers every GET with a valid payload for its endpoint and
@@ -311,7 +339,10 @@ func TestPlanRefetchesInvalidEntryEventOfSettledGW(t *testing.T) {
 			if strings.Join(hits, ",") != strings.Join(want, ",") {
 				t.Fatalf("requests = %v, want %v", hits, want)
 			}
-			// Same with no refresh at all: the invalid file alone is fetched.
+			// Same with no refresh at all: the invalid file alone is fetched. The
+			// refresh above confirmed GW2's live payload and re-downloaded its
+			// picks afterwards, so GW2 counts as already finalised.
+			markFinalisedAt(t, st, 2, time.Now().Add(-time.Hour))
 			if err := st.WriteRaw(fetch.EntryEventPath(102, 1), []byte(body), false); err != nil {
 				t.Fatal(err)
 			}
@@ -579,5 +610,218 @@ func TestLoadParticipationEdgeCases(t *testing.T) {
 	}
 	if part.beforeStart(102, 1) || !part.beforeStart(101, 3) || part.beforeStart(101, 4) {
 		t.Fatal("beforeStart boundary wrong")
+	}
+}
+
+// agedGW1Picks makes GW1's entry files predate its finalisation marker (the
+// marker is written now by the first run that sees GW1 settled).
+func agedGW1Picks(t *testing.T, st *store.JSONStore) {
+	t.Helper()
+	if err := os.Remove(st.Path(entriesFinalPath(1))); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range planEntries {
+		ageFile(t, st, fetch.EntryEventPath(id, 1), 2*time.Hour)
+	}
+}
+
+func hitsForGW(hits []string, gw int) []string {
+	var out []string
+	for _, h := range hits {
+		if strings.HasSuffix(h, fmt.Sprintf("/event/%d", gw)) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+func TestPlanRefetchesPrefinalisationPicksOnceThenSkips(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	st := seedSeason(t)
+	agedGW1Picks(t, st)
+
+	// Settled GW1, no forced refresh: its picks predate finalisation, so both
+	// are refetched — and nothing else of GW1 is.
+	plan, hits := runPlan(t, st, false, false)
+	want := []string{"/entry/101/event/1", "/entry/102/event/1"}
+	if got := hitsForGW(hits, 1); strings.Join(got, ",") != strings.Join(want, ",") || len(hits) != 2 {
+		t.Fatalf("first run requests = %v, want %v", hits, want)
+	}
+	if plan.Fetched != 2 {
+		t.Fatalf("fetched = %d, want 2", plan.Fetched)
+	}
+	for _, want := range []string{"forcing refetch", "entry_event entry=101 gw=1", "picks fetched before GW finalised"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("log %q missing %q", buf.String(), want)
+		}
+	}
+
+	// The marker was written once; the refetched files are newer, so a second
+	// run (even with a forced refresh) skips GW1 entirely.
+	marker, err := os.Stat(st.Path(entriesFinalPath(1)))
+	if err != nil {
+		t.Fatalf("marker missing: %v", err)
+	}
+	_, hits = runPlan(t, st, true, false)
+	if got := hitsForGW(hits, 1); len(got) != 0 {
+		t.Fatalf("GW1 refetched a second time: %v", got)
+	}
+	again, err := os.Stat(st.Path(entriesFinalPath(1)))
+	if err != nil || !again.ModTime().Equal(marker.ModTime()) {
+		t.Fatalf("marker rewritten: %v vs %v (err %v)", marker.ModTime(), again.ModTime(), err)
+	}
+}
+
+func TestPlanSkipsPostFinalisationPicks(t *testing.T) {
+	st := seedSeason(t) // marker an hour old, picks written afterwards
+	_, hits := runPlan(t, st, true, false)
+	if got := hitsForGW(hits, 1); len(got) != 0 {
+		t.Fatalf("post-finalisation GW1 picks refetched: %v", got)
+	}
+}
+
+func TestPlanRefetchAllUnchangedByFinalisationMarker(t *testing.T) {
+	st := seedSeason(t)
+	_, hits := runPlan(t, st, true, true)
+	if strings.Join(hits, ",") != strings.Join(gwPaths(1, 2, 3), ",") {
+		t.Fatalf("--refetch-all requests = %v, want %v", hits, gwPaths(1, 2, 3))
+	}
+	// Without a marker the full pull still happens once, and records it.
+	agedGW1Picks(t, st)
+	_, hits = runPlan(t, st, true, true)
+	if strings.Join(hits, ",") != strings.Join(gwPaths(1, 2, 3), ",") {
+		t.Fatalf("--refetch-all without marker requests = %v", hits)
+	}
+	if !st.Exists(entriesFinalPath(1)) {
+		t.Fatal("refetch-all did not record GW1 finalisation")
+	}
+}
+
+func TestPlanExemptsEmptyPrestartPicksFromFinalisationCheck(t *testing.T) {
+	st := seedSeason(t)
+	for _, id := range planEntries {
+		writeRaw(t, st, fetch.EntryEventPath(id, 1), emptyPicks)
+	}
+	writeRaw(t, st, "league/7/details.json", `{"league":{"id":7,"start_event":2}}`)
+	part := loadParticipation(st, 7, planEntries)
+	agedGW1Picks(t, st)
+
+	_, hits := runPlanWith(t, st, true, false, part)
+	if got := hitsForGW(hits, 1); len(got) != 0 {
+		t.Fatalf("pre-start empty picks refetched for finalisation: %v", got)
+	}
+	// GW1 is still reported settled.
+	settled, err := settledGWs(st, 3, planEntries)
+	if err != nil || !settled[1] {
+		t.Fatalf("GW1 settled = %v, err %v", settled[1], err)
+	}
+}
+
+// loadTotal scores entryID's cached picks for gw against its cached live file
+// the way the points builder does.
+func loadTotal(t *testing.T, st *store.JSONStore, entryID, gw int) int {
+	t.Helper()
+	rawPicks, err := st.ReadRaw(fetch.EntryEventPath(entryID, gw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ev ledger.EntryEventRaw
+	if err := json.Unmarshal(rawPicks, &ev); err != nil {
+		t.Fatal(err)
+	}
+	rawLive, err := st.ReadRaw(fetch.EventLivePath(gw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shaped struct {
+		Elements map[string]struct {
+			Stats points.LiveStats `json:"stats"`
+		} `json:"elements"`
+	}
+	if err := json.Unmarshal(rawLive, &shaped); err != nil {
+		t.Fatal(err)
+	}
+	byElement := map[int]points.LiveStats{}
+	for id, el := range shaped.Elements {
+		n, err := strconv.Atoi(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		byElement[n] = el.Stats
+	}
+	snap := ledger.BuildEntrySnapshot(7, entryID, gw, ev)
+	return points.BuildResult(7, entryID, gw, snap, byElement).TotalPoints
+}
+
+// Regression: picks cached mid-GW lack the automatic substitution, so the XI
+// scored 60; after settlement the refetched final picks move the bench player
+// into the XI and the entry scores 69.
+func TestPlanRefetchedFinalPicksIncludeAutoSub(t *testing.T) {
+	st := store.NewJSONStore(t.TempDir())
+	writeRaw(t, st, "bootstrap/bootstrap-static.json", `{"events":{"current":2,"next":3,"data":[{"id":1,"finished":true},{"id":2,"finished":false}]}}`)
+	elements := make([]string, 0, draftSquadSize)
+	for id := 1; id <= draftSquadSize; id++ {
+		pts, mins := 6, 90
+		switch id {
+		case 1: // starter who never played
+			pts, mins = 0, 0
+		case 12: // first outfield bench player who came on
+			pts = 9
+		}
+		elements = append(elements, fmt.Sprintf(`"%d":{"stats":{"minutes":%d,"total_points":%d}}`, id, mins, pts))
+	}
+	liveBody := `{"elements":{` + strings.Join(elements, ",") + `},"fixtures":[{"id":1,"finished":true}]}`
+	writeRaw(t, st, fetch.EventLivePath(1), liveBody)
+
+	midGW := `{"entry_history":{},"picks":` + squadPicks(draftSquadSize) + `,"subs":[]}`
+	finalPicks := make([]string, 0, draftSquadSize)
+	for pos := 1; pos <= draftSquadSize; pos++ {
+		el := pos
+		switch pos { // the auto-sub swaps player 1 (pos 1) with player 12 (pos 12)
+		case 1:
+			el = 12
+		case 12:
+			el = 1
+		}
+		finalPicks = append(finalPicks, fmt.Sprintf(`{"element":%d,"position":%d}`, el, pos))
+	}
+	finalBody := `{"entry_history":{},"picks":[` + strings.Join(finalPicks, ",") + `],"subs":[{"element_in":12,"element_out":1,"event":1}]}`
+
+	writeRaw(t, st, fetch.EntryEventPath(101, 1), midGW)
+	ageFile(t, st, fetch.EntryEventPath(101, 1), 2*time.Hour)
+	if got := loadTotal(t, st, 101, 1); got != 60 {
+		t.Fatalf("mid-GW total = %d, want 60", got)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/live") {
+			fmt.Fprint(w, liveBody)
+			return
+		}
+		fmt.Fprint(w, finalBody)
+	}))
+	t.Cleanup(srv.Close)
+	client := fetch.NewClient(st)
+	client.HTTP, client.BaseURL, client.Sleep = srv.Client(), srv.URL, 0
+
+	for run := 1; run <= 2; run++ {
+		settled, err := settledGWs(st, 2, []int{101})
+		if err != nil || !settled[1] {
+			t.Fatalf("run %d: GW1 settled=%v err=%v", run, settled[1], err)
+		}
+		plan := planGWFetches(client, []int{101}, 1, 1, false, false, settled, participation{})
+		wantFetched := map[int]int{1: 1, 2: 0}[run]
+		if plan.Fetched != wantFetched {
+			t.Fatalf("run %d: fetched %d, want %d", run, plan.Fetched, wantFetched)
+		}
+		if err := runFetchTasks(plan.Tasks, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := loadTotal(t, st, 101, 1); got != 69 {
+		t.Fatalf("final total = %d, want 69 (substitute included)", got)
 	}
 }

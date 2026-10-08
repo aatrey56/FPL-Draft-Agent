@@ -31,6 +31,17 @@ package main
 // structured "forcing refetch" log line, because downstream builders silently
 // turn a partial file into zero points or a missing GW.
 //
+// A settled GW's entry-event files are only skipped if they were downloaded
+// AFTER the GW was finalised: once a GW is over, the draft API's picks reflect
+// automatic substitutions (subs moved into positions 1-11), so a squad cached
+// mid-GW would make BuildResult drop the substitute's points. The payload
+// cannot tell the difference (subs is [] both mid-GW and for a GW with no subs
+// made), so the first run to see a GW settled writes a marker file
+// (gw/<n>/entries_final.json) and every non-empty entry-event file older than
+// the marker's mtime is refetched once — afterwards it is newer than the marker
+// and skipped. Both mtimes come from the same filesystem clock, and a file
+// written after the marker can never compare older than it.
+//
 // Entry-event files are immutable-but-empty for gameweeks before an entry took
 // part (a league that started after GW1, or a late joiner): see participation.
 
@@ -39,8 +50,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/fetch"
 	"github.com/aatrey56/FPL-Draft-Agent/apps/mcp-server/internal/ledger"
@@ -292,6 +305,55 @@ func liveConfirmed(st *store.JSONStore, gw int, entryIDs []int) bool {
 	return true
 }
 
+// entriesFinalPath is the marker recording that a GW was first seen settled;
+// its mtime is the cut-off between entry-event files that may predate the
+// GW's automatic substitutions and files that cannot.
+func entriesFinalPath(gw int) string {
+	return fmt.Sprintf("gw/%d/entries_final.json", gw)
+}
+
+// markEntriesFinal returns the time gw was first seen settled, writing the
+// marker (atomically, via the store) when this is the first sighting. ok is
+// false when no marker exists and none could be written (read-only client or
+// write error); callers then treat every cached picks file as predating
+// finalisation.
+func markEntriesFinal(client *fetch.Client, gw int) (at time.Time, ok bool) {
+	rel := entriesFinalPath(gw)
+	if !client.Store.Exists(rel) {
+		if client.DisableWrite {
+			return time.Time{}, false
+		}
+		body := fmt.Sprintf(`{"gw":%d,"settled_seen_at":%q}`, gw, time.Now().UTC().Format(time.RFC3339))
+		if err := client.Store.WriteRaw(rel, []byte(body), false); err != nil {
+			slog.Warn("could not record GW finalisation", "gw", gw, "error", err.Error())
+			return time.Time{}, false
+		}
+	}
+	info, err := os.Stat(client.Store.Path(rel))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
+// picksPredateFinalisation reports whether the cached entry-event file at path
+// (body raw) was downloaded before the GW's finalisation marker, so its picks
+// may lack automatic substitutions. An empty picks body allowed for a GW
+// before the entry took part never changes and is exempt.
+func picksPredateFinalisation(path string, raw []byte, allowEmpty bool, finalAt time.Time, haveMarker bool) bool {
+	var ev struct {
+		Picks []json.RawMessage `json:"picks"`
+	}
+	if allowEmpty && json.Unmarshal(raw, &ev) == nil && len(ev.Picks) == 0 {
+		return false
+	}
+	if !haveMarker {
+		return true
+	}
+	info, err := os.Stat(path)
+	return err != nil || info.ModTime().Before(finalAt)
+}
+
 // gwFetchPlan is the per-GW request list for one run plus the counts logged.
 type gwFetchPlan struct {
 	Tasks      []fetchTask
@@ -327,8 +389,11 @@ func planGWFetches(client *fetch.Client, entryIDs []int, minGW, maxGW int, refre
 	}
 	for gw := minGW; gw <= maxGW; gw++ {
 		gw := gw
+		var finalAt time.Time
+		var haveMarker bool
 		if settled[gw] {
 			plan.SettledGWs = append(plan.SettledGWs, gw)
+			finalAt, haveMarker = markEntriesFinal(client, gw)
 		}
 		force := refetchAll || (refresh && !settled[gw])
 		required := requiredElements(client.Store, entryIDs, gw)
@@ -339,7 +404,16 @@ func planGWFetches(client *fetch.Client, entryIDs []int, minGW, maxGW int, refre
 		for _, entryID := range entryIDs {
 			entryID := entryID
 			allowEmpty := part.beforeStart(entryID, gw)
-			validateEntry := func(raw []byte) error { return validateEntryEvent(raw, allowEmpty) }
+			entryPath := client.Store.Path(fetch.EntryEventPath(entryID, gw))
+			validateEntry := func(raw []byte) error {
+				if err := validateEntryEvent(raw, allowEmpty); err != nil {
+					return err
+				}
+				if settled[gw] && picksPredateFinalisation(entryPath, raw, allowEmpty, finalAt, haveMarker) {
+					return errors.New("picks fetched before GW finalised")
+				}
+				return nil
+			}
 			add(fmt.Sprintf("entry_event entry=%d gw=%d", entryID, gw), fetch.EntryEventPath(entryID, gw), force, validateEntry, func(force bool) error {
 				return client.EntryEvent(entryID, gw, force)
 			})

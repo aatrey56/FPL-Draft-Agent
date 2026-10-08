@@ -262,6 +262,17 @@ response for a GW before the entry took part — before the league's
 `history.json` row (late joiners) — which is final and kept. If neither start
 is known, empty picks are treated as corrupt and refetched.
 
+A settled GW's entry picks are only skipped if they were downloaded *after* the
+GW was finalised: once a GW is over the draft API's picks include automatic
+substitutions (subs moved into positions 1–11), so a squad cached mid-GW would
+make the points builder drop the substitute (e.g. 60 instead of 69). The payload
+cannot reveal this (`subs` is `[]` both mid-GW and when no sub happened), so the
+first run to see a GW settled writes `gw/<n>/entries_final.json`; each non-empty
+entry-event file older than that marker is refetched once
+(`reason="picks fetched before GW finalised"`) and is newer than it afterwards.
+The empty pre-start picks above are exempt. Deleting the marker re-triggers one
+refetch of that GW's picks.
+
 Non-Mac or cron fans: schedule `scripts/autorefresh.sh` (crontab example inline).
 
 Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):
