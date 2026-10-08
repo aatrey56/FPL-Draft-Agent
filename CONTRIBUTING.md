@@ -6,7 +6,6 @@ Thanks for helping improve FPL Draft Agent.
 - Go code lives in `apps/mcp-server/` (server, fetcher, TUI).
 - Python ML pipeline lives in `apps/backend/` (managed by [uv](https://docs.astral.sh/uv/)
   via `pyproject.toml` + `uv.lock` — `uv sync` once, `uv add <pkg>` for dependencies).
-- `apps/web/` is the deprecated legacy UI (kept for history; not developed).
 
 ## Local Checks
 One command runs everything CI runs:

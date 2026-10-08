@@ -257,7 +257,7 @@ apps/
                          matcheval (walk-forward benchmark), trackrecord
                          (weekly xP-vs-realized log),
                          specs (treat *_SPEC.md as contracts)
-    tests/               pytest suite (311 tests, no network)
+    tests/               pytest suite (no network)
 data/                    Raw + derived FPL data (gitignored; flat = 25/26 archive)
 docs/                    Setup, design docs, model roadmap, measured findings
 scripts/                 autorefresh (launchd/cron), autopilot install, preflight, notifications
@@ -277,7 +277,6 @@ and entry ids live in `.env` only — never in tracked files.
 
 ## Legacy
 
-`apps/backend`'s FastAPI chat server, OpenAI agent, RAG index, and
-APScheduler (`server.py`, `agent.py`, `llm.py`, `rag.py`, `scheduler.py`)
-plus the `apps/web` UI are the pre-MCP-client stack: kept for history,
-deprecated, not developed. Claude over MCP replaced them.
+The pre-MCP chat stack (a FastAPI server, an OpenAI agent, a RAG index, a
+scheduler, and the `apps/web` UI) was removed once Claude over MCP replaced
+it; it remains in git history.

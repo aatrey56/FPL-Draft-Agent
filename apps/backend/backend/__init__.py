@@ -1,1 +1,1 @@
-"""Backend package for MCP-driven reports and chat."""
+"""FPL Draft co-pilot backend: the ML pipeline and decision artifacts (backend.ml)."""
