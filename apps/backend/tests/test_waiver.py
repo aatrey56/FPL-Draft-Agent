@@ -361,6 +361,7 @@ def test_model_valued_free_agent_without_ros_is_ranked_as_stream(tmp_path):
     noproj = next(r for r in recs if r["add"] == "NoProj")
     assert noproj["add_xp_source"] == "model" and pd.isna(noproj["add_ros"])
     assert noproj["season_gain"] is None and noproj["season_unknown"] is True
+    assert noproj["add_ros_unknown"] is True and noproj["drop_ros_unknown"] is False
     assert noproj["label"] == "stream"
     assert noproj["next1_gain"] > 0 and noproj["drop"] == "MyWeakFWD"
     assert recs[0]["add"] == "NoProj"          # ranked on next1_gain like anyone else
@@ -1349,10 +1350,202 @@ def test_every_rec_carries_gains_for_all_three_horizons(tmp_path):
     json.loads(jsonutil.dumps_strict(wv.recommend(players, squad, rank_by="next3")))
 
 
-def test_drop_tiebreak_follows_the_ranking_horizon():
-    assert wv._drop_tiebreak("next1") == "xp_next"
-    for rank_by in ("legacy", "next3", "ros"):
-        assert wv._drop_tiebreak(rank_by) == "next3_xp"
+def test_drop_order_follows_the_ranking_horizon_with_ros_as_tiebreak():
+    squad = pd.DataFrame([
+        {"web_name": "LowRos", "status": "a", "ros_points": 50.0, "ros_adj": 50.0,
+         "xp_next": 3.0, "next3_xp": 9.0},
+        {"web_name": "LowNext3", "status": "a", "ros_points": 150.0, "ros_adj": 150.0,
+         "xp_next": 4.0, "next3_xp": 2.0},
+        {"web_name": "LowNext1", "status": "a", "ros_points": 120.0, "ros_adj": 120.0,
+         "xp_next": 1.0, "next3_xp": 6.0},
+        {"web_name": "TieLowerRos", "status": "a", "ros_points": 90.0, "ros_adj": 90.0,
+         "xp_next": 1.0, "next3_xp": 7.0}])
+
+    def first(rank_by):
+        return list(wv.drop_order(squad, rank_by)["web_name"])
+
+    assert first("legacy")[0] == "LowRos"
+    assert first("ros")[0] == "LowRos"
+    assert first("next3")[0] == "LowNext3"
+    assert first("next1")[:2] == ["TieLowerRos", "LowNext1"]     # equal xp_next: lower ROS first
+    with pytest.raises(ValueError, match="unknown rank_by"):
+        wv.drop_order(squad, "next5")
+
+
+def test_drop_order_puts_players_the_horizon_cannot_value_last():
+    """Edge: a ROS-only player (no 3-GW value) is droppable, after the valued."""
+    squad = pd.DataFrame([
+        {"web_name": "NoNext3", "status": "a", "ros_points": 10.0, "ros_adj": 10.0,
+         "xp_next": None, "next3_xp": None},
+        {"web_name": "Valued", "status": "a", "ros_points": 200.0, "ros_adj": 200.0,
+         "xp_next": 6.0, "next3_xp": 18.0}])
+    assert list(wv.drop_order(squad, "next3")["web_name"]) == ["Valued", "NoNext3"]
+
+
+# ---------------------------------------------------------------------------
+# Drop pick on the model's value; diversified top N; best_by_position
+# ---------------------------------------------------------------------------
+
+# Unknown (code 403) has no ROS projection; the model values him at 0 xP.
+_UNKNOWN_AT_ZERO = [(410, 5.0), (411, 4.0), (300, 3.0), (402, 1.0), (403, 0.0)]
+
+
+def test_unprojected_zero_xp_squad_player_is_now_the_drop(tmp_path):
+    """Regression (Madjo): a squad player with no ROS but a 0 model xP was never
+    offered as a drop; the drop was the lowest-ROS teammate instead."""
+    result = _drop_world(tmp_path, departed_status="a", gw_xp=_gw_xp(_UNKNOWN_AT_ZERO))
+    assert result["rank_by"] == "next1"
+    recs = result["recommendations"]
+    assert recs and {r["drop"] for r in recs} == {"Unknown"}
+    free_a = next(r for r in recs if r["add"] == "FreeA")
+    assert free_a["next1_gain"] == pytest.approx(5.0)
+    # his season value is unknown, so the season gain is too — never "add - 0"
+    assert free_a["drop_ros_unknown"] is True and free_a["season_unknown"] is True
+    assert free_a["add_ros_unknown"] is False      # FreeA is projected: the drop is the gap
+    assert free_a["season_gain"] is None and free_a["label"] == "stream"
+    assert free_a["drop_xp_source"] == "model"
+    defs = [c["web_name"] for c in result["drop_candidates"] if c["position"] == "DEF"]
+    assert defs[0] == "Unknown"
+    json.loads(jsonutil.dumps_strict(recs))
+
+
+def test_next3_gain_is_null_when_the_drop_has_no_three_gw_value(tmp_path):
+    """Regression: a drop with model next-GW xP but neither ROS nor a model
+    horizon has next3_xp null; next3_gain was "the add minus 0" (the add's
+    whole 3-GW value shown as improvement). It is unknown."""
+    result = _drop_world(tmp_path, departed_status="a", gw_xp=_gw_xp(_UNKNOWN_AT_ZERO))
+    free_a = next(r for r in result["recommendations"] if r["add"] == "FreeA")
+    assert free_a["drop"] == "Unknown" and pd.isna(free_a["drop_next3_xp"])
+    assert free_a["add_next3_xp"] is not None
+    assert free_a["next3_gain"] is None and free_a["gains"]["gw3"] is None
+    assert free_a["label"] == "stream"          # read from next1_gain, unaffected
+    json.loads(jsonutil.dumps_strict(result["recommendations"]))
+
+
+def test_departed_drop_without_a_three_gw_value_counts_as_zero(tmp_path):
+    """Edge: a departed drop's value really is 0, so his gain stays numeric."""
+    result = _drop_world(tmp_path, departed_projection=None,
+                         gw_xp=_gw_xp([(410, 5.0), (411, 4.0), (300, 3.0), (402, 1.0)]))
+    free_a = next(r for r in result["recommendations"] if r["add"] == "FreeA")
+    assert free_a["drop"] == "Departed" and free_a["drop_status"] == "u"
+    assert free_a["next3_gain"] == pytest.approx(free_a["add_next3_xp"])
+
+
+def test_drop_on_the_three_gw_value_under_the_next3_ranking(tmp_path):
+    horizon = _horizon_xp({410: [5.0, 5.0, 5.0], 411: [4.0, 4.0, 4.0], 300: [3.0, 3.0, 3.0],
+                           402: [1.0, 1.0, 1.0], 401: [0.5, 0.0, 0.0], 403: [2.0, 2.0, 2.0]})
+    gw_xp = _gw_xp([*_UNKNOWN_AT_ZERO[:-1], (401, 0.5), (403, 2.0)])
+    result = _drop_world(tmp_path, departed_status="a", gw_xp=gw_xp, horizon_xp=horizon)
+    assert result["rank_by"] == "next3"
+    # Solid has the best ROS (120) but the worst 3 GWs (0.5)
+    assert {r["drop"] for r in result["recommendations"]} == {"Solid"}
+
+
+def test_squad_player_with_no_model_value_and_no_ros_is_never_the_drop(tmp_path):
+    """Edge: no model row and no projection = unknown, not zero — unchanged."""
+    result = _drop_world(tmp_path, departed_status="a",
+                         gw_xp=_gw_xp([(410, 5.0), (411, 4.0), (300, 3.0), (402, 1.0)]))
+    assert {r["drop"] for r in result["recommendations"]} == {"Weak"}
+    assert "Unknown" not in {c["web_name"] for c in result["drop_candidates"]}
+    assert [p["web_name"] for p in result["unprojected_squad"]] == ["Unknown"]
+
+
+def test_blank_gw_player_with_a_model_horizon_is_a_drop_not_unprojected(tmp_path):
+    """Regression: a no-ROS player blanking next GW has xp_source "none" but a
+    model 3-GW value; under next3 he was the drop AND listed as "no value,
+    never auto-dropped". He is now only the drop."""
+    horizon = _horizon_xp({410: [5.0, 5.0, 5.0], 411: [4.0, 4.0, 4.0], 300: [3.0, 3.0, 3.0],
+                           401: [3.0, 3.0, 3.0], 402: [1.0, 1.0, 1.0], 403: [0.0, 0.2, 0.2]})
+    gw_xp = _gw_xp([(410, 5.0), (411, 4.0), (300, 3.0), (401, 3.0), (402, 1.0)])
+    result = _drop_world(tmp_path, departed_status="a", gw_xp=gw_xp, horizon_xp=horizon)
+    unknown = result["squad"].set_index("web_name").loc["Unknown"]
+    assert unknown["xp_source"] == "none" and unknown["next3_source"] == "model"
+    assert result["rank_by"] == "next3"
+    assert {r["drop"] for r in result["recommendations"]} == {"Unknown"}
+    assert result["unprojected_squad"] == []
+
+
+def test_unprojected_squad_is_the_complement_of_the_drop_pool():
+    """Edge: under legacy only a ROS projection values a player; under the
+    model rankings any model value does. Every non-departed squad player is
+    either in drop_order or in unprojected_squad, never both."""
+    squad = pd.DataFrame([
+        {"web_name": "Horizon", "position": "DEF", "team": "AAA", "status": "a", "news": "",
+         "ros_points": None, "ros_adj": None, "xp_next": None, "next3_xp": 0.4},
+        {"web_name": "Nothing", "position": "DEF", "team": "AAA", "status": "a", "news": "",
+         "ros_points": None, "ros_adj": None, "xp_next": None, "next3_xp": None},
+        {"web_name": "Projected", "position": "DEF", "team": "AAA", "status": "a", "news": "",
+         "ros_points": 80.0, "ros_adj": 80.0, "xp_next": 2.0, "next3_xp": 6.0}])
+    for rank_by in ("next1", "next3", "ros", "legacy"):
+        dropped = set(wv.drop_order(squad, rank_by)["web_name"])
+        listed = {p["web_name"] for p in wv.unprojected_squad(squad, rank_by)}
+        assert not dropped & listed and dropped | listed == set(squad["web_name"]), rank_by
+    assert {p["web_name"] for p in wv.unprojected_squad(squad, "next3")} == {"Nothing"}
+    assert {p["web_name"] for p in wv.unprojected_squad(squad, "legacy")} == {"Horizon", "Nothing"}
+    with pytest.raises(ValueError, match="unknown rank_by"):
+        wv.unprojected_squad(squad, "next5")
+
+
+def test_departed_player_is_still_dropped_before_a_zero_xp_teammate(tmp_path):
+    result = _drop_world(tmp_path, gw_xp=_gw_xp(_UNKNOWN_AT_ZERO))
+    assert {r["drop"] for r in result["recommendations"]} == {"Departed"}
+
+
+def test_heuristic_scorer_never_drops_a_player_without_a_projection(tmp_path):
+    """The heuristic pick is frozen: a model-valued, unprojected player (only
+    possible in a hand-built table) stays out of the legacy drop order."""
+    squad = pd.DataFrame([
+        {"web_name": "ModelOnly", "status": "a", "ros_points": None, "ros_adj": None,
+         "xp_next": 0.0, "next3_xp": 0.0},
+        {"web_name": "Projected", "status": "a", "ros_points": 80.0, "ros_adj": 80.0,
+         "xp_next": 2.0, "next3_xp": 6.0}])
+    assert list(wv.drop_order(squad, "legacy")["web_name"]) == ["Projected"]
+    assert list(wv.drop_order(squad, "next1")["web_name"]) == ["ModelOnly", "Projected"]
+
+
+def _rec(add, drop, position="MID"):
+    return {"add": add, "drop_element": drop, "position": position}
+
+
+def test_diversify_caps_each_drop_and_backfills_in_rank_order():
+    ranked = [_rec("m1", 1), _rec("m2", 1), _rec("m3", 1), _rec("m4", 1), _rec("m5", 1),
+              _rec("d1", 2, "DEF"), _rec("f1", 3, "FWD")]
+    out = [r["add"] for r in wv.diversify(ranked, top_n=5, per_drop=3)]
+    assert out == ["m1", "m2", "m3", "d1", "f1"]                  # rank 1 kept, m4/m5 held
+    # too few other drops: held recs backfill after the capped picks
+    assert [r["add"] for r in wv.diversify(ranked, top_n=6, per_drop=3)] == [
+        "m1", "m2", "m3", "d1", "f1", "m4"]
+    assert wv.diversify([], top_n=10) == []
+
+
+def test_recommend_diversifies_the_model_ranking_but_not_the_heuristic(monkeypatch):
+    """Regression: every top-10 rec replaced one MID. The model rankings now
+    cap a drop at MAX_RECS_PER_DROP; the heuristic (legacy) stays a plain top N."""
+    ranked = [*(_rec(f"m{i}", 1) for i in range(5)), _rec("d1", 2, "DEF")]
+    monkeypatch.setattr(wv, "ranked_recs", lambda players, squad, rank_by: ranked)
+    assert [r["add"] for r in wv.recommend(None, None, 4, rank_by="legacy")] == [
+        "m0", "m1", "m2", "m3"]
+    for rank_by in ("next1", "next3", "ros"):
+        assert [r["add"] for r in wv.recommend(None, None, 4, rank_by=rank_by)] == [
+            "m0", "m1", "m2", "d1"]
+
+
+def test_best_by_position_covers_every_position_with_candidates(tmp_path):
+    result = _drop_world(tmp_path, departed_status="a", gw_xp=_gw_xp(_UNKNOWN_AT_ZERO))
+    best = result["best_by_position"]
+    assert list(best) == ["GKP", "DEF", "MID", "FWD"]
+    assert best["GKP"] == best["MID"] == best["FWD"] == []        # no candidates there
+    assert [r["add"] for r in best["DEF"]] == ["FreeA", "FreeB", "FreeMover"]
+    assert all(r["drop"] == "Unknown" for r in best["DEF"])
+    json.loads(jsonutil.dumps_strict(best))
+
+
+def test_best_by_position_keeps_the_top_few_per_position():
+    ranked = [_rec("m1", 1), _rec("m2", 1), _rec("d1", 2, "DEF"), _rec("m3", 1),
+              _rec("m4", 1), _rec("f1", 3, "FWD")]
+    best = wv.best_by_position(ranked, per_position=2)
+    assert {pos: [r["add"] for r in recs] for pos, recs in best.items()} == {
+        "GKP": [], "DEF": ["d1"], "MID": ["m1", "m2"], "FWD": ["f1"]}
 
 
 def test_model_only_add_has_a_gw3_gain_once_the_horizon_values_him(tmp_path):

@@ -359,14 +359,16 @@ func (m *model) sugDetailBody(width int) string {
 		para(fmt.Sprintf("Add %s, drop %s.", r.Name, r.Drop))
 		b.WriteString("\n")
 		if r.SeasonUnknown {
-			para(fmt.Sprintf("No rest-of-season projection for %s (promoted club, new signing or under last season's minutes floor), so there is no season gain to quote — treat it as a %s.",
-				r.Name, streamHorizon(r.RankBy)))
+			para(seasonUnknownText(r))
 		} else {
 			para(fmt.Sprintf("Projected rest-of-season: %s %.0f pts vs %s %.0f pts — the %+.0f is that gap, the season points you gain by making the swap.",
 				r.Name, r.AddROS, r.Drop, r.DropROS, r.SeasonGain))
 		}
 		b.WriteString("\n")
 		switch {
+		case r.Next3DropUnknown:
+			para(fmt.Sprintf("Next 3 GWs: %s projects %.1f xP, but %s has no match-model horizon and no projection to build a 3-GW value from, so there is no gain to quote.",
+				r.Name, r.AddNext3, r.Drop))
 		case r.Next3Unknown:
 			para(fmt.Sprintf("Next 3 GWs: unavailable — %s has no match-model horizon and no projection to build a 3-GW value from.",
 				r.Name))
@@ -1224,6 +1226,23 @@ func (m *model) View() string {
 		out += "\n" + strip
 	}
 	return out + "\n" + screen + "\n" + m.footer()
+}
+
+// seasonUnknownText explains a season-unknown wire rec, naming the side
+// (add, drop or both) that has no rest-of-season projection.
+func seasonUnknownText(r railItem) string {
+	var who string
+	switch {
+	case r.AddROSUnknown && r.DropROSUnknown:
+		who = fmt.Sprintf("%s (promoted club, new signing or under last season's minutes floor) or for %s (valued by the match model only)",
+			r.Name, r.Drop)
+	case r.DropROSUnknown:
+		who = fmt.Sprintf("%s (valued by the match model only)", r.Drop)
+	default:
+		who = fmt.Sprintf("%s (promoted club, new signing or under last season's minutes floor)", r.Name)
+	}
+	return fmt.Sprintf("No rest-of-season projection for %s, so there is no season gain to quote — treat it as a %s.",
+		who, streamHorizon(r.RankBy))
 }
 
 // streamHorizon names the horizon a season-unknown wire add was recommended
