@@ -44,6 +44,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -292,6 +293,39 @@ def next_deadlines(deadlines: list[Deadline], now: datetime, count: int = 6) -> 
 # ---------------------------------------------------------------------------
 # State (idempotency)
 # ---------------------------------------------------------------------------
+LEGACY_KEY = re.compile(r"^\d+:(?:" + "|".join(KINDS) + r")$")
+LEGACY_MATCH_BEFORE = timedelta(days=EARLY_SEARCH_DAYS + 1)
+
+
+def state_key(season: str, deadline: Deadline) -> str:
+    """``<season>:<gw>:<kind>`` — gw ids restart every season."""
+    return f"{season}:{deadline.key}"
+
+
+def migrate_legacy_state(state: dict[str, Any], season: str,
+                         deadlines: list[Deadline]) -> list[str]:
+    """Move pre-namespacing ``<gw>:<kind>`` entries under ``season``; returns moved keys.
+
+    A legacy entry belongs to this season only when its ``sent``/``missed``
+    time falls between ``EARLY_SEARCH_DAYS + 1`` days before and
+    ``MISSED_LOOKBACK`` after this season's deadline of the same gw/kind (a
+    delivery can never be further from its deadline). Anything else is an
+    earlier season's history — or a research-only entry, at worst re-run —
+    and is dropped so it can never suppress a checklist.
+    """
+    by_key = {d.key: d for d in deadlines}
+    moved = []
+    for key in [k for k in state if LEGACY_KEY.match(k)]:
+        entry = state.pop(key)
+        deadline = by_key.get(key)
+        stamp = parse_ts(entry.get("sent") or entry.get("missed")) if isinstance(entry, dict) else None
+        if (deadline is not None and stamp is not None
+                and deadline.at - LEGACY_MATCH_BEFORE <= stamp <= deadline.at + MISSED_LOOKBACK):
+            state.setdefault(state_key(season, deadline), entry)
+            moved.append(key)
+    return moved
+
+
 def load_state(path: Path) -> dict[str, Any]:
     """The state file as a dict; a missing or corrupt file is an empty state."""
     try:
@@ -782,7 +816,7 @@ class Env:
 def tick(env: Env, now: datetime) -> list[str]:
     """One idempotent pass; returns human-readable log lines for what happened.
 
-    Per ``gw:kind`` the state records ``research`` (outcome dict), ``sent``
+    Per ``<season>:<gw>:<kind>`` the state records ``research`` (outcome dict), ``sent``
     (ISO time) or ``missed``. Order: research once ``now >= research_start``,
     delivery once ``now >= deliver_at``; a deadline that has passed without a
     delivery is logged as missed and never delivered. The whole pass — state
@@ -798,30 +832,38 @@ def tick(env: Env, now: datetime) -> list[str]:
 def _tick_locked(env: Env, now: datetime) -> list[str]:
     now = _aware_utc(now)
     state = load_state(env.state_path)
+    deadlines = deadlines_from_events(load_events(env.sources.raw_dir))
     log: list[str] = []
-    for deadline in deadlines_from_events(load_events(env.sources.raw_dir)):
+    legacy = len([k for k in state if LEGACY_KEY.match(k)])
+    if legacy:
+        moved = migrate_legacy_state(state, env.season, deadlines)
+        log.append(f"state: migrated {len(moved)} of {legacy} un-namespaced entries "
+                   f"under {env.season}; dropped the rest as earlier-season history")
+        save_state(env.state_path, state)
+    for deadline in deadlines:
         if deadline.at < now - MISSED_LOOKBACK:
             continue
-        entry = state.setdefault(deadline.key, {})
+        key = state_key(env.season, deadline)
+        entry = state.setdefault(key, {})
         if entry.get("sent") or entry.get("missed"):
             continue
         delivery = compute_delivery(deadline.at, env.cfg)
         if now >= deadline.at:
             entry["missed"] = now.isoformat(timespec="seconds")
-            log.append(f"MISSED {deadline.key}: deadline passed before delivery")
+            log.append(f"MISSED {key}: deadline passed before delivery")
             save_state(env.state_path, state)
             continue
         if now >= delivery.research_start and "research" not in entry:
             entry["research"] = run_research_and_derive(
                 deadline, env.repo, env.season, env.runner, env.research_ok, env.lock)
-            log.append(f"research {deadline.key}: {entry['research']}")
+            log.append(f"research {key}: {entry['research']}")
             save_state(env.state_path, state)
         if now >= delivery.deliver_at:
             since = parse_ts(state.get("last_checklist_at"))
             note = outcome_note(entry.get("research") or {})
             markdown = render_checklist(deadline, delivery, env.cfg, env.sources, now,
                                         since=since, research_note=note)
-            path = write_checklist(env.checklist_dir, deadline, markdown)
+            path = write_checklist(env.checklist_dir / env.season, deadline, markdown)
             failed = failed_channels(
                 env.cfg, env.notify("FPL Co-Pilot", summary_line(deadline, env.cfg, markdown)),
                 env.ntfy(env.cfg, deadline, markdown))
@@ -831,7 +873,7 @@ def _tick_locked(env: Env, now: datetime) -> list[str]:
             state["last_checklist_at"] = entry["sent"]
             save_state(env.state_path, state)
             suffix = f" (FAILED: {', '.join(failed)}; the file was written)" if failed else ""
-            log.append(f"delivered {deadline.key} -> {path}{suffix}")
+            log.append(f"delivered {key} -> {path}{suffix}")
     return log
 
 

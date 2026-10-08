@@ -59,7 +59,11 @@ hours — it is the machine working, not you).
 Run every 300 s by launchd (`scripts/deadline_tick.sh`), independent of the
 15-minute refresh, so timing is accurate to about five minutes. It is
 idempotent; state lives in `~/.fplcopilot/deadline_agent.json`, keyed by
-`<gw>:<kind>`. A tick holds an exclusive `flock` on
+`<season>:<gw>:<kind>` (gw ids restart every season, so last season's GW9 never
+suppresses this season's). Pre-namespacing `<gw>:<kind>` entries are migrated
+under the current season only when their sent/missed time is within 11 days
+before / 48 h after this season's matching deadline; anything else is dropped
+as earlier-season history. A tick holds an exclusive `flock` on
 `~/.fplcopilot/deadline_agent.lock` from loading the state to its final save:
 an overlapping tick (launchd + a manual run) logs *another tick holds the lock;
 skipped* and exits 0, so research and delivery never run twice. State and
@@ -104,7 +108,7 @@ missing artifact becomes a one-line pointer rather than an error. ≤ ~25 lines.
 
 ## Delivery channels
 
-- File: `~/.fplcopilot/checklists/gw<N>_<kind>.md`.
+- File: `~/.fplcopilot/checklists/<season>/gw<N>_<kind>.md`.
 - macOS notification (`osascript`): title + one-line summary. A nonzero
   `osascript` exit (e.g. notifications not permitted) is logged with its stderr
   and recorded as `delivery_failed: ["macos"]` on the state entry; the file and

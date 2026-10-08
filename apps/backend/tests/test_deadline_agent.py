@@ -302,11 +302,11 @@ def test_tick_runs_research_then_derive_then_delivers_once(tmp_path):
                         "--phase", "lineup", "--gw", "9"]
     assert recorder.commands[0][1] == env.repo / "apps" / "backend"
     assert derive == ["make", "derive", "SEASON=2026-27"]
-    assert any("research 9:lineup" in line for line in log)
+    assert any("research 2026-27:9:lineup" in line for line in log)
 
     da.tick(env, DELIVER_AT)
     assert len(recorder.notes) == 1 and len(recorder.pushes) == 1
-    assert (env.checklist_dir / "gw9_lineup.md").exists()
+    assert (env.checklist_dir / "2026-27" / "gw9_lineup.md").exists()
     # Idempotent: later ticks neither re-research nor re-send.
     for later in (DELIVER_AT, DELIVER_AT + timedelta(minutes=5), LINEUP_AT - timedelta(minutes=1)):
         assert da.tick(env, later) == []
@@ -326,7 +326,7 @@ def test_late_tick_does_research_and_delivery_in_one_pass(tmp_path):
     env, recorder = make_env(tmp_path, make_world(tmp_path))
     log = da.tick(env, DELIVER_AT + timedelta(minutes=3))
     assert len(recorder.commands) == 2 and len(recorder.notes) == 1
-    assert log[-1].startswith("delivered 9:lineup")
+    assert log[-1].startswith("delivered 2026-27:9:lineup")
 
 
 def test_research_module_absent_skips_research_only(tmp_path):
@@ -340,7 +340,7 @@ def test_research_exit_3_is_silent(tmp_path):
     env, recorder = make_env(tmp_path, make_world(tmp_path), Recorder(research_code=3))
     da.tick(env, DELIVER_AT)
     state = da.load_state(env.state_path)
-    assert state["9:lineup"]["research"]["research"] == "skipped"
+    assert state["2026-27:9:lineup"]["research"]["research"] == "skipped"
     assert "research failed" not in recorder.pushes[0][1]
     assert [c[0][0] for c in recorder.commands] == ["uv", "make"]    # derive still ran
 
@@ -349,7 +349,7 @@ def test_research_failure_is_noted_in_checklist(tmp_path):
     env, recorder = make_env(tmp_path, make_world(tmp_path), Recorder(research_code=1))
     da.tick(env, DELIVER_AT)
     assert "research failed" in recorder.pushes[0][1]
-    assert "research failed" in (env.checklist_dir / "gw9_lineup.md").read_text()
+    assert "research failed" in (env.checklist_dir / "2026-27" / "gw9_lineup.md").read_text()
 
 
 def test_derive_failure_and_busy_lock(tmp_path):
@@ -359,7 +359,7 @@ def test_derive_failure_and_busy_lock(tmp_path):
 
     env2, recorder2 = make_env(tmp_path / "b", make_world(tmp_path / "b"), lock=busy_lock)
     da.tick(env2, DELIVER_AT)
-    assert da.load_state(env2.state_path)["9:lineup"]["research"]["derive"] == "busy"
+    assert da.load_state(env2.state_path)["2026-27:9:lineup"]["research"]["derive"] == "busy"
     assert [c[0][0] for c in recorder2.commands] == ["uv"]
     assert len(recorder2.notes) == 1
 
@@ -367,10 +367,10 @@ def test_derive_failure_and_busy_lock(tmp_path):
 def test_missed_deadline_is_logged_and_never_delivered(tmp_path):
     env, recorder = make_env(tmp_path, make_world(tmp_path))
     log = da.tick(env, LINEUP_AT + timedelta(minutes=1))
-    assert log == ["MISSED 9:lineup: deadline passed before delivery"]
+    assert log == ["MISSED 2026-27:9:lineup: deadline passed before delivery"]
     assert recorder.notes == [] and recorder.commands == []
     assert da.tick(env, LINEUP_AT + timedelta(minutes=6)) == []        # logged once only
-    assert not (env.checklist_dir / "gw9_lineup.md").exists()
+    assert not (env.checklist_dir / "2026-27" / "gw9_lineup.md").exists()
 
 
 def test_old_deadlines_are_history_not_missed(tmp_path):
@@ -400,7 +400,46 @@ def test_ntfy_failure_does_not_crash_tick(tmp_path):
     env.ntfy = lambda c, d, md: da.post_ntfy(c, d, md, post=boom)
     da.tick(env, DELIVER_AT)
     assert len(recorder.notes) == 1
-    assert da.load_state(env.state_path)["9:lineup"]["sent"]
+    assert da.load_state(env.state_path)["2026-27:9:lineup"]["sent"]
+
+
+def test_same_gw_and_kind_in_a_new_season_is_sent(tmp_path):
+    env, recorder = make_env(tmp_path, make_world(tmp_path))
+    da.save_state(env.state_path, {"2025-26:9:lineup": {"sent": "2025-10-18T16:45:00+00:00"}})
+    log = da.tick(env, DELIVER_AT)
+    assert len(recorder.notes) == 1 and log[-1].startswith("delivered 2026-27:9:lineup")
+    state = da.load_state(env.state_path)
+    assert state["2025-26:9:lineup"] == {"sent": "2025-10-18T16:45:00+00:00"}   # history kept
+    assert (env.checklist_dir / "2026-27" / "gw9_lineup.md").exists()
+
+
+def test_legacy_key_from_an_earlier_season_is_dropped_not_obeyed(tmp_path):
+    env, recorder = make_env(tmp_path, make_world(tmp_path))
+    da.save_state(env.state_path, {"9:lineup": {"sent": "2025-10-18T16:45:00+00:00"}})
+    da.tick(env, DELIVER_AT)
+    assert len(recorder.notes) == 1
+    assert "9:lineup" not in da.load_state(env.state_path)
+
+
+def test_legacy_key_for_this_seasons_deadline_is_migrated(tmp_path):
+    env, recorder = make_env(tmp_path, make_world(tmp_path))
+    sent = iso(DELIVER_AT)
+    da.save_state(env.state_path, {"9:lineup": {"sent": sent}, "last_checklist_at": sent})
+    log = da.tick(env, DELIVER_AT + timedelta(minutes=5))
+    assert recorder.notes == [] and recorder.commands == []           # not re-sent
+    assert log == ["state: migrated 1 of 1 un-namespaced entries under 2026-27; "
+                   "dropped the rest as earlier-season history"]
+    state = da.load_state(env.state_path)
+    assert state["2026-27:9:lineup"] == {"sent": sent} and "9:lineup" not in state
+
+
+def test_migrate_legacy_state_rules():
+    deadline = da.Deadline(9, "lineup", LINEUP_AT)
+    state = {"9:lineup": {"research": {"research": "ok"}},        # no timestamp -> dropped
+             "10:waivers": {"sent": iso(LINEUP_AT)},              # not in this calendar
+             "last_checklist_at": "x", "2025-26:9:lineup": {"sent": "y"}}
+    assert da.migrate_legacy_state(state, "2026-27", [deadline]) == []
+    assert state == {"last_checklist_at": "x", "2025-26:9:lineup": {"sent": "y"}}
 
 
 def test_corrupt_state_file_is_empty_state(tmp_path):
@@ -483,7 +522,7 @@ def test_tick_records_failed_notification_and_still_pushes_ntfy(tmp_path):
     env.notify = lambda title, message: False
     log = da.tick(env, DELIVER_AT)
     assert len(recorder.pushes) == 1                          # ntfy still attempted
-    entry = next(v for k, v in da.load_state(env.state_path).items() if k.endswith("9:lineup"))
+    entry = da.load_state(env.state_path)["2026-27:9:lineup"]
     assert entry["delivery_failed"] == ["macos"] and entry["sent"]
     assert "FAILED: macos" in log[-1]
 
