@@ -432,6 +432,7 @@ func TestAttentionItemMatchesStableCodes(t *testing.T) {
 		{"coded availability", []string{"availability [d] — Knock"}, []string{"availability"}, "⚠", "[d] — Knock"},
 		{"coded heuristic", []string{"no model xP — heuristic"}, []string{"heuristic_xp"}, "⚠", "heuristic xP"},
 		{"coded departed", []string{"departed — no longer in the league, drop him — Has joined Elsewhere FC"}, []string{"departed"}, "✗", "departed — drop"},
+		{"coded departed protected", []string{"departed — no longer in the league, on your never_drop list — remove the entry"}, []string{"departed_protected"}, "✗", "departed — fix never_drop"},
 		{"coded override", []string{"role override: p_start 0 — shoulder fracture"}, []string{"role_override"}, "⚠", "p_start 0 — shoulder fracture"},
 		// one rail line per player: an unprojected player leads with that, not an override fact
 		{"no value before override", []string{"no value — judge manually (player_card)", "role override: p_start 0.7 — new signing"}, []string{"no_value", "role_override"}, "?", "unprojected"},
@@ -648,7 +649,7 @@ func sharedWarningCodes(t *testing.T) []string {
 }
 
 func TestWarningCodesMatchSharedFixture(t *testing.T) {
-	got := []string{warnDeparted, warnNoValue, warnRoleOverride, warnBlankGW, warnAvailability, warnHeuristicXP}
+	got := []string{warnDeparted, warnDepartedProt, warnNoValue, warnRoleOverride, warnBlankGW, warnAvailability, warnHeuristicXP}
 	if want := sharedWarningCodes(t); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("TUI warning codes %v, shared fixture %v", got, want)
 	}

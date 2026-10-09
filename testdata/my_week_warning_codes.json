@@ -1,4 +1,4 @@
 {
   "description": "The full set of my_week warning_codes, in emission order (most actionable first; the scoring-source note heuristic_xp is last). Shared contract: apps/backend/tests/test_myweek.py pins backend.ml.myweek's WARNING_* constants to it, apps/mcp-server/cmd/tui pins its warn* constants, and apps/mcp-server/fpl-server checks the my_week tool note names every code. Changing a code means editing this file and all three.",
-  "warning_codes": ["departed", "no_value", "role_override", "blank_gw", "availability", "heuristic_xp"]
+  "warning_codes": ["departed", "departed_protected", "no_value", "role_override", "blank_gw", "availability", "heuristic_xp"]
 }

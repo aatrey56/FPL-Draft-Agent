@@ -59,10 +59,12 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import pandas as pd
 import requests
 from dotenv import load_dotenv
 
 from backend.ml import paths
+from backend.ml.waiver import match_player_rows
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +92,10 @@ RESEARCH_NO_KEY_EXIT = 3        # backend.ml.research: no API key -> skip silent
 MAX_CLAIMS = 5
 MAX_BACKUPS = 3
 MAX_TRADE_NOTES = 3
+MAX_OVERRIDE_LINES = 5
+# Marks a research override in the artifacts: the prefix of its ``overrides_applied``
+# name (and of its fact). Matches ``backend.ml.waiver.RESEARCH_TAG``.
+RESEARCH_TAG = "research:"
 
 
 class ConfigError(ValueError):
@@ -482,27 +488,148 @@ def _gain(rec: dict) -> str:
     return f"3-GW {_signed(gw3)}" if gw3 is not None else f"GW {_signed(gw1)}"
 
 
-def is_research_override(entry: dict) -> bool:
-    """A role-override entry written by research (``origin == "research"``, or a
-    ``source`` that is a URL / starts with ``research``)."""
-    source = str(entry.get("source") or "").lower()
-    return (entry.get("origin") == "research" or source.startswith("research")
-            or source.startswith(("http://", "https://")))
+def _overrides_by_origin(plan: dict | None, week: dict | None) -> tuple[list[str], list[str]]:
+    """``(research players, hand-written players)`` among the role overrides
+    applied in the derived artifacts.
+
+    The signal is the one ``backend.ml.waiver`` writes: an applied override
+    from ``role_overrides.research.json`` is named ``research:<player>`` in
+    ``overrides_applied``; a hand-written one has no prefix. A ``source`` or
+    ``origin`` key on a ``role_overrides.json`` entry says nothing about who
+    wrote it, so it is never consulted.
+    """
+    research, hand = [], []
+    for doc in (plan, week):
+        for name in (doc or {}).get("overrides_applied") or []:
+            if not isinstance(name, str):
+                continue
+            bucket, player = ((research, name[len(RESEARCH_TAG):]) if name.startswith(RESEARCH_TAG)
+                              else (hand, name))
+            if player not in bucket:
+                bucket.append(player)
+    return research, hand
 
 
-def research_changes(ml_dir: Path, since: datetime | None) -> list[dict]:
-    """Research-tagged role overrides written after ``since`` (all when None)."""
-    doc = _read_json(ml_dir / "role_overrides.json") or {}
+def _override_facts(plan: dict | None, week: dict | None) -> dict[str, list[tuple[str | None, str]]]:
+    """``web_name -> [(team, fact), ...]`` (distinct, in artifact order) for every
+    override fact the artifacts show: ``add_role_override`` on waiver recs,
+    ``role_override`` on my_week rows. Two players can share a ``web_name``, so
+    a name maps to every (team, fact) pair seen, never to one of them."""
+    facts: dict[str, list[tuple[str | None, str]]] = {}
+
+    def add(name: Any, team: Any, fact: str) -> None:
+        pair = (team, fact)
+        if pair not in facts.setdefault(name, []):
+            facts[name].append(pair)
+
+    for rec in (plan or {}).get("recommendations") or []:
+        if rec.get("add_role_override"):
+            add(rec.get("add"), rec.get("add_team"), rec["add_role_override"])
+    for row in ((week or {}).get("xi") or []) + ((week or {}).get("bench") or []):
+        if row.get("role_override"):
+            add(row.get("web_name"), row.get("team"), row["role_override"])
+    return facts
+
+
+def _player_table(raw_dir: Path) -> pd.DataFrame:
+    """``code, web_name, team`` (short name) per bootstrap element — the table
+    ``backend.ml.waiver`` matches overrides against; empty when unreadable."""
+    doc = _read_json(raw_dir / "bootstrap" / "bootstrap-static.json") or {}
+    teams = doc.get("teams")
+    teams = teams.get("data", []) if isinstance(teams, dict) else teams
+    elements = doc.get("elements")
+    elements = elements.get("data", []) if isinstance(elements, dict) else elements
+    short = {t.get("id"): t.get("short_name") or t.get("name")
+             for t in teams or [] if isinstance(t, dict)}
+    rows = [{"code": el.get("code"), "web_name": el.get("web_name"), "team": short.get(el.get("team"))}
+            for el in elements or [] if isinstance(el, dict)]
+    return pd.DataFrame(rows, columns=["code", "web_name", "team"])
+
+
+def _entry_identities(ml_dir: Path, players: pd.DataFrame,
+                      filename: str) -> dict[str, set[tuple[str, str]]]:
+    """``entry player -> {(web_name, team), ...}`` for the entries of an
+    overrides file (``role_overrides.json`` or ``role_overrides.research.json``),
+    each resolved to his CURRENT identity by ``waiver.match_player_rows`` —
+    exactly as the producer does (``code`` first, so a stale ``team`` is
+    ignored). An entry that does not resolve to exactly one player has no
+    identity: the producer skipped it, so no fact can be attributed to it."""
+    doc = _read_json(ml_dir / filename) or {}
+    entries = doc.get("overrides") if isinstance(doc.get("overrides"), list) else []
+    identities: dict[str, set[tuple[str, str]]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            code = int(entry["code"]) if entry.get("code") is not None else None
+        except (TypeError, ValueError):
+            continue
+        matched = match_player_rows(players, entry, code)
+        if len(matched) == 1:
+            row = players.loc[matched[0]]
+            name = str(entry.get("player") or entry.get("code") or "?")
+            identities.setdefault(name, set()).add((row["web_name"], row["team"]))
+    return identities
+
+
+def _override_lines(players: list[str], facts: dict[str, list[tuple[str | None, str]]],
+                    identities: dict[str, set[tuple[str, str]]]) -> list[str]:
+    """One line per player. His fact is the artifact fact of the (web_name,
+    team) his origin's overrides file resolves him to; when that is not exactly
+    one fact (unresolved entry, or two distinct facts) the attribution is
+    ambiguous and the line carries the name alone rather than another
+    player's fact."""
+    lines = []
+    for player in players[:MAX_OVERRIDE_LINES]:
+        candidates: list[tuple[str | None, str]] = []
+        for web_name, team in sorted(identities.get(player, ())):
+            candidates += [pair for pair in facts.get(web_name, [])
+                           if pair[0] == team and pair not in candidates]
+        team, fact = candidates[0] if len(candidates) == 1 else (None, "")
+        lines.append(f"- {player}" + (f" ({team})" if team else "") + (f": {fact}" if fact else ""))
+    return lines
+
+
+def _research_as_of(ml_dir: Path) -> dict[str, datetime | None]:
+    """``player -> as_of`` for the entries of ``role_overrides.research.json``
+    (entry ``as_of``, else the file's ``updated``/``as_of``)."""
+    doc = _read_json(ml_dir / "role_overrides.research.json") or {}
     entries = doc.get("overrides") if isinstance(doc.get("overrides"), list) else []
     file_as_of = parse_ts(doc.get("updated") or doc.get("as_of"))
-    changed = []
-    for entry in entries:
-        if not isinstance(entry, dict) or not is_research_override(entry):
-            continue
-        as_of = parse_ts(entry.get("as_of")) or file_as_of
-        if since is None or as_of is None or as_of > since:
-            changed.append(entry)
-    return changed
+    return {str(e.get("player")): parse_ts(e.get("as_of")) or file_as_of
+            for e in entries if isinstance(e, dict)}
+
+
+def research_changes(plan: dict | None, week: dict | None, ml_dir: Path, raw_dir: Path,
+                     since: datetime | None) -> list[str]:
+    """Checklist lines for research overrides newer than ``since`` (all when
+    None). A player whose research entry carries no readable ``as_of`` is
+    included — better a repeated line than a missed change."""
+    players, _ = _overrides_by_origin(plan, week)
+    as_of = _research_as_of(ml_dir)
+    fresh = [p for p in players
+             if since is None or as_of.get(p) is None or as_of[p] > since]
+    return _override_lines(fresh, _override_facts(plan, week),
+                           _entry_identities(ml_dir, _player_table(raw_dir),
+                                             "role_overrides.research.json"))
+
+
+def hand_overrides(plan: dict | None, week: dict | None, ml_dir: Path, raw_dir: Path) -> list[str]:
+    """Checklist lines for the hand-maintained ``role_overrides.json`` entries in force."""
+    _, players = _overrides_by_origin(plan, week)
+    return _override_lines(players, _override_facts(plan, week),
+                           _entry_identities(ml_dir, _player_table(raw_dir), "role_overrides.json"))
+
+
+def _never_drop_warning(plan: dict) -> str | None:
+    """A one-line fix-me when ``squad_prefs.json`` has dead ``never_drop`` entries."""
+    parts = [f"{label} {', '.join(plan[key])}"
+             for key, label in (("never_drop_unmatched", "unmatched"),
+                                ("never_drop_expired", "expired"),
+                                ("never_drop_invalid", "invalid"))
+             if plan.get(key)]
+    return ("⚠ never_drop entries not protecting anyone — " + "; ".join(parts)
+            + " (edit squad_prefs.json)") if parts else None
 
 
 def _claims(plan: dict) -> tuple[list[dict], list[dict]]:
@@ -572,7 +699,7 @@ def _trades_section(plan: dict | None, week: dict | None) -> list[str]:
     return lines
 
 
-def _waivers_section(plan: dict | None, since: datetime | None, sources: Sources) -> list[str]:
+def _waivers_section(plan: dict | None, week: dict | None, since: datetime | None, sources: Sources) -> list[str]:
     if plan is None:
         return ["- waiver_plan.json missing — ask Claude for `waiver_plan`"]
     primary, backups = _claims(plan)
@@ -582,10 +709,17 @@ def _waivers_section(plan: dict | None, since: datetime | None, sources: Sources
     if backups:
         lines.append("Backups if a claim fails:")
         lines += [_claim_line(0, rec, "-") for rec in backups]
-    changed = research_changes(sources.ml_dir, since)
+    changed = research_changes(plan, week, sources.ml_dir, sources.raw_dir, since)
     if changed:
         lines.append("Changed by research since last checklist:")
-        lines += [f"- {e.get('player')} ({e.get('team')}): {e.get('fact')}" for e in changed[:5]]
+        lines += changed
+    mine = hand_overrides(plan, week, sources.ml_dir, sources.raw_dir)
+    if mine:
+        lines.append("Your overrides:")
+        lines += mine
+    warning = _never_drop_warning(plan)
+    if warning:
+        lines.append(warning)
     order = _waiver_position(sources)
     if order:
         lines.append(f"Your waiver order: {order}")
@@ -651,7 +785,7 @@ def render_checklist(deadline: Deadline, delivery: Delivery, cfg: Config, source
     if deadline.kind == "trades":
         lines += _trades_section(plan, week)
     elif deadline.kind == "waivers":
-        lines += _waivers_section(plan, since, sources)
+        lines += _waivers_section(plan, week, since, sources)
     else:
         lines += _lineup_section(plan, week)
     if research_note:

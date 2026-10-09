@@ -1435,6 +1435,7 @@ func liveCount(s snapshot) int {
 // constants, to testdata/my_week_warning_codes.json at the repo root.
 const (
 	warnDeparted     = "departed"
+	warnDepartedProt = "departed_protected"
 	warnNoValue      = "no_value"
 	warnRoleOverride = "role_override"
 	warnBlankGW      = "blank_gw"
@@ -1502,6 +1503,9 @@ func attentionItem(name string, warnings, codes []string) (railItem, bool) {
 	switch code {
 	case warnDeparted:
 		item.Glyph, item.Note = "✗", "departed — drop"
+	case warnDepartedProt:
+		// never_drop entry on a player who has left: stale entry, not a drop.
+		item.Glyph, item.Note = "✗", "departed — fix never_drop"
 	case warnRoleOverride:
 		item.Note = strings.TrimPrefix(text, "role override: ")
 	case warnNoValue:

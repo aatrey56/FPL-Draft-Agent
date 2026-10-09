@@ -140,6 +140,27 @@ preseason tool) still reads the flat 2026-27 projection directly.
   evidence about GW6. Give long-lived facts a `valid_through_gw`.
   my_week lists the override `fact` and any departed squad player under
   `attention` (warning codes `role_override`, `departed`).
+- **Never-drop list** (`data/derived/<season>/ml/squad_prefs.json`,
+  hand-maintained and gitignored with the rest of `data/`): players you have
+  decided to keep — an injured player expected back, one you rate — are never
+  a drop pick or a `drop_candidates` row, so `waiver_plan` stops proposing
+  them. To add one, create the file or append to `never_drop`:
+  `{"never_drop": [{"player": "Examplename", "team": "ARS", "until_gw": 12,
+  "note": "back from injury in GW10"}]}`. `player` (the FPL `web_name`) +
+  `team` (short name) match one player; `code` (the permanent player code,
+  may be quoted) wins when given; `until_gw` and `note` are optional (no
+  `until_gw` = protected until you remove the entry; with it, protected
+  *through* that GW and then `never_drop_expired`). The drop at that position
+  falls to the next eligible squad player; if every player at a position is
+  protected, that position has no swaps (`best_by_position` empty there).
+  Every entry is accounted for in `never_drop_applied` /
+  `never_drop_unmatched` / `never_drop_expired` / `never_drop_invalid` (in
+  `waiver_plan.json` and `my_week.json`; the deadline checklist warns about
+  unmatched/expired/invalid entries). `code` and `until_gw` must be whole
+  numbers (102.9, NaN or 1e309 are invalid, never truncated) and, without a
+  `code`, `player` and `team` must be non-empty strings. A protected player
+  who has left the league shows as `departed_protected` (fix the entry), not
+  `departed` (drop him). Re-run `make derive` after editing.
 - Players the model cannot value (long injury last season, promoted, new
   signings) are **surfaced for human judgment, never scored as zero** — the
   tools refuse to guess rather than quietly recommend dropping a returning star.

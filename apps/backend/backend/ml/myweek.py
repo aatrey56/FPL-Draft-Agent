@@ -13,7 +13,10 @@ Role signals (see ``backend.ml.waiver``): ``role_overrides.json`` entries
 replace a player's next-GW start probability (an override of 0 — e.g. a
 ``return_gw`` still ahead — keeps him out of the XI like an injury does) and
 their ``fact`` is listed under ``attention``; a departed (status ``u``) squad
-player always appears there with the ``departed`` code.
+player always appears there with the ``departed`` code. A ``squad_prefs.json``
+``never_drop`` entry on a departed player turns that "drop him" advice (code ``departed``) into a
+"remove the entry" note; the entry lists are in ``never_drop_applied`` /
+``never_drop_unmatched`` / ``never_drop_expired``.
 
 Lineup (``backend.ml.lineup``): the XI is the best of every legal formation
 (``formation``), the bench is in auto-sub order and ``if_out`` gives, for
@@ -95,6 +98,8 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
 # warning per player (the TUI rail) must lead with "he cannot play", not with
 # a note about where his number came from.
 WARNING_DEPARTED = "departed"
+# A departed player on the never_drop list: the entry is stale, he is not to be dropped.
+WARNING_DEPARTED_PROTECTED = "departed_protected"
 WARNING_NO_VALUE = "no_value"
 WARNING_ROLE_OVERRIDE = "role_override"
 WARNING_BLANK_GW = "blank_gw"
@@ -109,7 +114,13 @@ def player_warning_items(row: pd.Series) -> list[tuple[str, str]]:
     items = []
     news = f" — {row['news']}" if row["news"] else ""
     if row["status"] == "u":
-        items.append((WARNING_DEPARTED, f"departed — no longer in the league, drop him{news}"))
+        # A never_drop entry on a player who has left is almost certainly stale.
+        if bool(row.get("never_drop", False)):
+            items.append((WARNING_DEPARTED_PROTECTED,
+                          "departed — no longer in the league, on your never_drop list"
+                          f" — remove the entry{news}"))
+        else:
+            items.append((WARNING_DEPARTED, f"departed — no longer in the league, drop him{news}"))
     # "unprojected" outranks an override's fact: with no value at all the
     # override has nothing to re-weight, and the human call is the headline.
     if row["xp_source"] == "none":
@@ -268,9 +279,12 @@ def main(argv: list[str] | None = None) -> int:
     players, override_report = apply_role_overrides(
         players, wv.load_role_overrides(ml_dir / "role_overrides.json"), next_event(bootstrap),
         wv.event_deadlines(bootstrap))
+    players, never_drop_report = wv.apply_never_drop(
+        players, wv.load_squad_prefs(ml_dir / "squad_prefs.json"), next_event(bootstrap))
     week = build_my_week(players, element_status, entry)
     week["gw"] = next_event(bootstrap)
     week.update(override_report)
+    week.update(never_drop_report)
     # scorer = what actually ran; xp_fallback/_reason say why model was not used
     week.update(scorer_meta)
 

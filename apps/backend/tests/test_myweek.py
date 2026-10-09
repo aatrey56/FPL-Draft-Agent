@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from backend.ml import myweek as mw
+from backend.ml import waiver as wv
 
 TEAMS = [{"id": 1, "name": "Arsenal", "short_name": "ARS"},
          {"id": 2, "name": "Wolves", "short_name": "WOL"}]
@@ -275,7 +276,7 @@ def test_warning_codes_match_the_fixture_shared_with_go():
     """The Go TUI and tool note read the same file, so a renamed or added
     code fails both suites instead of drifting silently."""
     shared = json.loads(SHARED_WARNING_CODES.read_text())["warning_codes"]
-    assert [mw.WARNING_DEPARTED, mw.WARNING_NO_VALUE, mw.WARNING_ROLE_OVERRIDE,
+    assert [mw.WARNING_DEPARTED, mw.WARNING_DEPARTED_PROTECTED, mw.WARNING_NO_VALUE, mw.WARNING_ROLE_OVERRIDE,
             mw.WARNING_BLANK_GW, mw.WARNING_AVAILABILITY, mw.WARNING_HEURISTIC_XP] == shared
     declared = {value for name, value in vars(mw).items() if name.startswith("WARNING_")}
     assert declared == set(shared)
@@ -343,6 +344,19 @@ def test_departed_squad_player_always_needs_attention(tmp_path):
     assert att["Heur"]["warning_codes"] == [mw.WARNING_DEPARTED]     # not doubled as availability
     assert att["Heur"]["warnings"] == [
         "departed — no longer in the league, drop him — Has joined Elsewhere FC"]
+
+
+def test_departed_player_on_the_never_drop_list_is_told_to_fix_the_entry(tmp_path):
+    players, status = _role_squad(tmp_path)
+    players.loc[players["web_name"] == "Heur", ["status", "news", "availability"]] = [
+        "u", "Has joined Elsewhere FC", 0.0]
+    players, report = wv.apply_never_drop(players, [{"player": "Heur", "team": "ARS"}], 4)
+    assert report["never_drop_applied"] == ["Heur"]
+    att = {p["web_name"]: p for p in mw.build_my_week(players, status, 42)["attention"]}
+    assert att["Heur"]["warning_codes"] == [mw.WARNING_DEPARTED_PROTECTED]   # not "departed"
+    assert att["Heur"]["warnings"] == [
+        "departed — no longer in the league, on your never_drop list — remove the entry"
+        " — Has joined Elsewhere FC"]
 
 
 # Explicit lifetime: these tests are about the my_week rendering, not staleness.

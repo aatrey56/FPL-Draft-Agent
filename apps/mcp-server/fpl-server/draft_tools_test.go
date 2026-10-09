@@ -165,6 +165,19 @@ func TestWaiverPlanServesSeasonArtifact(t *testing.T) {
 	}
 }
 
+// Every ranking mode shares the common note, which must tell the client that
+// a never_drop player is never the drop pick and how entries are reported.
+func TestWaiverPlanNoteMentionsNeverDrop(t *testing.T) {
+	for _, rankBy := range []string{"legacy", "next1", "next3", "ros"} {
+		note := waiverPlanNote(map[string]any{"rank_by": rankBy})
+		for _, want := range []string{"never_drop", "squad_prefs.json", "never_drop_unmatched", "never_drop_expired"} {
+			if !strings.Contains(note, want) {
+				t.Errorf("rank_by %s: note lacks %q", rankBy, want)
+			}
+		}
+	}
+}
+
 // The labels and ordering of waiver_plan depend on the ranking that ran
 // (rank_by; the scorer field in files written before it), so the note must
 // describe that mode and none of the others.
