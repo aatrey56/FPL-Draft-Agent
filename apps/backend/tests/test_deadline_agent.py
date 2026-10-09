@@ -882,6 +882,17 @@ def _write_overrides(sources, plan_applied, week_rows=(), recs=(), research_file
         (sources.ml_dir / "role_overrides.research.json").write_text(json.dumps(research_file))
 
 
+def _write_players(sources, players):
+    """Add ``(code, web_name, team)`` elements to the bootstrap of ``make_world``."""
+    path = sources.raw_dir / "bootstrap" / "bootstrap-static.json"
+    doc = json.loads(path.read_text())
+    teams = sorted({team for _, _, team in players})
+    doc["teams"] = [{"id": i, "short_name": team} for i, team in enumerate(teams, 1)]
+    doc["elements"] = [{"code": code, "web_name": name, "team": teams.index(team) + 1}
+                       for code, name, team in players]
+    path.write_text(json.dumps(doc))
+
+
 def test_research_section_uses_the_artifacts_research_tag_not_source_urls(tmp_path):
     """Regression: a hand-written role_overrides.json entry with an http source
     (or origin/source "research") used to be reported as 'Changed by research'."""
@@ -889,6 +900,9 @@ def test_research_section_uses_the_artifacts_research_tag_not_source_urls(tmp_pa
     (sources.ml_dir / "role_overrides.json").write_text(json.dumps({"overrides": [
         {"player": "Handmade", "team": "CHE", "fact": "hand fact", "source": "https://e.org/a",
          "origin": "research", "as_of": "2026-10-17"}]}))
+    (sources.ml_dir / "role_overrides.research.json").write_text(json.dumps({"overrides": [
+        {"player": "Newsy", "team": "ARS"}]}))
+    _write_players(sources, [(1, "Newsy", "ARS"), (2, "Handmade", "CHE")])
     _write_overrides(
         sources, ["research:Newsy", "Handmade"],
         week_rows=[{"web_name": "Newsy", "team": "ARS", "role_override": "research: back in training",
@@ -911,6 +925,7 @@ def test_same_web_name_research_and_hand_players_keep_their_own_fact(tmp_path):
         {"player": "Mid", "team": "CHE", "fact": "hand fact"}]}))
     (sources.ml_dir / "role_overrides.research.json").write_text(json.dumps({"overrides": [
         {"player": "Mid", "team": "ARS", "fact": "research: starts"}]}))
+    _write_players(sources, [(1, "Mid", "ARS"), (2, "Mid", "CHE")])
     _write_overrides(
         sources, ["research:Mid", "Mid"],
         week_rows=[{"web_name": "Mid", "team": "CHE", "role_override": "hand fact", "warnings": []}],
@@ -919,6 +934,38 @@ def test_same_web_name_research_and_hand_players_keep_their_own_fact(tmp_path):
     research, hand = render(tmp_path, "waivers", sources).split("Your overrides:")
     assert "- Mid (ARS): research: starts" in research and "hand fact" not in research
     assert "- Mid (CHE): hand fact" in hand and "starts" not in hand
+
+
+def test_stale_team_in_hand_override_follows_the_code_like_the_producer(tmp_path):
+    """Regression: the entry says ARS but code 102 now plays for CHE; the
+    producer matches by code, so the hand fact belongs to CHE Mid and the ARS
+    Mid fact is the researched one."""
+    sources = make_world(tmp_path, kinds=da.KINDS)
+    (sources.ml_dir / "role_overrides.json").write_text(json.dumps({"overrides": [
+        {"player": "Mid", "team": "ARS", "code": 102, "fact": "hand fact"}]}))
+    (sources.ml_dir / "role_overrides.research.json").write_text(json.dumps({"overrides": [
+        {"player": "Mid", "team": "ARS", "fact": "research: starts"}]}))
+    _write_players(sources, [(101, "Mid", "ARS"), (102, "Mid", "CHE")])
+    _write_overrides(
+        sources, ["research:Mid", "Mid"],
+        week_rows=[{"web_name": "Mid", "team": "CHE", "role_override": "hand fact", "warnings": []}],
+        recs=[{**rec("Mid", "Dropone", "MID", 0.5, add_el=98, drop_el=10), "add_team": "ARS",
+               "add_role_override": "research: starts"}])
+    research, hand = render(tmp_path, "waivers", sources).split("Your overrides:")
+    assert "- Mid (ARS): research: starts" in research and "hand fact" not in research
+    assert "- Mid (CHE): hand fact" in hand and "starts" not in hand
+
+
+def test_unresolvable_override_entry_omits_its_fact(tmp_path):
+    sources = make_world(tmp_path, kinds=da.KINDS)
+    (sources.ml_dir / "role_overrides.json").write_text(json.dumps({"overrides": [
+        {"player": "Ghost", "team": "CHE", "fact": "hand fact"}]}))
+    _write_players(sources, [(1, "Other", "CHE")])
+    _write_overrides(
+        sources, ["Ghost"],
+        week_rows=[{"web_name": "Ghost", "team": "CHE", "role_override": "hand fact", "warnings": []}])
+    text = render(tmp_path, "waivers", sources)
+    assert "- Ghost\n" in text + "\n" and "hand fact" not in text
 
 
 def test_ambiguous_same_name_fact_is_omitted_not_misattributed(tmp_path):
@@ -958,6 +1005,9 @@ def test_research_fact_comes_from_a_waiver_rec_too(tmp_path):
     sources = make_world(tmp_path, kinds=da.KINDS)
     recs = [{**rec("Zed", "Dropone", "MID", 0.5, add_el=99, drop_el=10), "add_team": "LIV",
              "add_role_override": "research: starts now"}]
+    (sources.ml_dir / "role_overrides.research.json").write_text(json.dumps({"overrides": [
+        {"player": "Zed", "team": "LIV"}]}))
+    _write_players(sources, [(9, "Zed", "LIV")])
     _write_overrides(sources, ["research:Zed"], recs=recs)
     assert "- Zed (LIV): research: starts now" in render(tmp_path, "waivers", sources)
 
