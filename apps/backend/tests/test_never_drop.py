@@ -85,14 +85,57 @@ def test_matching_by_name_and_team_needs_both():
     assert report["never_drop_applied"] == ["Mid"]
 
 
-def test_unmatched_and_ambiguous_entries_are_reported_not_applied():
-    entries = [{"player": "Ghost", "team": "ARS"},       # nobody
-               {"player": "Mid"},                        # no team: matches no row
+def test_unmatched_entries_are_reported_not_applied():
+    out, report = wv.apply_never_drop(_table(), [{"player": "Ghost", "team": "ARS"}], 5)
+    assert not out["never_drop"].any()
+    assert report["never_drop_unmatched"] == ["Ghost"]
+    assert report["never_drop_invalid"] == []
+
+
+def test_malformed_entries_are_invalid_with_a_reason_not_unmatched():
+    entries = [{"player": "Mid"},                        # no team and no code
                {"code": "abc", "player": "Bad"},         # non-numeric code
                {"player": "Weak", "team": "WOL", "until_gw": "soon"}]
     out, report = wv.apply_never_drop(_table(), entries, 5)
     assert not out["never_drop"].any()
-    assert report["never_drop_unmatched"] == ["Ghost", "Mid", "Bad", "Weak"]
+    assert report["never_drop_unmatched"] == []
+    assert [item.split(":")[0] for item in report["never_drop_invalid"]] == ["Mid", "Bad", "Weak"]
+    assert all(": " in item for item in report["never_drop_invalid"])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("code", 102.9), ("code", True), ("code", float("nan")), ("code", 1e309),
+    ("until_gw", 6.5), ("until_gw", 1e309), ("until_gw", float("-inf")), ("until_gw", False),
+    ("until_gw", [6])])
+def test_non_integral_or_non_finite_numbers_are_invalid_never_truncated(field, value):
+    """Regression: int(102.9) matched code 102 and int(1e309) raised OverflowError."""
+    entry = {"player": "Mid", "team": "ARS", field: value}
+    out, report = wv.apply_never_drop(_table(), [entry], 5)
+    assert not out["never_drop"].any()
+    assert len(report["never_drop_invalid"]) == 1 and field in report["never_drop_invalid"][0]
+
+
+def test_integral_floats_are_accepted():
+    out, report = wv.apply_never_drop(_table(), [{"code": 102.0, "until_gw": 6.0}], 5)
+    assert out["never_drop"].tolist() == [False, True, False]
+    assert report["never_drop_applied"] == ["102.0"]
+
+
+@pytest.mark.parametrize("bad", [["Mid"], ["Mid", "Mid", "Weak"], {"web_name": "Mid"}, "", 7])
+@pytest.mark.parametrize("field", ["player", "team"])
+def test_non_scalar_player_or_team_is_invalid_and_never_matches_elementwise(field, bad):
+    """Regression: a list/dict compared against the whole column crashed pandas
+    or matched elementwise (a 3-element list matched row-by-row)."""
+    entry = {"player": "Mid", "team": "ARS", field: bad}
+    out, report = wv.apply_never_drop(_table(), [entry], 5)
+    assert not out["never_drop"].any()
+    assert len(report["never_drop_invalid"]) == 1
+    assert report["never_drop_applied"] == []
+
+
+def test_match_player_rows_ignores_non_string_name_or_team():
+    assert len(wv.match_player_rows(_table(), {"player": ["Mid"], "team": ["ARS"]}, None)) == 0
+    assert len(wv.match_player_rows(_table(), {"player": "Mid", "team": {"a": 1}}, None)) == 0
 
 
 def test_until_gw_protects_through_that_gameweek_then_expires():

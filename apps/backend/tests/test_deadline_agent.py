@@ -965,10 +965,12 @@ def test_research_fact_comes_from_a_waiver_rec_too(tmp_path):
 def test_waivers_checklist_flags_dead_never_drop_entries(tmp_path):
     sources = make_world(tmp_path, kinds=da.KINDS)
     plan = {**WAIVER_PLAN, "never_drop_applied": ["Kept"], "never_drop_unmatched": ["Ghost"],
-            "never_drop_expired": ["Back"]}
+            "never_drop_expired": ["Back"],
+            "never_drop_invalid": ["Bad: code 1.5 is not a finite whole number"]}
     (sources.ml_dir / "waiver_plan.json").write_text(json.dumps(plan))
     text = render(tmp_path, "waivers", sources)
-    assert "never_drop entries not protecting anyone — unmatched Ghost; expired Back" in text
+    assert ("never_drop entries not protecting anyone — unmatched Ghost; expired Back; "
+            "invalid Bad: code 1.5 is not a finite whole number") in text
     clean = {**WAIVER_PLAN, "never_drop_applied": ["Kept"], "never_drop_unmatched": [],
              "never_drop_expired": []}
     (sources.ml_dir / "waiver_plan.json").write_text(json.dumps(clean))

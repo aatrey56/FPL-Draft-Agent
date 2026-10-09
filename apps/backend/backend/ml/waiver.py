@@ -112,8 +112,8 @@ Design (v1, pre-GW1-honest):
   drop at his position falls to the next eligible player, and a position
   whose every player is protected gets no swaps (``best_by_position`` empty).
   ``until_gw`` protects through that gameweek, then the entry is expired.
-  ``never_drop_applied`` / ``never_drop_unmatched`` / ``never_drop_expired``
-  in the output say what happened to every entry.
+  ``never_drop_applied`` / ``never_drop_unmatched`` / ``never_drop_expired`` /
+  ``never_drop_invalid`` (a malformed entry, with the reason) in the output say what happened to every entry.
 
 CLI: python -m backend.ml.waiver --league <id> --entry <id> [--scorer {heuristic,model}]
          [--horizon {1,3,ros}]
@@ -126,6 +126,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -169,7 +170,8 @@ BEST_BY_POSITION_N = 3
 OVERRIDE_REPORT_KEYS = ("overrides_applied", "overrides_unmatched", "overrides_expired",
                         "overrides_stale", "overrides_blocked")
 # What ``apply_never_drop`` did with each squad_prefs.json ``never_drop`` entry.
-NEVER_DROP_REPORT_KEYS = ("never_drop_applied", "never_drop_unmatched", "never_drop_expired")
+NEVER_DROP_REPORT_KEYS = ("never_drop_applied", "never_drop_unmatched", "never_drop_expired",
+                          "never_drop_invalid")
 
 
 # ---------------------------------------------------------------------------
@@ -747,9 +749,14 @@ def match_player_rows(players: pd.DataFrame, entry: dict, code: int | None) -> p
     permanent ``code`` when ``code`` is given (an int, already parsed by the
     caller), else by ``entry["player"]`` (web name) + ``entry["team"]`` (short
     name). Shared by ``role_overrides.json`` and ``squad_prefs.json``; callers
-    treat anything but exactly one row as unmatched."""
+    treat anything but exactly one row as unmatched. Without a ``code`` the
+    name and team must both be non-empty strings (a list or dict there would
+    compare elementwise); otherwise nothing matches."""
     if code is not None:
         return players.index[pd.to_numeric(players["code"], errors="coerce") == code]
+    name, team = entry.get("player"), entry.get("team")
+    if not (isinstance(name, str) and name and isinstance(team, str) and team):
+        return players.index[:0]
     return players.index[(players["web_name"] == entry.get("player"))
                          & (players["team"] == entry.get("team"))]
 
@@ -777,6 +784,53 @@ def load_squad_prefs(path: Path) -> list[dict]:
     return [dict(entry) for entry in entries if isinstance(entry, dict)]
 
 
+def _strict_int(value: Any, field: str) -> int:
+    """``value`` as an int when it is exactly one: an int, an integral finite
+    float, or a string of digits. Raises ``ValueError`` naming ``field``
+    otherwise (bool, 102.9, nan, inf, 1e309, lists...) — ``int()`` would
+    truncate 102.9 or raise OverflowError on inf."""
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be an integer, not a boolean")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value) and value.is_integer():
+            return int(value)
+        raise ValueError(f"{field} {value!r} is not a finite whole number")
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            pass
+    raise ValueError(f"{field} {value!r} is not an integer")
+
+
+def _never_drop_label(entry: dict) -> str:
+    """Report name of an entry: its player string, else its scalar code, else ``?``
+    (never the repr of a list or dict)."""
+    for key in ("player", "code"):
+        value = entry.get(key)
+        if isinstance(value, str) and value:
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+    return "?"
+
+
+def _never_drop_entry_fields(entry: dict) -> tuple[int | None, int | None]:
+    """``(code, until_gw)`` of a never_drop entry, validated. Raises
+    ``ValueError`` with a reason when a numeric field is not a whole number,
+    or when there is no ``code`` and ``player`` / ``team`` are not both
+    non-empty strings."""
+    code = _strict_int(entry["code"], "code") if entry.get("code") is not None else None
+    until = _strict_int(entry["until_gw"], "until_gw") if entry.get("until_gw") is not None else None
+    if code is None:
+        for field in ("player", "team"):
+            if not (isinstance(entry.get(field), str) and entry[field]):
+                raise ValueError(f"{field} must be a non-empty string when there is no code")
+    return code, until
+
+
 def apply_never_drop(players: pd.DataFrame, entries: list[dict],
                      target_gw: int | None) -> tuple[pd.DataFrame, dict[str, list[str]]]:
     """Mark the players the user never wants dropped.
@@ -787,8 +841,10 @@ def apply_never_drop(players: pd.DataFrame, entries: list[dict],
     that gameweek and is ``expired`` once ``target_gw`` is past it (a missing
     ``target_gw`` leaves it live). Returns ``(players copy, report)``: the
     copy gains a ``never_drop`` bool column; the report lists entry names
-    under ``never_drop_applied`` / ``never_drop_unmatched`` (no single match,
-    or a non-numeric ``code`` / ``until_gw``) / ``never_drop_expired``.
+    under ``never_drop_applied`` / ``never_drop_unmatched`` (no single match) /
+    ``never_drop_expired`` / ``never_drop_invalid`` (``"<name>: <reason>"`` — a
+    ``code`` / ``until_gw`` that is not a finite whole number, or a missing or
+    non-string ``player`` / ``team``).
     Nothing raises on a bad entry. ``drop_order`` never returns a protected
     player, so he is neither a drop pick nor a drop candidate.
     """
@@ -796,13 +852,12 @@ def apply_never_drop(players: pd.DataFrame, entries: list[dict],
     out["never_drop"] = False
     report: dict[str, list[str]] = {key: [] for key in NEVER_DROP_REPORT_KEYS}
     for entry in entries:
-        name = str(entry.get("player") or entry.get("code") or "?")
+        name = _never_drop_label(entry)
         try:
-            code = int(entry["code"]) if entry.get("code") is not None else None
-            until = int(entry["until_gw"]) if entry.get("until_gw") is not None else None
-        except (TypeError, ValueError):
-            logger.warning("never_drop entry for %s has a non-numeric code/until_gw — skipped", name)
-            report["never_drop_unmatched"].append(name)
+            code, until = _never_drop_entry_fields(entry)
+        except ValueError as exc:
+            logger.warning("never_drop entry for %s is invalid (%s) — skipped", name, exc)
+            report["never_drop_invalid"].append(f"{name}: {exc}")
             continue
         if until is not None and target_gw is not None and target_gw > until:
             report["never_drop_expired"].append(name)

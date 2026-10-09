@@ -593,7 +593,8 @@ def _never_drop_warning(plan: dict) -> str | None:
     """A one-line fix-me when ``squad_prefs.json`` has dead ``never_drop`` entries."""
     parts = [f"{label} {', '.join(plan[key])}"
              for key, label in (("never_drop_unmatched", "unmatched"),
-                                ("never_drop_expired", "expired"))
+                                ("never_drop_expired", "expired"),
+                                ("never_drop_invalid", "invalid"))
              if plan.get(key)]
     return ("⚠ never_drop entries not protecting anyone — " + "; ".join(parts)
             + " (edit squad_prefs.json)") if parts else None
