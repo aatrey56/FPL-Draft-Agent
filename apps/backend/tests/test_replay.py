@@ -280,7 +280,7 @@ def test_leak6_plan_regression_matches_pre_seam_recommendations(tmp_path):
     assert (star["add_element"], star["drop_element"]) == (20, 11)
     assert set(result) == {"players", "squad", "xi_next3_xp", "rank_by", "recommendations",
                            "best_by_position", "drop_candidates", "unprojected_squad", *wv.OVERRIDE_REPORT_KEYS,
-                           "xp_reconciled"}
+                           *wv.NEVER_DROP_REPORT_KEYS, "xp_reconciled"}
     assert result["rank_by"] == "legacy"
 
 

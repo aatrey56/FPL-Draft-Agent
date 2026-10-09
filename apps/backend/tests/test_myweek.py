@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from backend.ml import myweek as mw
+from backend.ml import waiver as wv
 
 TEAMS = [{"id": 1, "name": "Arsenal", "short_name": "ARS"},
          {"id": 2, "name": "Wolves", "short_name": "WOL"}]
@@ -343,6 +344,18 @@ def test_departed_squad_player_always_needs_attention(tmp_path):
     assert att["Heur"]["warning_codes"] == [mw.WARNING_DEPARTED]     # not doubled as availability
     assert att["Heur"]["warnings"] == [
         "departed — no longer in the league, drop him — Has joined Elsewhere FC"]
+
+
+def test_departed_player_on_the_never_drop_list_is_told_to_fix_the_entry(tmp_path):
+    players, status = _role_squad(tmp_path)
+    players.loc[players["web_name"] == "Heur", ["status", "news", "availability"]] = [
+        "u", "Has joined Elsewhere FC", 0.0]
+    players, report = wv.apply_never_drop(players, [{"player": "Heur", "team": "ARS"}], 4)
+    assert report["never_drop_applied"] == ["Heur"]
+    att = {p["web_name"]: p for p in mw.build_my_week(players, status, 42)["attention"]}
+    assert att["Heur"]["warnings"] == [
+        "departed — no longer in the league, on your never_drop list — remove the entry"
+        " — Has joined Elsewhere FC"]
 
 
 # Explicit lifetime: these tests are about the my_week rendering, not staleness.

@@ -17,6 +17,9 @@
   researched, awake-hours-aware checklists before each deadline via a 5-minute
   launchd tick (`com.fplcopilot.deadline`); `notify_state.py` no longer sends
   the 3h/2h reminders.
+- Never-drop list (`squad_prefs.json`): waiver_plan never proposes dropping a
+  protected squad player; deadline checklist separates research overrides
+  (`research:` in the artifacts) from hand-written ones.
 - Tool surface consolidated 34 → 14; legacy OpenAI/FastAPI chat stack deprecated.
 
 ## 0.2.0

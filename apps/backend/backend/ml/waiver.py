@@ -104,6 +104,16 @@ Design (v1, pre-GW1-honest):
   player the live feed rules out (availability 0) is ``overrides_blocked``.
   ``overrides_applied`` / ``overrides_unmatched`` / ``overrides_expired`` /
   ``overrides_stale`` / ``overrides_blocked`` in the output say what happened to every entry.
+* **Never-drop list** — ``data/derived/<season>/ml/squad_prefs.json``
+  (``{"never_drop": [{"player", "team"?, "code"?, "until_gw"?, "note"?}]}``,
+  hand-maintained, gitignored) names squad players the user has decided to
+  keep. Matched like a role override (``code``, else ``player`` + ``team``).
+  A protected player is never a drop pick or a ``drop_candidates`` row: the
+  drop at his position falls to the next eligible player, and a position
+  whose every player is protected gets no swaps (``best_by_position`` empty).
+  ``until_gw`` protects through that gameweek, then the entry is expired.
+  ``never_drop_applied`` / ``never_drop_unmatched`` / ``never_drop_expired``
+  in the output say what happened to every entry.
 
 CLI: python -m backend.ml.waiver --league <id> --entry <id> [--scorer {heuristic,model}]
          [--horizon {1,3,ros}]
@@ -158,6 +168,8 @@ BEST_BY_POSITION_N = 3
 # the order the output JSON and CLI list them.
 OVERRIDE_REPORT_KEYS = ("overrides_applied", "overrides_unmatched", "overrides_expired",
                         "overrides_stale", "overrides_blocked")
+# What ``apply_never_drop`` did with each squad_prefs.json ``never_drop`` entry.
+NEVER_DROP_REPORT_KEYS = ("never_drop_applied", "never_drop_unmatched", "never_drop_expired")
 
 
 # ---------------------------------------------------------------------------
@@ -730,6 +742,82 @@ def load_role_overrides(path: Path) -> list[dict]:
             for entry in entries if isinstance(entry, dict)]
 
 
+def match_player_rows(players: pd.DataFrame, entry: dict, code: int | None) -> pd.Index:
+    """Index labels of the ``players`` rows a hand-written entry names: by the
+    permanent ``code`` when ``code`` is given (an int, already parsed by the
+    caller), else by ``entry["player"]`` (web name) + ``entry["team"]`` (short
+    name). Shared by ``role_overrides.json`` and ``squad_prefs.json``; callers
+    treat anything but exactly one row as unmatched."""
+    if code is not None:
+        return players.index[pd.to_numeric(players["code"], errors="coerce") == code]
+    return players.index[(players["web_name"] == entry.get("player"))
+                         & (players["team"] == entry.get("team"))]
+
+
+def load_squad_prefs(path: Path) -> list[dict]:
+    """The ``never_drop`` entries of ``squad_prefs.json``
+    (``{"never_drop": [{"player", "team"?, "code"?, "until_gw"?, "note"?}]}``).
+
+    The file is optional and hand-maintained, like ``role_overrides.json``:
+    absent -> ``[]`` silently; unparseable or the wrong shape -> ``[]`` with a
+    WARNING, so a typo never blocks the weekly run (but then nobody is
+    protected — the warning is the only signal). Entries are copies.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8")).get("never_drop", [])
+    except (OSError, ValueError, AttributeError) as exc:
+        logger.warning("squad prefs %s unreadable (%s) — never_drop ignored", path.name, exc)
+        return []
+    if not isinstance(entries, list):
+        logger.warning("squad prefs %s: 'never_drop' is not a list — ignored", path.name)
+        return []
+    return [dict(entry) for entry in entries if isinstance(entry, dict)]
+
+
+def apply_never_drop(players: pd.DataFrame, entries: list[dict],
+                     target_gw: int | None) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+    """Mark the players the user never wants dropped.
+
+    Each entry names one player the way a role override does
+    (``match_player_rows``: ``code`` first — int or numeric string — else
+    ``player`` + ``team``). An entry with ``until_gw`` protects him through
+    that gameweek and is ``expired`` once ``target_gw`` is past it (a missing
+    ``target_gw`` leaves it live). Returns ``(players copy, report)``: the
+    copy gains a ``never_drop`` bool column; the report lists entry names
+    under ``never_drop_applied`` / ``never_drop_unmatched`` (no single match,
+    or a non-numeric ``code`` / ``until_gw``) / ``never_drop_expired``.
+    Nothing raises on a bad entry. ``drop_order`` never returns a protected
+    player, so he is neither a drop pick nor a drop candidate.
+    """
+    out = players.copy()
+    out["never_drop"] = False
+    report: dict[str, list[str]] = {key: [] for key in NEVER_DROP_REPORT_KEYS}
+    for entry in entries:
+        name = str(entry.get("player") or entry.get("code") or "?")
+        try:
+            code = int(entry["code"]) if entry.get("code") is not None else None
+            until = int(entry["until_gw"]) if entry.get("until_gw") is not None else None
+        except (TypeError, ValueError):
+            logger.warning("never_drop entry for %s has a non-numeric code/until_gw — skipped", name)
+            report["never_drop_unmatched"].append(name)
+            continue
+        if until is not None and target_gw is not None and target_gw > until:
+            report["never_drop_expired"].append(name)
+            continue
+        matched = match_player_rows(out, entry, code)
+        if len(matched) != 1:
+            logger.warning("never_drop entry for %s (%s) matches %d players — skipped",
+                           name, entry.get("team"), len(matched))
+            report["never_drop_unmatched"].append(name)
+            continue
+        out.loc[matched[0], "never_drop"] = True
+        report["never_drop_applied"].append(name)
+    return out, report
+
+
 def event_deadlines(bootstrap: dict) -> dict[int, datetime]:
     """Gameweek -> deadline (UTC) from the bootstrap ``events`` (draft
     ``{"data": [...]}`` shape or a plain list); events without a parseable
@@ -926,11 +1014,7 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
         if lifetime != "live":
             report[f"overrides_{lifetime}"].append(name)
             continue
-        if code is not None:
-            matched = out.index[pd.to_numeric(out["code"], errors="coerce") == code]
-        else:
-            matched = out.index[(out["web_name"] == entry.get("player"))
-                                & (out["team"] == entry.get("team"))]
+        matched = match_player_rows(out, entry, code)
         if len(matched) != 1:
             logger.warning("role override for %s (%s) matches %d players — skipped",
                            name, entry.get("team"), len(matched))
@@ -1049,10 +1133,14 @@ def drop_order(squad: pd.DataFrame, rank_by: str = "legacy") -> pd.DataFrame:
       after every player it can.
 
     A player with no value at all is unknown, not worthless, and is never
-    returned (see ``unprojected_squad``).
+    returned (see ``unprojected_squad``). Neither is a protected player
+    (``never_drop`` True, see ``apply_never_drop``): the drop falls to the next
+    eligible player at the position, and to nobody when all are protected.
     """
     departed = squad["status"] == "u"
-    droppable = squad[valued_mask(squad, rank_by) | departed]
+    protected = (squad["never_drop"].astype(bool) if "never_drop" in squad.columns
+                 else pd.Series(False, index=squad.index))
+    droppable = squad[(valued_mask(squad, rank_by) | departed) & ~protected]
     return (droppable.assign(_kept=droppable["status"] != "u")
             .sort_values(["_kept", *_DROP_KEYS[rank_by]], na_position="last")
             .drop(columns="_kept"))
@@ -1291,6 +1379,7 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
          gw_xp: pd.DataFrame | None = None,
          season_panel: pd.DataFrame | None = None,
          role_overrides: list[dict] | None = None,
+         never_drop: list[dict] | None = None,
          horizon_xp: pd.DataFrame | None = None,
          horizon: str = DEFAULT_HORIZON,
          prior_season: str = PRIOR_SEASON) -> dict[str, Any]:
@@ -1307,12 +1396,14 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
     ``season_panel`` (optional) switches on the club-move role signals.
     ``role_overrides`` (optional, entries of ``role_overrides.json``) are
     applied for the bootstrap's next event; see ``apply_role_overrides``.
+    ``never_drop`` (optional, entries of ``squad_prefs.json``) protects squad
+    players from being a drop pick or candidate; see ``apply_never_drop``.
 
     Free agents are the element-status rows with no owner. Returns
     ``players``, ``squad`` (DataFrames), ``xi_next3_xp``, ``rank_by``,
     ``recommendations``, ``best_by_position``, ``drop_candidates``,
     ``unprojected_squad``, the
-    ``OVERRIDE_REPORT_KEYS`` name lists and ``xp_reconciled`` (how many model
+    ``OVERRIDE_REPORT_KEYS`` and ``NEVER_DROP_REPORT_KEYS`` name lists and ``xp_reconciled`` (how many model
     rows were zeroed because the player is now ruled out; see
     ``build_player_table``). No I/O beyond reading ``projections_path``.
     """
@@ -1326,6 +1417,8 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
     players, override_report = apply_role_overrides(
         players, role_overrides or [], next_event(bootstrap), event_deadlines(bootstrap),
         horizon_xp)
+    players, never_drop_report = apply_never_drop(
+        players, never_drop or [], next_event(bootstrap))
     free = {row["element"] for row in element_status.get("element_status", [])
             if row.get("owner") is None}
     players["is_free_agent"] = players["element"].isin(free)
@@ -1340,7 +1433,7 @@ def plan(bootstrap: dict, element_status: dict, seasons: pd.DataFrame,
         "best_by_position": best_by_position(ranked),
         "drop_candidates": drop_candidates(squad, rank_by),
         "unprojected_squad": unprojected_squad(squad, rank_by),
-        **override_report,
+        **override_report, **never_drop_report,
         "xp_reconciled": int(players["xp_reconciled"].sum()),
     }
 
@@ -1396,6 +1489,7 @@ def main(argv: list[str] | None = None) -> int:
     result = plan(bootstrap, element_status, seasons, projections_path,
                   entry, args.top, gw_xp=gw_xp, season_panel=season_panel,
                   role_overrides=load_role_overrides(ml_dir / "role_overrides.json"),
+                  never_drop=load_squad_prefs(ml_dir / "squad_prefs.json"),
                   horizon_xp=horizon_xp, horizon=args.horizon, prior_season=prior_season)
     squad = result["squad"]
     xi, xi_total = best_xi(squad)
@@ -1427,6 +1521,11 @@ def main(argv: list[str] | None = None) -> int:
     print("\n== ROLE OVERRIDES (role_overrides.json; next GW, and the model's 3-GW "
           "value for the events an entry covers) ==")
     for key, names in overrides.items():
+        print(f"  {key}: {', '.join(names) or '-'}")
+
+    never_drop = {key: result[key] for key in NEVER_DROP_REPORT_KEYS}
+    print("\n== NEVER DROP (squad_prefs.json; never a drop pick or candidate) ==")
+    for key, names in never_drop.items():
         print(f"  {key}: {', '.join(names) or '-'}")
 
     def _num(x, width=6):
@@ -1488,7 +1587,7 @@ def main(argv: list[str] | None = None) -> int:
          "max_recs_per_drop": None if result["rank_by"] == "legacy" else MAX_RECS_PER_DROP,
          "best_by_position": result["best_by_position"],
          "drop_candidates": result["drop_candidates"],
-         "minutes_through_gw": minutes_through_gw, **overrides,
+         "minutes_through_gw": minutes_through_gw, **overrides, **never_drop,
          "unprojected_squad": unknown, "xp_reconciled": result["xp_reconciled"]}, indent=1))
     logger.info("wrote %s", out)
     return 0

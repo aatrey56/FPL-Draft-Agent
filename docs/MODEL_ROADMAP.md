@@ -429,6 +429,22 @@ changed club). Three signals, all in `backend/ml/waiver.py`, used by
   Overrides touch the next GW, and since the horizons work the model's
   3-GW value event by event (see "Horizons"); never ROS, and never a
   heuristic `next3_xp`.
+- **`squad_prefs.json`** (optional, `data/derived/<season>/ml/`,
+  hand-maintained, gitignored): `{"never_drop": [{"player", "team"?,
+  "code"?, "until_gw"?, "note"?}]}`. Entries match a player exactly like
+  role overrides (`waiver.match_player_rows`: `code` first, else `player` +
+  `team`; exactly one row or the entry is `never_drop_unmatched`).
+  `drop_order` excludes protected players, so they are neither the drop pick
+  nor a `drop_candidates` row; the pick falls to the next eligible player at
+  the position, and a fully protected position yields no recs
+  (`best_by_position[pos] == []`). `until_gw` is inclusive: the entry is
+  `never_drop_expired` once the planned GW is past it, and a missing
+  planned GW (season over) leaves it live. A departed (status `u`) protected
+  player is also never the drop; `my_week` says to remove the entry instead
+  of "drop him". Other drop consumers (`drop_radar` is league-wide
+  ownership changes, `trade_check` is player-vs-player) propose no squad
+  drops; the deadline checklist reads `drop_candidates` from
+  `waiver_plan.json`, so it inherits the protection.
 
 Replay (GW2-5, rank-1 `gw_gain`): `--scorer model` passes the as-of season
 panel (gameweeks completed by the waiver cutoff) to the role signals and scores **+8.0**, the same picks as
