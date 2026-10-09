@@ -154,9 +154,13 @@ preseason tool) still reads the flat 2026-27 projection directly.
   falls to the next eligible squad player; if every player at a position is
   protected, that position has no swaps (`best_by_position` empty there).
   Every entry is accounted for in `never_drop_applied` /
-  `never_drop_unmatched` / `never_drop_expired` (in `waiver_plan.json` and
-  `my_week.json`; the deadline checklist warns about unmatched/expired
-  entries). Re-run `make derive` after editing.
+  `never_drop_unmatched` / `never_drop_expired` / `never_drop_invalid` (in
+  `waiver_plan.json` and `my_week.json`; the deadline checklist warns about
+  unmatched/expired/invalid entries). `code` and `until_gw` must be whole
+  numbers (102.9, NaN or 1e309 are invalid, never truncated) and, without a
+  `code`, `player` and `team` must be non-empty strings. A protected player
+  who has left the league shows as `departed_protected` (fix the entry), not
+  `departed` (drop him). Re-run `make derive` after editing.
 - Players the model cannot value (long injury last season, promoted, new
   signings) are **surfaced for human judgment, never scored as zero** — the
   tools refuse to guess rather than quietly recommend dropping a returning star.
