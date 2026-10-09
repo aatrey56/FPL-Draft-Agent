@@ -508,23 +508,53 @@ def _overrides_by_origin(plan: dict | None, week: dict | None) -> tuple[list[str
     return research, hand
 
 
-def _override_facts(plan: dict | None, week: dict | None) -> dict[str, tuple[str | None, str]]:
-    """``web_name -> (team, fact)`` for every override fact the artifacts show:
-    ``add_role_override`` on waiver recs, ``role_override`` on my_week rows."""
-    facts: dict[str, tuple[str | None, str]] = {}
+def _override_facts(plan: dict | None, week: dict | None) -> dict[str, list[tuple[str | None, str]]]:
+    """``web_name -> [(team, fact), ...]`` (distinct, in artifact order) for every
+    override fact the artifacts show: ``add_role_override`` on waiver recs,
+    ``role_override`` on my_week rows. Two players can share a ``web_name``, so
+    a name maps to every (team, fact) pair seen, never to one of them."""
+    facts: dict[str, list[tuple[str | None, str]]] = {}
+
+    def add(name: Any, team: Any, fact: str) -> None:
+        pair = (team, fact)
+        if pair not in facts.setdefault(name, []):
+            facts[name].append(pair)
+
     for rec in (plan or {}).get("recommendations") or []:
         if rec.get("add_role_override"):
-            facts.setdefault(rec.get("add"), (rec.get("add_team"), rec["add_role_override"]))
+            add(rec.get("add"), rec.get("add_team"), rec["add_role_override"])
     for row in ((week or {}).get("xi") or []) + ((week or {}).get("bench") or []):
         if row.get("role_override"):
-            facts.setdefault(row.get("web_name"), (row.get("team"), row["role_override"]))
+            add(row.get("web_name"), row.get("team"), row["role_override"])
     return facts
 
 
-def _override_lines(players: list[str], facts: dict[str, tuple[str | None, str]]) -> list[str]:
+def _entry_teams(ml_dir: Path, filename: str) -> dict[str, set[str]]:
+    """``player -> {team, ...}`` for the entries of an overrides file
+    (``role_overrides.json`` or ``role_overrides.research.json``); the team is
+    what tells two same-named players apart when attributing a fact to an origin."""
+    doc = _read_json(ml_dir / filename) or {}
+    entries = doc.get("overrides") if isinstance(doc.get("overrides"), list) else []
+    teams: dict[str, set[str]] = {}
+    for entry in entries:
+        if isinstance(entry, dict) and isinstance(entry.get("team"), str):
+            teams.setdefault(str(entry.get("player")), set()).add(entry["team"])
+    return teams
+
+
+def _override_lines(players: list[str], facts: dict[str, list[tuple[str | None, str]]],
+                    origin_teams: dict[str, set[str]]) -> list[str]:
+    """One line per player. His fact is looked up by name, then narrowed to the
+    teams his origin's overrides file gives him; when more than one distinct
+    (team, fact) remains the attribution is ambiguous and the line carries the
+    name alone rather than another player's fact."""
     lines = []
     for player in players[:MAX_OVERRIDE_LINES]:
-        team, fact = facts.get(player, (None, ""))
+        candidates = facts.get(player, [])
+        teams = origin_teams.get(player)
+        if teams:
+            candidates = [pair for pair in candidates if pair[0] in teams]
+        team, fact = candidates[0] if len(candidates) == 1 else (None, "")
         lines.append(f"- {player}" + (f" ({team})" if team else "") + (f": {fact}" if fact else ""))
     return lines
 
@@ -548,13 +578,15 @@ def research_changes(plan: dict | None, week: dict | None, ml_dir: Path,
     as_of = _research_as_of(ml_dir)
     fresh = [p for p in players
              if since is None or as_of.get(p) is None or as_of[p] > since]
-    return _override_lines(fresh, _override_facts(plan, week))
+    return _override_lines(fresh, _override_facts(plan, week),
+                           _entry_teams(ml_dir, "role_overrides.research.json"))
 
 
-def hand_overrides(plan: dict | None, week: dict | None) -> list[str]:
+def hand_overrides(plan: dict | None, week: dict | None, ml_dir: Path) -> list[str]:
     """Checklist lines for the hand-maintained ``role_overrides.json`` entries in force."""
     _, players = _overrides_by_origin(plan, week)
-    return _override_lines(players, _override_facts(plan, week))
+    return _override_lines(players, _override_facts(plan, week),
+                           _entry_teams(ml_dir, "role_overrides.json"))
 
 
 def _never_drop_warning(plan: dict) -> str | None:
@@ -648,7 +680,7 @@ def _waivers_section(plan: dict | None, week: dict | None, since: datetime | Non
     if changed:
         lines.append("Changed by research since last checklist:")
         lines += changed
-    mine = hand_overrides(plan, week)
+    mine = hand_overrides(plan, week, sources.ml_dir)
     if mine:
         lines.append("Your overrides:")
         lines += mine

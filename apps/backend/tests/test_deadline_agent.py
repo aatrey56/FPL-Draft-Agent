@@ -903,6 +903,34 @@ def test_research_section_uses_the_artifacts_research_tag_not_source_urls(tmp_pa
     assert "- Handmade (CHE): hand fact" in hand and "Newsy" not in hand
 
 
+def test_same_web_name_research_and_hand_players_keep_their_own_fact(tmp_path):
+    """Regression: facts were keyed by web_name alone, so a researched squad
+    player and a hand-overridden free agent both called "Mid" swapped facts."""
+    sources = make_world(tmp_path, kinds=da.KINDS)
+    (sources.ml_dir / "role_overrides.json").write_text(json.dumps({"overrides": [
+        {"player": "Mid", "team": "CHE", "fact": "hand fact"}]}))
+    (sources.ml_dir / "role_overrides.research.json").write_text(json.dumps({"overrides": [
+        {"player": "Mid", "team": "ARS", "fact": "research: starts"}]}))
+    _write_overrides(
+        sources, ["research:Mid", "Mid"],
+        week_rows=[{"web_name": "Mid", "team": "CHE", "role_override": "hand fact", "warnings": []}],
+        recs=[{**rec("Mid", "Dropone", "MID", 0.5, add_el=98, drop_el=10), "add_team": "ARS",
+               "add_role_override": "research: starts"}])
+    research, hand = render(tmp_path, "waivers", sources).split("Your overrides:")
+    assert "- Mid (ARS): research: starts" in research and "hand fact" not in research
+    assert "- Mid (CHE): hand fact" in hand and "starts" not in hand
+
+
+def test_ambiguous_same_name_fact_is_omitted_not_misattributed(tmp_path):
+    sources = make_world(tmp_path, kinds=da.KINDS)
+    _write_overrides(
+        sources, ["Mid"],
+        week_rows=[{"web_name": "Mid", "team": "CHE", "role_override": "fact-alpha", "warnings": []},
+                   {"web_name": "Mid", "team": "ARS", "role_override": "fact-beta", "warnings": []}])
+    text = render(tmp_path, "waivers", sources)
+    assert "- Mid\n" in text + "\n" and "fact-alpha" not in text and "fact-beta" not in text
+
+
 def test_hand_overrides_alone_produce_no_research_section(tmp_path):
     sources = make_world(tmp_path, kinds=da.KINDS)
     (sources.ml_dir / "role_overrides.json").write_text(json.dumps({"overrides": [
