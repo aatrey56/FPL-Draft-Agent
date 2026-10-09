@@ -277,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         season_panel=wv.load_season_panel(ml_dir / "player_gameweeks.parquet", args.season),
         prior_season=prior_season)
     players, override_report = apply_role_overrides(
-        players, wv.load_role_overrides(ml_dir / "role_overrides.json"), next_event(bootstrap),
+        players, wv.load_all_role_overrides(ml_dir), next_event(bootstrap),
         wv.event_deadlines(bootstrap))
     players, never_drop_report = wv.apply_never_drop(
         players, wv.load_squad_prefs(ml_dir / "squad_prefs.json"), next_event(bootstrap))

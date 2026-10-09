@@ -64,7 +64,7 @@ import requests
 from dotenv import load_dotenv
 
 from backend.ml import paths
-from backend.ml.waiver import match_player_rows
+from backend.ml.waiver import match_player_rows, override_code
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,7 @@ DERIVE_LOCK_WAIT_S = 300
 KILL_GRACE_S = 10               # SIGTERM -> SIGKILL grace for a timed-out process group
 KILL_POLL_S = 0.2
 RESEARCH_NO_KEY_EXIT = 3        # backend.ml.research: no API key -> skip silently
+RESEARCH_MONTHLY_CAP_EXIT = 4   # backend.ml.research: monthly spend cap reached, nothing run
 MAX_CLAIMS = 5
 MAX_BACKUPS = 3
 MAX_TRADE_NOTES = 3
@@ -561,8 +562,8 @@ def _entry_identities(ml_dir: Path, players: pd.DataFrame,
         if not isinstance(entry, dict):
             continue
         try:
-            code = int(entry["code"]) if entry.get("code") is not None else None
-        except (TypeError, ValueError):
+            code = override_code(entry)
+        except ValueError:
             continue
         matched = match_player_rows(players, entry, code)
         if len(matched) == 1:
@@ -960,18 +961,25 @@ def run_research_and_derive(deadline: Deadline, repo: Path, season: str,
                             research_ok: Callable[[], bool] = research_available,
                             lock: Callable[[Path], Any] = derive_lock,
                             data_root: Path | None = None) -> dict[str, str]:
-    """-> ``{"research": ok|skipped|failed|absent, "derive": ok|failed|busy}``.
+    """-> ``{"research": ok|skipped|capped|failed|absent, "derive": ok|failed|busy}``.
 
-    ``data_root`` (``None`` = the repo's ``data/``) is handed to ``make derive``.
+    Research exit codes: 0 ok, 3 no API key (skipped, silent), 4 monthly
+    spend cap reached (capped — nothing ran, the checklist says so), anything
+    else failed. ``season`` and ``data_root`` (``None`` = the repo's
+    ``data/``) are handed to both research and ``make derive`` so they read
+    and write the same tree.
     """
     outcome = {"research": "absent", "derive": "failed"}
     backend = repo / "apps" / "backend"
     if research_ok():
-        code = runner(["uv", "run", "python", "-m", "backend.ml.research", "run",
-                       "--phase", deadline.kind, "--gw", str(deadline.gw)],
-                      backend, RESEARCH_TIMEOUT_S)
+        command = ["uv", "run", "python", "-m", "backend.ml.research", "run",
+                   "--phase", deadline.kind, "--gw", str(deadline.gw), "--season", season]
+        if data_root is not None:
+            command += ["--data-root", str(Path(data_root).resolve())]
+        code = runner(command, backend, RESEARCH_TIMEOUT_S)
         outcome["research"] = ("ok" if code == 0 else
-                               "skipped" if code == RESEARCH_NO_KEY_EXIT else "failed")
+                               "skipped" if code == RESEARCH_NO_KEY_EXIT else
+                               "capped" if code == RESEARCH_MONTHLY_CAP_EXIT else "failed")
     with lock(repo) as held:
         if not held:
             outcome["derive"] = "busy"
@@ -986,6 +994,9 @@ def outcome_note(outcome: Mapping[str, str]) -> str | None:
     problems = []
     if outcome.get("research") == "failed":
         problems.append("research failed — team news below is not freshly researched")
+    elif outcome.get("research") == "capped":
+        problems.append("research skipped: monthly cap reached — team news below is not "
+                        "freshly researched")
     if outcome.get("derive") == "failed":
         problems.append("derive failed — artifacts may be stale")
     return "; ".join(problems) or None

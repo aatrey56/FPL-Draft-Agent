@@ -103,7 +103,15 @@ Design (v1, pre-GW1-honest):
   ``as_of`` (file ``updated`` / mtime fallback). An override never lifts the availability gate: a
   player the live feed rules out (availability 0) is ``overrides_blocked``.
   ``overrides_applied`` / ``overrides_unmatched`` / ``overrides_expired`` /
-  ``overrides_stale`` / ``overrides_blocked`` in the output say what happened to every entry.
+  ``overrides_stale`` / ``overrides_blocked`` / ``overrides_superseded`` in the
+  output say what happened to every entry.
+* **Research overrides** — ``role_overrides.research.json`` (written by
+  ``backend.ml.research``, the pre-deadline news agent) is read after the
+  hand-maintained file at LOWER precedence: a research entry for a player a
+  manual entry was applied to is ``overrides_superseded``. Research entries
+  are tagged so they can be told apart: their names in every
+  ``overrides_*`` list start ``research:`` and their ``fact`` (the
+  ``role_override`` / ``add_role_override`` text) starts ``research: ``.
 * **Never-drop list** — ``data/derived/<season>/ml/squad_prefs.json``
   (``{"never_drop": [{"player", "team"?, "code"?, "until_gw"?, "note"?}]}``,
   hand-maintained, gitignored) names squad players the user has decided to
@@ -168,10 +176,16 @@ BEST_BY_POSITION_N = 3
 # What ``apply_role_overrides`` did with each role_overrides.json entry, in
 # the order the output JSON and CLI list them.
 OVERRIDE_REPORT_KEYS = ("overrides_applied", "overrides_unmatched", "overrides_expired",
-                        "overrides_stale", "overrides_blocked")
+                        "overrides_stale", "overrides_blocked", "overrides_superseded")
 # What ``apply_never_drop`` did with each squad_prefs.json ``never_drop`` entry.
 NEVER_DROP_REPORT_KEYS = ("never_drop_applied", "never_drop_unmatched", "never_drop_expired",
                           "never_drop_invalid")
+# Override files in ``data/derived/<season>/ml/``: the hand-maintained one and
+# the research agent's (``backend.ml.research``), which ranks below it.
+MANUAL_OVERRIDES_FILE = "role_overrides.json"
+RESEARCH_OVERRIDES_FILE = "role_overrides.research.json"
+# Marks a research entry: prefix of its report name and of its ``fact``.
+RESEARCH_TAG = "research:"
 
 
 # ---------------------------------------------------------------------------
@@ -873,6 +887,62 @@ def apply_never_drop(players: pd.DataFrame, entries: list[dict],
     return out, report
 
 
+def load_research_overrides(path: Path) -> list[dict]:
+    """Entries of the research agent's ``role_overrides.research.json``.
+
+    Read like ``load_role_overrides`` (absent -> ``[]``), then tagged: each
+    entry gets ``override_origin = "research"`` and a ``fact`` starting
+    ``"research: "`` so every output that shows the fact shows its origin.
+    """
+    tagged = []
+    for entry in load_role_overrides(path):
+        fact = str(entry.get("fact") or "").strip()
+        if not fact.startswith(RESEARCH_TAG):
+            fact = f"{RESEARCH_TAG} {fact}".strip()
+        tagged.append({**entry, "fact": fact, "override_origin": "research"})
+    return tagged
+
+
+def load_all_role_overrides(ml_dir: Path) -> list[dict]:
+    """Manual entries (``role_overrides.json``) followed by research entries
+    (``role_overrides.research.json``) — the order ``apply_role_overrides``
+    needs for manual-beats-research precedence."""
+    ml_dir = Path(ml_dir)
+    return (load_role_overrides(ml_dir / MANUAL_OVERRIDES_FILE)
+            + load_research_overrides(ml_dir / RESEARCH_OVERRIDES_FILE))
+
+
+def override_code(entry: dict) -> int | None:
+    """The permanent ``code`` of an override / never_drop entry, validated by
+    ``_strict_int`` (int, integral float or digit string; a hand-edited JSON
+    may quote it), or None when the entry has none. Raises ``ValueError`` on
+    any other value — the entry then matches nobody."""
+    return _strict_int(entry["code"], "code") if entry.get("code") is not None else None
+
+
+def override_matches(entry: dict, code: Any, web_name: str, team: str) -> bool:
+    """Whether ``entry`` names this one player, by the rules of
+    ``match_player_rows`` (``code`` first, else ``player`` + ``team``). An
+    invalid code matches nobody; never raises."""
+    try:
+        entry_code = override_code(entry)
+    except ValueError:
+        return False
+    row = pd.DataFrame([{"code": code, "web_name": web_name, "team": team}])
+    return len(match_player_rows(row, entry, entry_code)) == 1
+
+
+def override_lifetime(entry: dict, target_gw: int | None,
+                      deadlines: dict[int, datetime] | None) -> str:
+    """``"live"``, ``"expired"``, ``"stale"`` — or ``"invalid"`` for a
+    non-numeric gameweek field — for ``entry`` at ``target_gw`` (the rules of
+    ``apply_role_overrides``; never raises)."""
+    try:
+        return _override_lifetime(entry, target_gw, deadlines)
+    except (TypeError, ValueError):
+        return "invalid"
+
+
 def event_deadlines(bootstrap: dict) -> dict[int, datetime]:
     """Gameweek -> deadline (UTC) from the bootstrap ``events`` (draft
     ``{"data": [...]}`` shape or a plain list); events without a parseable
@@ -1041,26 +1111,37 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
       0 (status u/i/s, or a stated 0% chance) is BLOCKED — his row is left
       untouched. A start chance written weeks ago must not resurrect a player
       the live feed says cannot play.
+    * Precedence: entries tagged ``override_origin == "research"``
+      (``load_research_overrides``) rank below manual ones. A research entry
+      matching a player a manual entry was APPLIED to is SUPERSEDED and
+      skipped (a stale, expired or blocked manual entry does not shadow
+      fresh research). Callers pass manual entries first
+      (``load_all_role_overrides``); a research entry's report name is
+      prefixed ``research:``.
 
     Returns ``(players copy, report)``. The copy gains ``role_override`` (the
     entry's ``fact``, None when not overridden) and ``role_override_p_start``.
     The report lists entry names under ``overrides_applied``,
     ``overrides_unmatched`` (no single match, or an invalid ``p_start`` /
-    gameweek), ``overrides_expired``, ``overrides_stale`` and
-    ``overrides_blocked``; nothing raises on a bad entry.
+    gameweek), ``overrides_expired``, ``overrides_stale``,
+    ``overrides_blocked`` and ``overrides_superseded``; nothing raises on a
+    bad entry.
     """
     out = players.copy()
     out["role_override"] = None
     out["role_override_p_start"] = float("nan")
     report: dict[str, list[str]] = {key: [] for key in OVERRIDE_REPORT_KEYS}
     horizon_rows = usable_horizon_xp(horizon_xp).sort_values("event")
+    manual_rows: set = set()   # rows a manual entry was applied to
     for entry in overrides:
         name = str(entry.get("player") or entry.get("code") or "?")
+        is_research = entry.get("override_origin") == "research"
+        if is_research:
+            name = f"{RESEARCH_TAG}{name}"
         try:
             lifetime = _override_lifetime(entry, target_gw, deadlines)
             p_override = _override_p_start(entry, target_gw) if lifetime == "live" else None
-            # A hand-edited JSON may quote the code ("123"): match on the integer.
-            code = int(entry["code"]) if entry.get("code") is not None else None
+            code = override_code(entry)
         except (TypeError, ValueError):
             logger.warning("role override for %s has a non-numeric p_start/return_gw/"
                            "valid_through_gw/code — skipped", name)
@@ -1076,9 +1157,14 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
             report["overrides_unmatched"].append(name)
             continue
         row = matched[0]
+        if is_research and row in manual_rows:
+            report["overrides_superseded"].append(name)
+            continue
         if out.at[row, "availability"] == 0:
             report["overrides_blocked"].append(name)
             continue
+        if not is_research:
+            manual_rows.add(row)
         out.at[row, "role_override"] = str(entry.get("fact") or "")
         if p_override is not None:
             model_p_start = out.at[row, "p_start"]
@@ -1543,7 +1629,7 @@ def main(argv: list[str] | None = None) -> int:
                           if season_panel is not None and not season_panel.empty else None)
     result = plan(bootstrap, element_status, seasons, projections_path,
                   entry, args.top, gw_xp=gw_xp, season_panel=season_panel,
-                  role_overrides=load_role_overrides(ml_dir / "role_overrides.json"),
+                  role_overrides=load_all_role_overrides(ml_dir),
                   never_drop=load_squad_prefs(ml_dir / "squad_prefs.json"),
                   horizon_xp=horizon_xp, horizon=args.horizon, prior_season=prior_season)
     squad = result["squad"]
@@ -1573,8 +1659,8 @@ def main(argv: list[str] | None = None) -> int:
                   f" use player_card for their history{flag}")
 
     overrides = {key: result[key] for key in OVERRIDE_REPORT_KEYS}
-    print("\n== ROLE OVERRIDES (role_overrides.json; next GW, and the model's 3-GW "
-          "value for the events an entry covers) ==")
+    print("\n== ROLE OVERRIDES (role_overrides.json, then role_overrides.research.json "
+          "[research:]; next GW, and the model's 3-GW value for the events an entry covers) ==")
     for key, names in overrides.items():
         print(f"  {key}: {', '.join(names) or '-'}")
 
