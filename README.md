@@ -243,6 +243,10 @@ make tui         # game days: self-feeding live dashboard (auto-fetch every 60s)
 make autopilot-off
 ```
 
+`make autopilot` is safe to re-run: each agent is booted out, waited on until launchd
+forgets it, then re-bootstrapped (with retries); a failing agent is reported by label and
+the rest still load (nonzero exit at the end).
+
 Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
 derive: ownership, then season panel && next-GW xP && 3-GW horizon (`-`-prefixed: a failure warns and waiver/my_week fall back — to the heuristic without the xP file, to the next-GW ranking without the horizon file), then the season's `team_env.json` from that panel (also `-`-prefixed), then waiver and my_week with `SCORER={heuristic,model}` (waiver also `HORIZON={1,3,ros}`, default 3), then the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW's xP and horizon files) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
 

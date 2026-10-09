@@ -8,6 +8,8 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 AGENTS="$HOME/Library/LaunchAgents"
 UID_N="$(id -u)"
+# shellcheck source=launchd_lib.sh
+. "$(dirname "$0")/launchd_lib.sh"
 mkdir -p "$AGENTS" "$HOME/.fplcopilot"
 
 plist() { # label, program
@@ -38,13 +40,18 @@ plist com.fplcopilot.deadline \
   "bash $REPO/scripts/deadline_tick.sh" \
   "<key>StartInterval</key><integer>300</integer><key>RunAtLoad</key><true/>"
 
+rc=0
 for label in com.fplcopilot.server com.fplcopilot.refresh com.fplcopilot.deadline; do
-  launchctl bootout "gui/$UID_N/$label" 2>/dev/null || true
-  launchctl bootstrap "gui/$UID_N" "$AGENTS/$label.plist"
-  echo "loaded $label"
+  unload_agent "$UID_N" "$label" || true
+  if load_agent "$UID_N" "$label" "$AGENTS/$label.plist"; then
+    echo "loaded $label"
+  else
+    rc=1
+  fi
 done
 
 echo
 echo "Autopilot on: server always running on :8080, data+artifacts refresh every 15 min,
 deadline checklists every 5-min tick (set USER_TZ / AWAKE_START / AWAKE_END in .env)."
 echo "Logs: ~/.fplcopilot/*.log   ·   After a git pull: make update   ·   Undo: make autopilot-off"
+exit "$rc"
