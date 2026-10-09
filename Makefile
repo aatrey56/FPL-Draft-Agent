@@ -74,12 +74,12 @@ weekly: fetch derive
 ## Writes research/gw<N>_<phase>_<ts>.json and role_overrides.research.json; the next
 ## `make derive` (waiver/my_week/player_values) applies it below role_overrides.json.
 research:
-	cd apps/backend && uv run python -m backend.ml.research run --phase $(PHASE) --season $(SEASON) \
+	cd apps/backend && uv run python -m backend.ml.research run --phase $(PHASE) --season $(SEASON) --data-root "$(DATA_DIR)" \
 		$(if $(GW),--gw $(GW)) $(if $(DRY_RUN),--dry-run)
 
 ## research-clear: delete role_overrides.research.json (back to hand-maintained overrides only)
 research-clear:
-	cd apps/backend && uv run python -m backend.ml.research clear --season $(SEASON)
+	cd apps/backend && uv run python -m backend.ml.research clear --season $(SEASON) --data-root "$(DATA_DIR)"
 
 ## backtest: walk-forward evaluation of the match xP model vs the naive baselines
 backtest:

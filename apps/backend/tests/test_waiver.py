@@ -1053,6 +1053,20 @@ def test_override_with_a_non_numeric_code_is_unmatched(tmp_path):
     assert out["role_override"].isna().all()
 
 
+@pytest.mark.parametrize("code", [200.9, True, float("nan"), [200]])
+def test_override_with_a_non_integral_code_is_unmatched_not_truncated(tmp_path, code):
+    """Regression: ``int(200.9)`` used to match code 200; override codes now
+    go through ``_strict_int`` like never_drop entries (research ones too)."""
+    table = _override_table(tmp_path)
+    for origin in ({}, {"override_origin": "research"}):
+        entry = {"player": "SeasonStar", "team": "ARS", "code": code, "p_start": 0.2,
+                 **FRESH, **origin}
+        out, report = wv.apply_role_overrides(table, [entry], target_gw=1)
+        name = "research:SeasonStar" if origin else "SeasonStar"
+        assert report == _report(unmatched=[name])
+        assert out["role_override"].isna().all()
+
+
 def test_fact_only_override_and_unvalued_player_keep_their_xp(tmp_path):
     table = _override_table(tmp_path)
     overrides = [{"player": "SeasonStar", "team": "ARS", "fact": "new manager", **FRESH},
@@ -1871,6 +1885,12 @@ def test_override_lifetime_and_matching_helpers_never_raise():
     assert wv.override_matches({"code": "200"}, 200, "Other", "WOL")
     assert not wv.override_matches({"code": "abc"}, 200, "SeasonStar", "ARS")
     assert wv.override_matches({"player": "SeasonStar", "team": "ARS"}, None, "SeasonStar", "ARS")
+    assert wv.override_matches({"code": 200.0}, 200, "Other", "WOL")
+    assert not wv.override_matches({"code": 200.9}, 200, "SeasonStar", "ARS")
+    assert not wv.override_matches({"code": True}, 1, "SeasonStar", "ARS")
+    assert not wv.override_matches({"player": ["SeasonStar"], "team": "ARS"}, None,
+                                   "SeasonStar", "ARS")
+    assert wv.override_code({"code": " 200 "}) == 200 and wv.override_code({}) is None
 
 
 def test_cli_tags_research_overrides_in_waiver_plan(weekly_cli_root, weekly_cli_argv, tmp_path):
@@ -1882,5 +1902,7 @@ def test_cli_tags_research_overrides_in_waiver_plan(weekly_cli_root, weekly_cli_
     assert wv.main(weekly_cli_argv(out, "heuristic")) == 0
     doc = json.loads(out.read_text())
     assert doc["overrides_applied"] == ["research:FreeFWD"] and doc["overrides_superseded"] == []
+    # never_drop reporting sits beside the research override keys.
+    assert all(doc[key] == [] for key in wv.NEVER_DROP_REPORT_KEYS)
     rec = next(r for r in doc["recommendations"] if r["add"] == "FreeFWD")
     assert rec["add_role_override"] == "research: back in training [med]"

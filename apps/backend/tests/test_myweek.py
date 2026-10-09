@@ -513,4 +513,6 @@ def test_cli_tags_research_overrides_below_manual_ones(weekly_cli_root, weekly_c
     assert mw.main(weekly_cli_argv(out, "heuristic")) == 0
     doc = json.loads(out.read_text())
     assert doc["overrides_applied"] == ["MyFWD"] and doc["overrides_superseded"] == ["research:MyFWD"]
+    # never_drop reporting sits beside the research override keys.
+    assert all(doc[key] == [] for key in wv.NEVER_DROP_REPORT_KEYS)
     assert doc["xi"][0]["role_override"] == "confirmed"
