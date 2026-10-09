@@ -224,6 +224,9 @@ CONTEXT_CHARS = 300
 # Monthly ledger lock: how long a run waits for another run to finish.
 LEDGER_LOCK_WAIT_S = 900.0
 LEDGER_LOCK_POLL_S = 0.5
+# Cost charged for a ledger line that cannot be parsed (see ``period_spent``):
+# a whole run's default cap, since the lost record's real cost is unknown.
+UNREADABLE_LINE_USD = DEFAULT_MAX_USD
 # After Ctrl-C / SIGTERM, how long in-flight requests get to finish.
 INTERRUPT_GRACE_S = 60.0
 
@@ -905,43 +908,63 @@ def _row_time(row: dict) -> datetime:
 
 
 def period_spent(ledger: Path, start: datetime, end: datetime) -> float:
-    """USD recorded in ``ledger`` (``spend.jsonl``) with ``start <= ts < end``;
-    a missing file is 0 and an unreadable line is skipped with a WARNING."""
-    if not ledger.exists():
+    """USD recorded in ``ledger`` (``spend.jsonl``) with ``start <= ts < end``.
+
+    A missing file is 0. The file is read in one pass under a shared
+    ``flock`` on the ledger itself, so it never sees a half-appended record.
+    A line that is not a valid record (a torn crash tail, hand damage) has
+    an unknown cost, so it is counted at ``UNREADABLE_LINE_USD`` (one run's
+    default cap) and logged at WARNING; it is never
+    treated as free."""
+    try:
+        fd = os.open(ledger, os.O_RDONLY)
+    except FileNotFoundError:
         return 0.0
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        chunks = []
+        while chunk := os.read(fd, 1 << 20):
+            chunks.append(chunk)
+    finally:
+        os.close(fd)                 # closing the descriptor releases the lock
     total = 0.0
-    for number, line in enumerate(ledger.read_text(encoding="utf-8").splitlines(), start=1):
-        if not line.strip():
+    for number, raw in enumerate(b"".join(chunks).split(b"\n"), start=1):
+        if not raw.strip():
             continue
         try:
-            row = json.loads(line)
+            row = json.loads(raw.decode("utf-8"))
             if start <= _row_time(row) < end:
                 total += float(row["usd"])
         except (ValueError, KeyError, TypeError, AttributeError):
-            logger.warning("spend ledger %s line %d unreadable — skipped", ledger.name, number)
+            total += UNREADABLE_LINE_USD
+            logger.warning("spend ledger %s line %d unreadable — counted at $%.2f",
+                           ledger.name, number, UNREADABLE_LINE_USD)
     return total
 
 
 def append_ledger(ledger: Path, row: dict) -> None:
-    """Append one JSON line to ``ledger`` with ``O_APPEND`` (never a
-    read-modify-replace, so concurrent appenders cannot lose lines) and
-    fsync it. A torn last line from a crash is closed off first. Callers
-    that read-then-append hold ``ledger_lock``."""
+    """Append one JSON line to ``ledger`` (never a read-modify-replace, so
+    concurrent appenders cannot lose lines) and fsync it.
+
+    The torn-tail check and the write happen under an exclusive ``flock``
+    on the ledger itself, and the record (preceded by ``\\n`` if a crash
+    left the file without a trailing newline) goes out as ONE ``os.write``
+    on an ``O_APPEND`` descriptor, so no other appender or ``period_spent``
+    reader can observe or interleave with a partial record. This lock is
+    separate from ``ledger_lock`` (a run holds that one while it appends)."""
     ledger.parent.mkdir(parents=True, exist_ok=True)
     line = (jsonutil.dumps_strict(row) + "\n").encode("utf-8")
-    fd = os.open(ledger, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    fd = os.open(ledger, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
     try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
         size = os.fstat(fd).st_size
-        if size:
-            with open(ledger, "rb") as handle:
-                handle.seek(size - 1)
-                if handle.read(1) != b"\n":
-                    line = b"\n" + line
+        if size and os.pread(fd, 1, size - 1) != b"\n":
+            line = b"\n" + line
         while line:
             line = line[os.write(fd, line):]
         os.fsync(fd)
     finally:
-        os.close(fd)
+        os.close(fd)                 # closing the descriptor releases the lock
 
 
 class LedgerBusy(Exception):

@@ -2,7 +2,9 @@
 is always a fake: no test touches the network."""
 import _thread
 import argparse
+import fcntl
 import json
+import multiprocessing
 import os
 import re
 import signal
@@ -627,7 +629,7 @@ def test_billing_period(now, day, start, end):
                                            end.replace(tzinfo=timezone.utc))
 
 
-def test_period_spent_sums_the_window_and_skips_bad_lines(tmp_path, caplog):
+def test_period_spent_sums_the_window_and_charges_bad_lines(tmp_path, caplog):
     ledger = tmp_path / "spend.jsonl"
     start, end = rs.billing_period(NOW, 1)
     assert rs.period_spent(ledger, start, end) == 0.0
@@ -636,25 +638,51 @@ def test_period_spent_sums_the_window_and_skips_bad_lines(tmp_path, caplog):
     ledger.write_text(ledger.read_text() + "{broken")            # torn last line, no newline
     rs.append_ledger(ledger, {"ts": "2026-10-08T09:00:00Z", "usd": 1.0})
     with caplog.at_level("WARNING"):
-        assert rs.period_spent(ledger, start, end) == pytest.approx(3.5)
+        assert rs.period_spent(ledger, start, end) == pytest.approx(3.5 + rs.UNREADABLE_LINE_USD)
     assert "line 3 unreadable" in caplog.text
     assert len(ledger.read_text().splitlines()) == 4               # the torn line was closed off
 
 
+def _append_fifty(ledger, worker):
+    """Child-process body: 50 appends from one writer."""
+    for index in range(50):
+        rs.append_ledger(Path(ledger), {"ts": NOW.isoformat(), "usd": 0.01, "worker": worker, "i": index})
+
+
 def test_append_ledger_never_loses_concurrent_lines(tmp_path):
+    """Eight writer PROCESSES (spawn: no inherited state, like cron + a manual
+    run) append at once; after all exit, every line is one whole record."""
     ledger = tmp_path / "spend.jsonl"
-
-    def writer(worker):
-        for index in range(50):
-            rs.append_ledger(ledger, {"ts": NOW.isoformat(), "usd": 0.01, "worker": worker, "i": index})
-
-    threads = [threading.Thread(target=writer, args=(w,)) for w in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+    ctx = multiprocessing.get_context("spawn")
+    procs = [ctx.Process(target=_append_fifty, args=(str(ledger), w)) for w in range(8)]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(timeout=120)
+        assert proc.exitcode == 0
+    lines = ledger.read_bytes().split(b"\n")
+    assert lines.pop() == b""                                    # ends with exactly one newline
+    rows = [json.loads(line) for line in lines]                  # no blank, partial or merged line
     assert len(rows) == 400 and len({(r["worker"], r["i"]) for r in rows}) == 400
+
+
+def test_period_spent_waits_for_an_in_flight_append(tmp_path):
+    """A reader takes the shared lock, so it blocks while an appender holds
+    the exclusive one instead of reading a half-written record."""
+    ledger = tmp_path / "spend.jsonl"
+    rs.append_ledger(ledger, {"ts": NOW.isoformat(), "usd": 1.0})
+    start, end = rs.billing_period(NOW, 1)
+    seen = []
+    fd = os.open(ledger, os.O_RDWR | os.O_APPEND)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    reader = threading.Thread(target=lambda: seen.append(rs.period_spent(ledger, start, end)))
+    reader.start()
+    reader.join(timeout=0.3)
+    assert reader.is_alive() and not seen                        # blocked behind the writer
+    os.write(fd, (json.dumps({"ts": NOW.isoformat(), "usd": 2.0}) + "\n").encode())
+    os.close(fd)                                                 # releases the lock
+    reader.join(timeout=10)
+    assert seen == [pytest.approx(3.0)]
 
 
 def test_ledger_lock_is_exclusive_and_times_out(tmp_path, monkeypatch):

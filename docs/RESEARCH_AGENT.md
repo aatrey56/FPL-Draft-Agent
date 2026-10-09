@@ -281,8 +281,12 @@ settlement) holds an exclusive `fcntl.flock` on `spend.jsonl.lock`, so
 overlapping runs (cron plus a manual run) serialize instead of both reading
 the same monthly total. A run that cannot get the lock within
 `LEDGER_LOCK_WAIT_S` (15 minutes) exits 1. Each settled request is appended
-as one line with `O_APPEND` and `fsync`, so a crash loses at most the
-request in flight.
+as one line (a single `write` on an `O_APPEND` descriptor, under an
+exclusive `flock` on `spend.jsonl` itself, then `fsync`), so a crash loses at
+most the request in flight and no appender interleaves with another. The
+monthly total is read under a shared `flock` on the same file. A line that
+cannot be parsed (a torn crash tail) is never counted as free: it is charged
+`UNREADABLE_LINE_USD` (the default per-run cap, $12) and logged at WARNING.
 
 **Interruption.** Ctrl-C or SIGTERM stops new requests and gives in-flight
 ones `INTERRUPT_GRACE_S` (60 s) to finish. Anything still unsettled is
