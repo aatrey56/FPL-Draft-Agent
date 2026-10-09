@@ -123,9 +123,15 @@ missing artifact becomes a one-line pointer rather than an error. ≤ ~25 lines.
 - **Footer:** `panel_max_gw`, `player_values` `generated_at`, artifact ages,
   scorer and any fallback flags.
 
-"Changed by research" means `role_overrides.json` entries tagged as research
-(`origin: "research"`, a `source` starting with `research` or a URL) whose
-`as_of` is newer than the previous checklist.
+"Changed by research" lists the overrides the derived artifacts name
+`research:<player>` in `overrides_applied` (`waiver_plan.json` / `my_week.json`
+— the entries `backend.ml.research` wrote to `role_overrides.research.json`,
+whose fact text starts `research:`), restricted to those whose research-file
+`as_of` is newer than the previous checklist. A hand-written
+`role_overrides.json` entry is never "research", whatever its `source` — those
+appear separately under "Your overrides:". If `squad_prefs.json` has
+`never_drop` entries that matched nobody or whose `until_gw` has passed, the
+waivers checklist adds a warning line (see README, "Never-drop list").
 
 ## Delivery channels
 
