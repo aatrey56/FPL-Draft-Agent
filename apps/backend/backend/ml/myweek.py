@@ -14,7 +14,7 @@ replace a player's next-GW start probability (an override of 0 — e.g. a
 ``return_gw`` still ahead — keeps him out of the XI like an injury does) and
 their ``fact`` is listed under ``attention``; a departed (status ``u``) squad
 player always appears there with the ``departed`` code. A ``squad_prefs.json``
-``never_drop`` entry on a departed player turns that "drop him" advice into a
+``never_drop`` entry on a departed player turns that "drop him" advice (code ``departed``) into a
 "remove the entry" note; the entry lists are in ``never_drop_applied`` /
 ``never_drop_unmatched`` / ``never_drop_expired``.
 
@@ -98,6 +98,8 @@ def apply_role_overrides(players: pd.DataFrame, overrides: list[dict],
 # warning per player (the TUI rail) must lead with "he cannot play", not with
 # a note about where his number came from.
 WARNING_DEPARTED = "departed"
+# A departed player on the never_drop list: the entry is stale, he is not to be dropped.
+WARNING_DEPARTED_PROTECTED = "departed_protected"
 WARNING_NO_VALUE = "no_value"
 WARNING_ROLE_OVERRIDE = "role_override"
 WARNING_BLANK_GW = "blank_gw"
@@ -113,9 +115,12 @@ def player_warning_items(row: pd.Series) -> list[tuple[str, str]]:
     news = f" — {row['news']}" if row["news"] else ""
     if row["status"] == "u":
         # A never_drop entry on a player who has left is almost certainly stale.
-        advice = ("on your never_drop list — remove the entry" if bool(row.get("never_drop", False))
-                  else "drop him")
-        items.append((WARNING_DEPARTED, f"departed — no longer in the league, {advice}{news}"))
+        if bool(row.get("never_drop", False)):
+            items.append((WARNING_DEPARTED_PROTECTED,
+                          "departed — no longer in the league, on your never_drop list"
+                          f" — remove the entry{news}"))
+        else:
+            items.append((WARNING_DEPARTED, f"departed — no longer in the league, drop him{news}"))
     # "unprojected" outranks an override's fact: with no value at all the
     # override has nothing to re-weight, and the human call is the headline.
     if row["xp_source"] == "none":
