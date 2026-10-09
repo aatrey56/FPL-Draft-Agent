@@ -412,7 +412,8 @@ fpl-draft-mcp/
 │   └── backend/             # Python ML pipeline (uv; no server, run via `make derive`)
 │       ├── backend/
 │       │   └── ml/              # Modelling: ingest → parquet, season projection,
-│       │                        #   match xP model (matchmodel.py), decision artifacts
+│       │                        #   match xP model (matchmodel.py), decision artifacts,
+│       │                        #   deadline_agent.py (awake-hours deadline checklists)
 │       └── tests/               # pytest suite (no network)
 ├── data/                    # FPL raw + derived data (gitignored)
 │   ├── raw/                 # LEGACY flat layout = the 2025-26 archive (do not overwrite)
@@ -420,7 +421,7 @@ fpl-draft-mcp/
 │   └── derived/             # same convention: flat = 2025-26, <season>/ = new seasons
 │       └── summary/         # league/standings/transactions summaries
 ├── Makefile                 # all operations (serve/fetch/derive/weekly/tui/autopilot/update)
-├── scripts/                 # autorefresh + autopilot install/uninstall + preflight + notifications
+├── scripts/                 # autorefresh + deadline_tick + autopilot install/uninstall + preflight + notifications
 ├── CLAUDE.md
 └── README.md
 ```

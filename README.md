@@ -30,9 +30,11 @@ start/sit) → Go MCP server (:8080, 14 tools) → Claude Desktop / Claude Code
 (any matchup, ←/→) with per-player in-play points, manager names, and a
 countdown to the next deadline (its Suggestions rail is headed `heuristic xP`
 when my_week fell back from the match model). The autopilot keeps it fresh and sends macOS
-notifications when a gameweek finalizes and at 24h/3h/2h before every
-deadline — each derived from that GW's own kickoff-anchored clock, so
-midweek and festive schedules follow automatically.
+notifications when a gameweek finalizes and 24h before every deadline, and a
+[deadline checklist](docs/DEADLINE_AGENT.md) arrives 30–60 min before each
+trades / waivers / lineup-lock deadline — only while you are awake, after a
+fresh research + derive run. All of it follows each GW's own kickoff-anchored
+clock, so midweek and festive schedules work automatically.
 
 Plus 5 data-layer tools — `manager_card` (one manager: record, form,
 schedule, H2H, draft picks), `current_roster`, `player_gw_stats`, `epl`
@@ -232,7 +234,9 @@ uv run python -m backend.ml.serve_export
 Then turn on the autopilot (macOS) — after this, no routine commands at all:
 
 ```bash
-make autopilot   # always-on server + data/artifact refresh every 15 min (launchd)
+make autopilot   # always-on server + data/artifact refresh every 15 min + deadline checklists (launchd)
+make checklist-plan                    # next deadlines with computed research/delivery times
+make checklist-preview KIND=waivers    # render the next checklist to stdout, send nothing
 make update      # after a merge: pull latest code + restart the server
 make stop / make start   # pause / resume without uninstalling
 make tui         # game days: self-feeding live dashboard (auto-fetch every 60s)
@@ -305,7 +309,7 @@ apps/
     tests/               pytest suite (no network)
 data/                    Raw + derived FPL data (gitignored; flat = 25/26 archive)
 docs/                    Setup, design docs, model roadmap, measured findings
-scripts/                 autorefresh (launchd/cron), autopilot install, preflight, notifications
+scripts/                 autorefresh (launchd/cron), autopilot install, deadline_tick, preflight, notifications
 Makefile                 every operation: serve/fetch/derive/weekly/tui/autopilot/update/...
 PLAN.md / STATE.md / ISSUES.md   Living roadmap, checkpoint, known issues
 ```
