@@ -1,352 +1,229 @@
 # FPL Draft Co-Pilot
 
-A **draft + weekly-manager co-pilot** for Fantasy Premier League Draft.
-A Go MCP server exposes 14 tools over locally-cached FPL Draft API data; a
-Python ML pipeline turns seven seasons of history into projections and
-weekly recommendations; **Claude (Desktop or Code) is the client** — you ask
-questions in natural language, Claude calls the decision tools and layers
-live web research on top.
+A draft and weekly-manager co-pilot for Fantasy Premier League Draft. A Go
+MCP server serves 14 tools over locally cached FPL Draft data; a Python
+pipeline turns multi-season history into projections and per-gameweek
+recommendations (waivers, lineup, trades); **Claude (Desktop or Code) is the
+client** — you ask in natural language and Claude calls the tools and layers
+its own research on top. There is no in-app chatbot or LLM client.
 
 ```
-FPL API → Go fetcher → data/<season>/ → Python ML (projections, waivers,
-start/sit) → Go MCP server (:8080, 14 tools) → Claude Desktop / Claude Code
+FPL Draft API -> Go fetcher (cmd/dev) -> data/raw/<season>/
+              -> Python derive (backend.ml)  -> data/derived/<season>/ml/
+              -> Go MCP server (:8080, /mcp) -> Claude Desktop / Claude Code
 ```
 
-## The decision layer
+Only the fetcher touches live APIs (FPL Draft, plus the official PL team
+sheets shortly before kickoff). The MCP server and the TUI read local files.
+
+## Components
+
+### MCP tools
+
+Decision layer (serve the ML artifacts):
 
 | Tool | Answers |
 |---|---|
-| `draft_board` | Who do I draft? Tiered, VOR-ranked projections per position |
-| `player_card` | Who is this player? Projection + 7-season history + live news (falls back to history for unprojected players) |
-| `waiver_plan` | Who do I add/drop? Roster-aware, labeled `upgrade` / `stream` / `hold`, with gains over three horizons (next GW / next 3 GWs / rest of season) |
-| `trade_check` | Is this trade good? Give vs get on match-model xP (next GW, next 3 GWs — fewer near season end, labelled via `horizon_events`) and role-adjusted rest-of-season value from `player_values.json`; falls back to projection + VOR (`value_source: "heuristic"` + reason) when that file is missing or stale (wrong GW, or a panel not through the last finished GW) |
-| `my_week` | Who starts this GW? Best XI over every legal formation (`formation`), bench in auto-sub order, `if_out` (`if_out_mode: "autosub"` marks the automatic format) = what FPL auto-subs do automatically if a doubtful starter plays 0 minutes (blank-GW bench players never come on; a manual swap only when it gains >0.5 xP before lock), and attention flags (injuries, blanks, unknowns) |
-| `league_pulse` | What's happening? Standings, named transactions, game clock + this week's deadlines (trades/waivers/lineup lock, in EST) |
+| `draft_board` | Who do I draft? Tiered, VOR-ranked preseason projections per position |
+| `player_card` | Who is this player? Projection, multi-season history, live news |
+| `waiver_plan` | Who do I add/drop? Roster-aware swaps labeled `upgrade` / `stream` / `hold`, with gains over next GW / next 3 GWs / rest of season |
+| `my_week` | Who starts this GW? Best XI over legal formations, bench order, auto-sub `if_out`, attention flags |
+| `trade_check` | Is this trade good? Give vs get on match-model xP and rest-of-season value; falls back to projection + VOR (`value_source: "heuristic"`) when `player_values.json` is missing or stale |
+| `league_pulse` | Standings, named transactions, game clock and this week's deadlines |
 | `drop_radar` | Who hit the wire? Ownership diffs from element-status snapshots |
-| `team_env` | Shootout or stalemate? Per-team points/xG generated and conceded this season (`season` arg, default the server season; rebuilt by `make derive`), by position and venue |
-| `gw_live` | How's my matchup going? Live H2H tracker: both XIs with in-play points (refresh mid-match) |
+| `team_env` | Per-team points/xG generated and conceded, by position and venue |
+| `gw_live` | Live H2H tracker: both XIs with in-play points |
 
-**Game day:** `make tui` opens a live terminal dashboard — your H2H matchup
-(any matchup, ←/→) with per-player in-play points, manager names, and a
-countdown to the next deadline (its Suggestions rail is headed `heuristic xP`
-when my_week fell back from the match model). The autopilot keeps it fresh and sends macOS
-notifications when a gameweek finalizes and 24h before every deadline, and a
-[deadline checklist](docs/DEADLINE_AGENT.md) arrives 30–60 min before each
-trades / waivers / lineup-lock deadline — only while you are awake, after a
-fresh research + derive run. All of it follows each GW's own kickoff-anchored
-clock, so midweek and festive schedules work automatically.
+Data layer: `manager_card` (record, form, schedule, H2H, draft picks),
+`current_roster`, `player_gw_stats`, `epl` (real PL table and results),
+`gw_report` (post-GW matchup review and lineup efficiency).
 
-Plus 5 data-layer tools — `manager_card` (one manager: record, form,
-schedule, H2H, draft picks), `current_roster`, `player_gw_stats`, `epl`
-(real PL table/results), `gw_report` (post-GW review) — all season-aware:
-flat `data/` roots are the 2025-26 archive, current seasons nest under
-`data/{raw,derived}/<season>/`.
+Tools fall back loudly rather than guess: when the match model's xP file is
+missing or stale, `waiver_plan` / `my_week` switch to a per-GW heuristic and
+say so (`scorer`, `xp_fallback_reason`, per-player `xp_source`). Players the
+model cannot value (promoted clubs, new signings, long injuries) are surfaced
+for human judgment, never scored as zero.
 
-The Python derive steps (waiver, my_week, ownership, replay) resolve paths
-through `backend/ml/paths.py` and their `--data-root` flag: a season's
-projection is `derived/<season>/ml/projections.json`, falling back — for
-2026-27 only — to the flat preseason `derived/ml/projections_2627.json`; any
-other season without its own projection fails fast naming the expected path.
-Team strengths and club moves read `prior_season(season)` from the
-multi-season `derived/ml/player_seasons.parquet`. Go `draft_board` (a
-preseason tool) still reads the flat 2026-27 projection directly.
+### Derive pipeline (`apps/backend/backend/ml/`)
 
-## The models (honest by design)
+Plain Python to parquet/JSON, run via `make derive` (no server):
 
-- **Season projection** (`backend/ml/projection.py`): closed-form ridge +
-  persistence candidates per position, chosen by walk-forward validation with
-  the naive baseline *in the candidate zoo* — where nothing beats
-  last-season-points, the model honestly *is* last-season-points. Measured
-  outcome: ties the baseline for GKP/DEF/FWD, real MID edge via
-  points-calibrated ICT. Deterministic, no deep learning, drivers explainable.
-- **Match xP model** (`backend/ml/matchmodel.py`): built and measured. A
-  two-stage, availability-gated model on the 29,747-row per-GW panel —
-  stage one predicts *who plays*, stage two *how many points if they do*, per
-  position, with the opponent in the features. It beats every naive baseline
-  in all four positions on a held-out slice of gameweeks (table below).
-  `waiver_plan` / `my_week` read it (`xp_gw<N>.parquet`) with
-  `--scorer model` and fall back, with a WARNING and a per-player `xp_source`
-  (`model` / `heuristic` / `none`), to the per-GW heuristic (projection/38 ×
-  fixture multiplier × availability) for uncovered players or a missing/unreadable/stale
-  file (the JSON's `scorer` then reads `heuristic`, with `xp_fallback: true`
-  and an `xp_fallback_reason`). A model row for a player whose *current*
-  availability is 0 (ruled out after the xP file was built) is zeroed
-  (`xp_next`/`p_start` 0, and a model 3-GW `next3_xp` 0; `xp_reconciled:
-  true`, and the JSON's `xp_reconciled` counts them). Every waiver recommendation carries
-  `gains: {gw1, gw3, ros}` — next-GW xP, 3-GW xP and rest-of-season, each the
-  add minus the drop (also as the flat `next1_gain` / `next3_gain` /
-  `season_gain`). The 3-GW value is the match model's horizon
-  (`xp_horizon_gw<N>.parquet`: GW N..N+2 scored with form frozen at GW N, so
-  it is a schedule view; a blank adds 0, a double both fixtures, and today's
-  availability is applied to all three), with `add_next3_source` saying
-  `model` or `heuristic`. `--horizon {1,3,ros}` (default `3`) picks the gain
-  that ranks and `rank_by` in the JSON records it; `hold` recs (no short-term
-  gain, better ROS) come last except under `ros`. Without a usable horizon
-  file the JSON says `horizon_fallback: true` with a reason, 3-GW values are
-  heuristic and `--horizon 3` ranks on the next GW. A free agent with model
-  xP but no ROS projection (promoted club) is ranked as a `stream` with
-  `season_gain: null` and `season_unknown: true`.
-  `--scorer model` is the default (the 2026-27 GW2-5 live check in
-  `docs/MODEL_ROADMAP.md` found the model ahead of every baseline in all
-  four positions); `--scorer heuristic` reproduces the pre-xP output exactly
-  between gameweeks — labels and ordering are then next-3-GW based, as they
-  are after a model fallback, and the `waiver_plan` tool note describes
-  whichever ranking the served file used (keyed on its `scorer`). Mid-gameweek (GW N in play) both scorers now plan for
-  N+1: the heuristic's fixture loads and my_week's `gw` used to start at the
-  locked GW N.
-- **Role signals** (`waiver_plan` / `my_week`, both scorers): a season
-  projection only knows last season's role at last season's club.
-  `club_moved` = the bootstrap club differs from the 2025-26 club in
-  `player_seasons` (null = new to the league); `expected_minutes` = mean
-  minutes over the last 5 finished GWs of the season panel (a missing row is
-  0; null before GW1 finishes). For club-movers only, `ros_adj = ros_points ×
-  clip(expected_minutes / 60, 0.15, 1.0)` (`ROLE_MINUTES_FULL`, `ROLE_FLOOR`
-  in `waiver.py`), and `season_gain`, the drop pick and the heuristic per-GW
-  baseline use `ros_adj`; `ros_points` stays in the output. A club-mover
-  whose status is not `a` (injured, doubtful, suspended) keeps factor 1.0:
-  the absence, not a lost role, explains his minutes. A departed squad
-  player is always the drop at his position. Otherwise, under the model
-  scorer, the drop is the lowest value on the ranking horizon (`xp_next` /
-  `next3_xp` / `ros_adj` for `--horizon 1` / `3` / `ros`), ties by
-  `ros_adj` — so an injured or benched player with model xP but no ROS
-  projection can be the drop (that rec's season gain is then unknown:
-  `drop_ros_unknown`, `season_unknown`). A player with neither stays in
-  `unprojected_squad`, never auto-dropped. The heuristic scorer keeps its
-  frozen pick: ROS-projected players only, by `ros_adj`. `drop_candidates`
-  lists the top 3 per position in that order.
-- **Diversified top N + `best_by_position`**: under the model scorer
-  `recommendations` caps any one drop player at 3 recs (`MAX_RECS_PER_DROP`;
-  recs past the cap only backfill, after the others, when the list would be
-  short — rank 1 never moves). `best_by_position` lists the best 3 swaps per
-  position against that position's drop pick, for both scorers, so a run of
-  MID swaps cannot hide the best DEF/FWD move.
-  An optional `data/derived/<season>/ml/role_overrides.json`
-  (`{"overrides": [{"player": "<web_name>", "team": "<short name>",
-  "p_start": 0.4, "fact": "...", "return_gw": 9, "valid_through_gw": 7,
-  "as_of": "2026-10-06", "code": 123}]}` — all but `player`/`team`
-  optional; `code` wins when present and may be quoted) is hand-maintained team news for the next
-  GW: `xp_next = p_start × xP-if-he-starts` (cameo term dropped), `return_gw`
-  still ahead forces 0 (and keeps him off the my_week XI), and an entry whose
-  `return_gw` has arrived is expired and ignored. An override never lifts
-  the availability gate: a player the live feed rules out (status u/i/s or a
-  0% chance) keeps his 0 and the entry is listed as blocked. Every entry is
-  accounted for in `overrides_applied` / `overrides_unmatched` /
-  `overrides_expired` / `overrides_stale` / `overrides_blocked`.
-  Staleness rule: an entry with `valid_through_gw` applies through that GW;
-  an entry with neither `return_gw` nor `valid_through_gw` applies only up to
-  the first GW whose deadline falls after its `as_of` (else the file's
-  top-level `as_of`/`updated`, else the file mtime; a bare date means 00:00
-  UTC). Later it is stale and ignored — team news written for GW2 is not
-  evidence about GW6. Give long-lived facts a `valid_through_gw`.
-  my_week lists the override `fact` and any departed squad player under
-  `attention` (warning codes `role_override`, `departed`).
-- **Never-drop list** (`data/derived/<season>/ml/squad_prefs.json`,
-  hand-maintained and gitignored with the rest of `data/`): players you have
-  decided to keep — an injured player expected back, one you rate — are never
-  a drop pick or a `drop_candidates` row, so `waiver_plan` stops proposing
-  them. To add one, create the file or append to `never_drop`:
-  `{"never_drop": [{"player": "Examplename", "team": "ARS", "until_gw": 12,
-  "note": "back from injury in GW10"}]}`. `player` (the FPL `web_name`) +
-  `team` (short name) match one player; `code` (the permanent player code,
-  may be quoted) wins when given; `until_gw` and `note` are optional (no
-  `until_gw` = protected until you remove the entry; with it, protected
-  *through* that GW and then `never_drop_expired`). The drop at that position
-  falls to the next eligible squad player; if every player at a position is
-  protected, that position has no swaps (`best_by_position` empty there).
-  Every entry is accounted for in `never_drop_applied` /
-  `never_drop_unmatched` / `never_drop_expired` / `never_drop_invalid` (in
-  `waiver_plan.json` and `my_week.json`; the deadline checklist warns about
-  unmatched/expired/invalid entries). `code` and `until_gw` must be whole
-  numbers (102.9, NaN or 1e309 are invalid, never truncated) and, without a
-  `code`, `player` and `team` must be non-empty strings. A protected player
-  who has left the league shows as `departed_protected` (fix the entry), not
-  `departed` (drop him). Re-run `make derive` after editing.
-- Players the model cannot value (long injury last season, promoted, new
-  signings) are **surfaced for human judgment, never scored as zero** — the
-  tools refuse to guess rather than quietly recommend dropping a returning star.
+- `history.py`, `gameweeks.py`: multi-season and per-GW panel ingestion
+- `projection.py`: season projection (ridge + persistence candidates chosen by
+  walk-forward validation; where nothing beats last-season points, it is last-season points)
+- `matchfeatures.py`, `matchmodel.py`: two-stage match xP model (who plays, then points if they do), next-GW and 3-GW horizon; `matcheval.py` and `make backtest` measure it against naive baselines
+- `ownership.py`, `waiver.py`, `myweek.py`, `player_values.py`, `teamenv.py`, `trackrecord.py`: the weekly artifacts the Go tools serve
+- `deadline_agent.py`: deadline checklists (below)
 
-## Research & evaluation
+Specs (`*_SPEC.md` beside the code) are the contracts. Measured results and
+open work: [docs/MODEL_ROADMAP.md](docs/MODEL_ROADMAP.md) and
+[docs/MINUTES_FINDINGS.md](docs/MINUTES_FINDINGS.md).
 
-Every model claim here is a measured number, and the measurement code ships
-with the repo.
+### Matchday TUI
 
-**The bar to beat** (`backend.ml.matcheval`) — five naive predictors scored
-walk-forward, per gameweek, per position, over 2025-26. Mean Spearman on the
-*startable* pool:
+`make tui` opens a live terminal dashboard (bubbletea): your H2H matchup
+(any matchup, left/right arrows) with per-player in-play points, a
+suggestions rail from `my_week` / `waiver_plan`, and a countdown to the next
+deadline. It only reads local snapshots; `r` triggers one fetch through
+`cmd/dev`. `--once` renders a single frame and exits.
 
-| predictor | GKP | DEF | MID | FWD |
-|---|---|---|---|---|
-| last gameweek's points | 0.254 | 0.197 | 0.251 | 0.224 |
-| trailing 3-GW mean | 0.219 | 0.170 | 0.218 | 0.216 |
-| season-to-date mean | 0.220 | 0.208 | 0.219 | 0.198 |
-| **trailing minutes** | **0.297** | **0.253** | **0.277** | **0.239** |
+### Autopilot and deadline checklists (macOS)
 
-**The match model against that bar.** Ridge strength was selected on GW6-24 and
-the result claimed on GW25-38, so the comparison is not the model marking its
-own homework. Mean Spearman, startable pool, 14 held-out gameweeks:
+`make autopilot` installs three launchd agents: the MCP server (always on),
+a fetch + derive refresh every 15 minutes (`scripts/autorefresh.sh`, which
+also sends macOS notifications when a GW finalizes and 24h before each
+deadline), and a 5-minute deadline tick (`scripts/deadline_tick.sh`).
 
-| position | match model | best naive baseline | edge |
-|---|---|---|---|
-| GKP | **0.340** | 0.300 (last gameweek) | +0.041 |
-| DEF | **0.378** | 0.243 (trailing minutes) | +0.135 |
-| MID | **0.430** | 0.266 (trailing minutes) | +0.164 |
-| FWD | **0.409** | 0.247 (trailing 5-GW mean) | +0.163 |
-
-Top-of-slice precision improves in every position too (e.g. MID 0.347 vs
-0.292), and stage one's `P(start)` is calibrated rather than merely ranked
-(Brier 0.16-0.20, predicted start rate within ~3pp of observed). Reproduce with
-`uv run python -m backend.ml.matchmodel --backtest`.
-
-Two results that shape the modelling:
-
-- **Minutes out-rank points.** Ranking players purely by recent minutes beats
-  every points-based form measure, in every position. Playing time is the
-  product; scoring is the margin — so a minutes model is stage one of the
-  match model, not a detail.
-- **The evaluation pool doubles the headline.** The same predictors score
-  0.42–0.65 across the full panel, because most rows are players who were
-  never going to feature and predicting zero for them is free accuracy. Every
-  metric here names its pool; the honest one is the smaller number.
-
-**Minutes and the cold-start problem** (`docs/MINUTES_FINDINGS.md`) — new
-managers and summer transfers make last season untrustworthy, so the question
-is *how* untrustworthy, and for how long:
-
-- One gameweek of current-season evidence already outranks a full prior
-  season (0.765 vs 0.611). From GW3 the optimal weight on last season is
-  **zero**.
-- Inside that window, club moves are the failure mode: prior start rate
-  correlates 0.656 for players who stayed and **0.245** for those who moved,
-  and only 40% of last season's nailed starters who changed club are still
-  nailed.
-- Trailing 3-gameweek mean minutes is the strongest single predictor of both
-  future starts (0.791) and future minutes (0.835). A single gameweek is the
-  worst predictor tested — recency wins, overreaction does not.
-
-Supporting analysis: `backend.ml.eval` (season-level backtests) and the
-per-stat correlation study over all 29,747 player-gameweeks. Roadmap and open
-questions: `docs/MODEL_ROADMAP.md`.
+The deadline agent delivers a compact checklist about 45 minutes
+(`CHECKLIST_LEAD_MIN`, allowed 30-60) before each trades / waivers /
+lineup-lock deadline, only inside your awake window (default 07:00-02:00
+`USER_TZ`, with a 01:40 late slot for early-morning deadlines), after a fresh
+derive. It follows each GW's own kickoff-anchored clock. Details:
+[docs/DEADLINE_AGENT.md](docs/DEADLINE_AGENT.md). Non-Mac users can schedule
+the two scripts from cron (examples in the script headers).
 
 ## Quickstart
 
-Prerequisites: Go 1.25+, [uv](https://docs.astral.sh/uv/) (manages Python
-itself — no system Python needed: `curl -LsSf https://astral.sh/uv/install.sh | sh`).
+Prerequisites: Go 1.26+ (per `apps/mcp-server/go.mod`) and
+[uv](https://docs.astral.sh/uv/), which manages Python (3.11+) itself.
 
 ```bash
 git clone https://github.com/aatrey56/FPL-Draft-Agent.git && cd FPL-Draft-Agent
 (cd apps/backend && uv sync)
 
-# one-time config — ids from draft.premierleague.com URLs, key is any random string
-printf 'LEAGUE_ID=<yours>\nENTRY_ID=<yours>\nFPL_MCP_API_KEY=%s\n' \
+# .env at the repo root; ids are in draft.premierleague.com URLs,
+# the key is any random string you invent
+printf 'LEAGUE_ID=<LEAGUE_ID>\nENTRY_ID=<ENTRY_ID>\nFPL_MCP_API_KEY=%s\n' \
   "$(openssl rand -hex 16)" >> .env
 ```
 
-First time only — fetch the season (step 1 below), then build the ML
-artifacts (they're gitignored; the explicit season list pulls the 2025-26
-history from the public vaastav mirror):
+First-time build (artifacts are gitignored; the season list pulls history from
+the public vaastav mirror):
 
 ```bash
+make fetch                    # raw data for SEASON (default 2026-27)
 cd apps/backend
 uv run python -m backend.ml.history --seasons 2019-20 2020-21 2021-22 2022-23 2023-24 2024-25 2025-26
 uv run python -m backend.ml.projection --project
 uv run python -m backend.ml.serve_export
+cd .. && make derive          # weekly artifacts
+make serve                    # MCP server on :8080
 ```
 
-Then turn on the autopilot (macOS) — after this, no routine commands at all:
-
-```bash
-make autopilot   # always-on server + data/artifact refresh every 15 min + deadline checklists (launchd)
-make checklist-plan                    # next deadlines with computed research/delivery times
-make checklist-preview KIND=waivers    # render the next checklist to stdout, send nothing
-make update      # after a merge: pull latest code + restart the server
-make stop / make start   # pause / resume without uninstalling
-make tui         # game days: self-feeding live dashboard (auto-fetch every 60s)
-make autopilot-off
-```
-
-Manual equivalents when you want them: `make serve` / `make weekly` (fetch +
-derive: ownership, then season panel && next-GW xP && 3-GW horizon (`-`-prefixed: a failure warns and waiver/my_week fall back — to the heuristic without the xP file, to the next-GW ranking without the horizon file), then the season's `team_env.json` from that panel (also `-`-prefixed), then waiver and my_week with `SCORER={heuristic,model}` (waiver also `HORIZON={1,3,ros}`, default 3), then the model's weekly track record (`track_record.csv`/`.md`: xP vs realized per finished GW, `live` or `replay`); `SEASON` defaults to 2026-27 and the flat `data/` layout is never written; `make xp GW=n` builds one specific GW's xP and horizon files) / `make matchday` (5-min refresh loop) / `make preflight` (local CI).
-
-`make fetch` skips settled gameweeks: a past GW whose bootstrap event is
-`finished` and whose cached `live.json` is a complete payload with every fixture
-`finished` (bonus confirmed, not just `finished_provisional`) is not
-re-downloaded, nor are its entry picks; the current GW and anything not yet
-settled are always refetched, and each run logs `requests_fetched` /
-`requests_skipped`. "Complete" means non-empty `elements`, each with integer
-(non-null, non-string, non-fractional) `stats.total_points` and `stats.minutes`,
-and — once that GW's entry picks are cached — an element for every player the
-league's entries picked. The draft API has no `data_checked` flag, so that is
-the settled test. `make fetch-all` (`--refetch-all`) forces the full per-GW
-pull, e.g. after an FPL points correction. Independently of settlement, a cached
-live file failing those checks, or an entry-event file that is malformed or not
-a full squad (15 picks, each with `element` > 0, `position` 1..15, no duplicate
-elements or positions), is re-downloaded on any run and logged as
-`forcing refetch` with its `reason`. The one exception is an empty picks
-response for a GW before the entry took part — before the league's
-`start_event` (`league/<id>/details.json`) or the entry's first
-`history.json` row (late joiners) — which is final and kept. If neither start
-is known, empty picks are treated as corrupt and refetched.
-
-A settled GW's entry picks are only skipped if they were downloaded *after* the
-GW was finalised: once a GW is over the draft API's picks include automatic
-substitutions (subs moved into positions 1–11), so a squad cached mid-GW would
-make the points builder drop the substitute (e.g. 60 instead of 69). The payload
-cannot reveal this (`subs` is `[]` both mid-GW and when no sub happened), so the
-first run to see a GW settled writes `gw/<n>/entries_final.json`; each non-empty
-entry-event file older than that marker is refetched once
-(`reason="picks fetched before GW finalised"`) and is newer than it afterwards.
-The empty pre-start picks above are exempt. Deleting the marker re-triggers one
-refetch of that GW's picks.
-
-Non-Mac or cron fans: schedule `scripts/autorefresh.sh` (crontab example inline).
-
-Connect Claude and ask away (full guide: `docs/CLAUDE_DESKTOP.md`):
+Connect Claude (full guide: [docs/CLAUDE_DESKTOP.md](docs/CLAUDE_DESKTOP.md)):
 
 ```bash
 claude mcp add fpl --transport http http://localhost:8080/mcp \
   --header "X-API-Key: $(grep '^FPL_MCP_API_KEY=' .env | cut -d= -f2)"
 ```
 
-> *"Run my waiver plan — which adds are streams vs season upgrades?"* ·
-> *"my_week: who starts and what needs my attention?"* ·
-> *"trade_check: I give X, I get Y — worth it?"*
+Then ask, for example: "Run my waiver plan, which adds are streams vs season
+upgrades?", "my_week: who starts and what needs my attention?", "trade_check:
+I give X, I get Y, worth it?"
 
-## Project layout
+For hands-off operation on macOS, run `make autopilot` once instead of the
+manual fetch/derive/serve steps.
+
+## Make targets
+
+| Target | Does |
+|---|---|
+| `serve` | Run the MCP server (restart after every `git pull`) |
+| `fetch` | Refresh raw data for `SEASON`; settled gameweeks already on disk are skipped |
+| `fetch-all` | Same, but re-download every GW (e.g. after an FPL points correction) |
+| `livefetch` | In-play refresh of the current GW's live points only |
+| `derive` | Rebuild weekly artifacts: ownership, panel + xP + 3-GW horizon, `team_env`, waiver, my_week, `player_values`, track record |
+| `weekly` | `fetch` then `derive` |
+| `xp GW=n` | Build the xP and horizon files for one specific GW |
+| `matchday` | Game-day loop: live points every 60s, full refresh every 10 min |
+| `tui` | Live matchday dashboard |
+| `backtest` | Walk-forward evaluation of the match model vs naive baselines |
+| `preflight` | Full local CI (Go vet/test/gofmt, uv sync, ruff, pytest) |
+| `autopilot` / `autopilot-off` | Install / remove the launchd agents |
+| `stop` / `start` | Pause / resume the agents without uninstalling |
+| `update` | `git pull --ff-only` and restart the autopilot server |
+| `restart-server` | Reload the autopilot server after code changes |
+| `checklist-plan` | Next deadlines with computed research and delivery times |
+| `checklist-preview KIND=waivers` | Render the next checklist to stdout, send nothing (`KIND` = `trades`, `waivers`, `lineup`) |
+
+Variables: `SEASON` (default `2026-27`), `SCORER` (`model` default, or
+`heuristic`), `HORIZON` (`3` default, or `1`, `ros`; the gain `waiver_plan`
+ranks on), `DATA_DIR` (data root as seen from `apps/backend`).
+
+A failed xP/horizon step in `derive` only warns; waiver and my_week fall back
+to the heuristic (or the next-GW ranking) and record why. The fetch
+settlement rules (which GWs are skipped, when picks are re-downloaded) are
+documented in the comments above the `fetch` and `derive` targets in the
+[Makefile](Makefile) and in `apps/mcp-server/cmd/dev`.
+
+## Data layout
 
 ```
-apps/
-  mcp-server/            Go module
-    fpl-server/          14 MCP tool handlers + HTTP server (X-API-Key auth)
-    cmd/dev/             FPL data fetcher (the only live-API component)
-    cmd/tui/             live matchday dashboard (bubbletea)
-    internal/            fetch, store, ledger, points, summary, config
-  backend/               Python package
-    backend/ml/          ingestion → parquet, projection model, waiver_plan,
-                         my_week, drop-radar, matchfeatures (leakage-safe per-GW
-                         training table), matchmodel (two-stage match xP model),
-                         matcheval (walk-forward benchmark), trackrecord
-                         (weekly xP-vs-realized log),
-                         specs (treat *_SPEC.md as contracts)
-    tests/               pytest suite (no network)
-data/                    Raw + derived FPL data (gitignored; flat = 25/26 archive)
-docs/                    Setup, design docs, model roadmap, measured findings
-scripts/                 autorefresh (launchd/cron), autopilot install, deadline_tick, preflight, notifications
-Makefile                 every operation: serve/fetch/derive/weekly/tui/autopilot/update/...
-PLAN.md / STATE.md / ISSUES.md   Living roadmap, checkpoint, known issues
+data/                     gitignored
+  raw/                    flat = 2025-26 archive (never overwritten)
+    <season>/             2026-27 onward, written by the fetcher (--season)
+  derived/
+    ml/                   flat: multi-season history, 2025-26 panel, preseason projections
+    <season>/ml/          weekly artifacts: waiver_plan, my_week, player_values,
+                          team_env, xp_gw<N>, xp_horizon_gw<N>, track_record, ...
 ```
 
-## CI
+Servers and ML CLIs take `--raw-root` / `--derived-root` / `--data-root`
+(defaults `data/raw`, `data/derived`) and `--default-season`. Cross-season
+joins use the permanent player `code`, never the per-season `id`.
 
-Required checks on every PR to `main` (strict, 1 review): Go
-(vet/test/gofmt), Python 3.11 + 3.12 (ruff + pytest), gitleaks secret scan,
-artifacts-guard, plus an automated Claude code review. Run locally:
-`bash scripts/preflight.sh`.
+## Configuration
 
-Configuration reference: `.env.example` (every variable annotated). League
-and entry ids live in `.env` only — never in tracked files.
+Set in the repo `.env` (see [.env.example](.env.example), every variable
+annotated). Real environment variables win.
 
-## Legacy
+- `LEAGUE_ID`, `ENTRY_ID`, `FPL_MCP_API_KEY`: required. Ids live in `.env`
+  only, never in tracked files.
+- Deadline agent (all optional): `USER_TZ`, `AWAKE_START`, `AWAKE_END`,
+  `CHECKLIST_LEAD_MIN`, `MIN_ACTION_MIN`, `RESEARCH_LEAD_MIN`, `NTFY_TOPIC`,
+  `NTFY_SERVER`.
 
-The pre-MCP chat stack (a FastAPI server, an OpenAI agent, a RAG index, a
-scheduler, and the `apps/web` UI) was removed once Claude over MCP replaced
-it; it remains in git history.
+Two hand-maintained, gitignored files under `data/derived/<season>/ml/` steer
+`waiver_plan` and `my_week`; re-run `make derive` after editing either:
+
+- `squad_prefs.json`, the never-drop list: players you are keeping are never
+  a drop pick or drop candidate.
+  `{"never_drop": [{"player": "<web_name>", "team": "<SHORT>", "until_gw": 12, "note": "..."}]}`
+  (`code` may replace `player`/`team`; `until_gw` and `note` are optional.)
+  Every entry is accounted for in `never_drop_applied` / `_unmatched` /
+  `_expired` / `_invalid`.
+- `role_overrides.json`, team news for the next GW:
+  `{"overrides": [{"player": "<web_name>", "team": "<SHORT>", "p_start": 0.4, "fact": "...", "return_gw": 9, "valid_through_gw": 7, "as_of": "<date>"}]}`.
+  Entries go stale or expire by GW and never lift an availability gate; each
+  is accounted for in `overrides_applied` / `_unmatched` / `_expired` /
+  `_stale` / `_blocked`. Research current news before each deadline.
+
+Field semantics and edge cases are documented in `apps/backend/backend/ml/waiver.py`.
+
+## Development
+
+```bash
+# Go (apps/mcp-server)
+go fmt ./... && go vet ./... && go test ./...
+
+# Python (apps/backend)
+uv run pytest && uv run ruff check .
+
+bash scripts/preflight.sh     # all of the above (make preflight)
+```
+
+No test calls a live API. PRs to `main` need passing CI (Go, Python 3.11 and
+3.12, gitleaks, artifacts-guard) and review; see
+[CONTRIBUTING.md](CONTRIBUTING.md) and [CLAUDE.md](CLAUDE.md) for the
+engineering rules and architecture.
+
+## Docs
+
+- [docs/CLAUDE_DESKTOP.md](docs/CLAUDE_DESKTOP.md): connecting Claude Desktop / Code
+- [docs/DEADLINE_AGENT.md](docs/DEADLINE_AGENT.md): deadline checklist agent
+- [docs/MODEL_ROADMAP.md](docs/MODEL_ROADMAP.md): model status and remaining work
+- [docs/MINUTES_FINDINGS.md](docs/MINUTES_FINDINGS.md): minutes / cold-start analysis
+- [PLAN.md](PLAN.md), [STATE.md](STATE.md), [ISSUES.md](ISSUES.md), [CHANGELOG.md](CHANGELOG.md): roadmap, checkpoint, known issues, release notes
+
+The pre-MCP chat stack (FastAPI server, OpenAI agent, RAG index, `apps/web`)
+was removed; it remains in git history.
