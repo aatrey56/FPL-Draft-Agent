@@ -201,7 +201,11 @@ type snapshot struct {
 	// GWLive is true while the gameweek is under way: a fixture has kicked
 	// off and at least one has not reached full time. Both tables fold in
 	// the in-progress results and render highlighted while it holds.
-	GWLive       bool
+	GWLive bool
+	// Unconfirmed is true once every fixture is at full time but the league
+	// has not yet settled this GW's H2H matches: the standings still carry
+	// live scores (provisional bonus, projected auto-subs).
+	Unconfirmed  bool
 	Fixtures     []fixtureRow
 	Transactions []txRow
 	TxByManager  []managerTx
@@ -1016,6 +1020,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			if !ok1 || !ok2 {
 				continue
 			}
+			snap.Unconfirmed = !snap.GWLive
 			p1, p2 := effective[entryByLE[m.LeagueEntry1]], effective[entryByLE[m.LeagueEntry2]]
 			r1, r2 := &rows[i1], &rows[i2]
 			r1.PointsFor += p1

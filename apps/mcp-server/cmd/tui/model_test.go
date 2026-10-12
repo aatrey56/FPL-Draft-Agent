@@ -848,6 +848,9 @@ func TestStandingsFoldInLiveGameweek(t *testing.T) {
 	if !snap.GWLive {
 		t.Fatal("a fixture in play must mark the gameweek live")
 	}
+	if snap.Unconfirmed {
+		t.Fatal("mid-GW the highlight already marks the table provisional; no unconfirmed tag")
+	}
 	// Harbor FC win 8-2 live and climb above Quay Town (who draw 0-0 with Pier).
 	// Pier 4pts, Dock 3, Harbor 3 (fewer PF than Dock), Quay 1.
 	got := strings.Join(standingNames(snap.Standings), " | ")
@@ -877,6 +880,14 @@ func TestStandingsStayFoldedAfterLastWhistle(t *testing.T) {
 	if snap.GWLive {
 		t.Fatal("every fixture at full time: the highlight must come off")
 	}
+	if !snap.Unconfirmed {
+		t.Fatal("live-folded results the league has not settled must be flagged unconfirmed")
+	}
+	m := newModel(dir, t.TempDir(), 5, 501, 0)
+	m.snap = snap
+	if !strings.Contains(m.header(200), "● unconfirmed") {
+		t.Fatalf("header must tag the data stamp unconfirmed:\n%s", m.header(200))
+	}
 	if snap.Standings[2].Name != "Harbor FC" || snap.Standings[2].Record != "1-0-1" {
 		t.Fatalf("final-whistle table must keep the live result: %v", standingNames(snap.Standings))
 	}
@@ -893,8 +904,8 @@ func TestStandingsNotFoldedBeforeKickoffOrOnceSettled(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if snap.GWLive {
-			t.Fatalf("%s: gameweek must not be live", name)
+		if snap.GWLive || snap.Unconfirmed {
+			t.Fatalf("%s: gameweek must be neither live nor unconfirmed", name)
 		}
 		if got := snap.Standings[0]; got.Name != "Dock United" || got.Record != "1-0-0" || got.Total != 40 ||
 			got.Move != 0 || got.Result != "" {

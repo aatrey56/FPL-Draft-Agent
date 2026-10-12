@@ -1109,6 +1109,9 @@ func (m *model) header(width int) string {
 	}
 	clock := on(styFg.Bold(true)).Render(time.Now().In(eastern).Format("3:04:05 PM") + " EST")
 	stamp := on(styDim).Render("data "+m.snap.Loaded.Format("15:04:05")) + on(styLive).Render(" ●")
+	if m.snap.Unconfirmed {
+		stamp += on(styFlag.Italic(true)).Render(" unconfirmed")
+	}
 	if m.status != "" {
 		stamp += on(styDim).Render("  " + m.status)
 	}
