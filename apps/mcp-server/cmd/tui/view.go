@@ -432,9 +432,17 @@ func (m *model) railBody(width int, focused bool) string {
 		for i, s := range m.snap.Standings {
 			name := ansi.Truncate(s.Name, nameW, "…")
 			pad := strings.Repeat(" ", max(0, nameW-lipgloss.Width(name)))
+			// While the gameweek is live the table is provisional: rows
+			// render baby blue until the last full-time whistle.
 			marker, sty := " ", styFg
+			if m.snap.GWLive {
+				sty = styTmrw
+			}
 			if s.Mine {
 				marker, sty = "◆", styYou
+				if m.snap.GWLive {
+					sty = styTmrw.Bold(true)
+				}
 			}
 			line := sty.Render(fmt.Sprintf("%s%2d %s%s %-5s ", marker, i+1, name, pad, s.Record)) +
 				m.liveScore(s.EntryID)
@@ -688,7 +696,8 @@ var clubColor = map[string]lipgloss.Style{
 
 // plTableBody renders the live Premier League table: position, club (in kit
 // colour), played, goal difference, points, with divider lines after 5th
-// (European places) and 17th (the relegation cut).
+// (European places) and 17th (the relegation cut). While the gameweek is
+// live the whole table is gold, marking it provisional.
 func (m *model) plTableBody(width int) string {
 	if len(m.snap.PLTable) == 0 {
 		return ""
@@ -698,14 +707,18 @@ func (m *model) plTableBody(width int) string {
 	b.WriteString(styDim.Render(" #  CLUB   P   GD  PTS") + "\n")
 	for _, r := range m.snap.PLTable {
 		// Only the leader wears its kit colour; the rest stay neutral.
-		clr := styFg
-		if r.Pos == 1 {
+		base := styFg
+		if m.snap.GWLive {
+			base = styGold
+		}
+		clr := base
+		if r.Pos == 1 && !m.snap.GWLive {
 			if c, ok := clubColor[r.Short]; ok {
 				clr = c
 			}
 		}
-		line := fmt.Sprintf("%2d  ", r.Pos) + clr.Render(fmt.Sprintf("%-3s", r.Short)) +
-			styFg.Render(fmt.Sprintf("  %2d  %+3d  %3d", r.Played, r.GD, r.Points))
+		line := base.Render(fmt.Sprintf("%2d  ", r.Pos)) + clr.Render(fmt.Sprintf("%-3s", r.Short)) +
+			base.Render(fmt.Sprintf("  %2d  %+3d  %3d", r.Played, r.GD, r.Points))
 		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
 		switch r.Pos {
 		case 5, 10:

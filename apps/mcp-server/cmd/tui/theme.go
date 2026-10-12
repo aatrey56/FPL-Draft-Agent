@@ -14,6 +14,7 @@ var (
 	flagC   = lipgloss.AdaptiveColor{Light: "#B26A00", Dark: "#FFB86C"} // availability warning
 	tmrwC   = lipgloss.AdaptiveColor{Light: "#2E7BB5", Dark: "#8FD6FF"} // has not played yet
 	freeC   = lipgloss.AdaptiveColor{Light: "#2E7BB5", Dark: "#8FD6FF"} // free agents on leaderboards
+	goldC   = lipgloss.AdaptiveColor{Light: "#9A7400", Dark: "#FFD54A"} // PL table while the GW is live
 	fgC     = lipgloss.AdaptiveColor{Light: "#131816", Dark: "#E6EDF3"}
 	mutedC  = lipgloss.AdaptiveColor{Light: "#5C6661", Dark: "#7B88A8"}
 	ruleC   = lipgloss.AdaptiveColor{Light: "#C9D2E3", Dark: "#2A3354"} // unfocused borders
@@ -32,6 +33,7 @@ var (
 	styYou    = lipgloss.NewStyle().Bold(true).Foreground(accentC)
 	styTmrw   = lipgloss.NewStyle().Foreground(tmrwC)
 	styFree   = lipgloss.NewStyle().Foreground(freeC)
+	styGold   = lipgloss.NewStyle().Foreground(goldC)
 	styYellow = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#8A7A00", Dark: "#F1FA8C"})
 	stySel    = lipgloss.NewStyle().Bold(true).Foreground(fgC).Background(selBgC)
 
