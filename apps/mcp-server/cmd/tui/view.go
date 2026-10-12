@@ -432,19 +432,14 @@ func (m *model) railBody(width int, focused bool) string {
 		for i, s := range m.snap.Standings {
 			name := ansi.Truncate(s.Name, nameW, "…")
 			pad := strings.Repeat(" ", max(0, nameW-lipgloss.Width(name)))
-			// While the gameweek is live the table is provisional: rows
-			// render baby blue until the last full-time whistle.
 			marker, sty := " ", styFg
-			if m.snap.GWLive {
-				sty = styTmrw
-			}
 			if s.Mine {
 				marker, sty = "◆", styYou
-				if m.snap.GWLive {
-					sty = styTmrw.Bold(true)
-				}
 			}
-			line := sty.Render(fmt.Sprintf("%s%2d %s%s %-5s ", marker, i+1, name, pad, s.Record)) +
+			if m.snap.GWLive {
+				sty = liveRowStyle(s.Move, s.Result).Bold(s.Mine)
+			}
+			line := sty.Render(fmt.Sprintf("%s%2d %s%s %-5s", marker, i+1, name, pad, s.Record)) + " " +
 				m.liveScore(s.EntryID)
 			if showProj {
 				line += " " + m.projScore(s.EntryID)
@@ -694,10 +689,34 @@ var clubColor = map[string]lipgloss.Style{
 	"CRY": styYellow, "TOT": styYellow, "AVL": styYellow,
 }
 
+// liveRowStyle is the highlighter both live tables use mid-gameweek. The
+// background shows movement against last week's table (green climbed, red
+// dropped, blue held); the text shows the current result of this GW's game
+// (green winning, red losing, baby blue level, white not yet kicked off).
+func liveRowStyle(move int, result string) lipgloss.Style {
+	bg := sameBgC
+	switch {
+	case move > 0:
+		bg = upBgC
+	case move < 0:
+		bg = downBgC
+	}
+	fg := fgC
+	switch result {
+	case "W":
+		fg = liveC
+	case "L":
+		fg = alertC
+	case "D":
+		fg = tmrwC
+	}
+	return lipgloss.NewStyle().Foreground(fg).Background(bg)
+}
+
 // plTableBody renders the live Premier League table: position, club (in kit
 // colour), played, goal difference, points, with divider lines after 5th
 // (European places) and 17th (the relegation cut). While the gameweek is
-// live the whole table is gold, marking it provisional.
+// live each row is highlighted by liveRowStyle instead.
 func (m *model) plTableBody(width int) string {
 	if len(m.snap.PLTable) == 0 {
 		return ""
@@ -706,19 +725,19 @@ func (m *model) plTableBody(width int) string {
 	var b strings.Builder
 	b.WriteString(styDim.Render(" #  CLUB   P   GD  PTS") + "\n")
 	for _, r := range m.snap.PLTable {
-		// Only the leader wears its kit colour; the rest stay neutral.
-		base := styFg
+		var line string
 		if m.snap.GWLive {
-			base = styGold
-		}
-		clr := base
-		if r.Pos == 1 && !m.snap.GWLive {
-			if c, ok := clubColor[r.Short]; ok {
+			line = liveRowStyle(r.Move, r.Result).Render(fmt.Sprintf("%2d  %-3s  %2d  %+3d  %3d",
+				r.Pos, r.Short, r.Played, r.GD, r.Points))
+		} else {
+			// Only the leader wears its kit colour; the rest stay neutral.
+			clr := styFg
+			if c, ok := clubColor[r.Short]; ok && r.Pos == 1 {
 				clr = c
 			}
+			line = fmt.Sprintf("%2d  ", r.Pos) + clr.Render(fmt.Sprintf("%-3s", r.Short)) +
+				styFg.Render(fmt.Sprintf("  %2d  %+3d  %3d", r.Played, r.GD, r.Points))
 		}
-		line := base.Render(fmt.Sprintf("%2d  ", r.Pos)) + clr.Render(fmt.Sprintf("%-3s", r.Short)) +
-			base.Render(fmt.Sprintf("  %2d  %+3d  %3d", r.Played, r.GD, r.Points))
 		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
 		switch r.Pos {
 		case 5, 10:
