@@ -48,6 +48,7 @@ type side struct {
 	Bench     int
 	Played    int
 	Players   []playerRow
+	HasPicks  bool // this GW's picks file was read; false = score unknown, not zero
 }
 
 type matchup struct{ A, B side }
@@ -58,6 +59,7 @@ type standingRow struct {
 	Total   int
 	Mine    bool
 	EntryID int
+	Result  string // this GW's H2H at the live score: W/D/L, "" = not folded in
 }
 
 type railItem struct {
@@ -194,6 +196,14 @@ type snapshot struct {
 	NextFixtures []nextFixture // next gameweek's schedule (Next week panel)
 	PLTable      []plRow       // live Premier League table (compact layout)
 	Standings    []standingRow
+	// GWLive is true while the gameweek is under way: a fixture has kicked
+	// off and at least one has not reached full time. Both tables fold in
+	// the in-progress results and render highlighted while it holds.
+	GWLive bool
+	// Unconfirmed is true once every fixture is at full time but the league
+	// has not yet settled this GW's H2H matches: the standings still carry
+	// live scores (provisional bonus, projected auto-subs).
+	Unconfirmed  bool
 	Fixtures     []fixtureRow
 	Transactions []txRow
 	TxByManager  []managerTx
@@ -278,8 +288,9 @@ func readJSON(path string, v any) error {
 }
 
 // loadPLTable computes the live Premier League table from finished fixtures
-// across all gameweeks played so far (past GWs are immutable; the current one
-// updates as games finish).
+// across all gameweeks played so far (past GWs are immutable). Current-GW
+// fixtures that are in play count at their current score, so the table moves
+// with every goal.
 func loadPLTable(dir string, currentGW int, teamShort map[int]string) []plRow {
 	type acc struct{ W, D, L, GF, GA int }
 	accum := map[int]*acc{}
@@ -296,6 +307,7 @@ func loadPLTable(dir string, currentGW int, teamShort map[int]string) []plRow {
 				TeamA        int  `json:"team_a"`
 				HS           *int `json:"team_h_score"`
 				AS           *int `json:"team_a_score"`
+				Started      bool `json:"started"`
 				Finished     bool `json:"finished"`
 				FinishedProv bool `json:"finished_provisional"`
 			} `json:"fixtures"`
@@ -304,7 +316,9 @@ func loadPLTable(dir string, currentGW int, teamShort map[int]string) []plRow {
 			continue
 		}
 		for _, f := range lf.Fixtures {
-			if (!f.Finished && !f.FinishedProv) || f.HS == nil || f.AS == nil {
+			done := f.Finished || f.FinishedProv
+			inPlay := g == currentGW && f.Started
+			if (!done && !inPlay) || f.HS == nil || f.AS == nil {
 				continue
 			}
 			h, a := get(f.TeamH), get(f.TeamA)
@@ -451,9 +465,10 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			WaiverPick int    `json:"waiver_pick"`
 		} `json:"league_entries"`
 		Matches []struct {
-			Event        int `json:"event"`
-			LeagueEntry1 int `json:"league_entry_1"`
-			LeagueEntry2 int `json:"league_entry_2"`
+			Event        int  `json:"event"`
+			LeagueEntry1 int  `json:"league_entry_1"`
+			LeagueEntry2 int  `json:"league_entry_2"`
+			Finished     bool `json:"finished"`
 		} `json:"matches"`
 		Standings []struct {
 			LeagueEntry  int `json:"league_entry"`
@@ -503,6 +518,15 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		} `json:"fixtures"`
 	}
 	_ = readJSON(filepath.Join(dir, fmt.Sprintf("gw/%d/live.json", gw)), &live) // pre-kickoff: zeros
+
+	// The gameweek is under way from the first kickoff until the last
+	// fixture reaches full time (provisional counts — that is the whistle).
+	kickedOff, allDone := false, len(live.Fixtures) > 0
+	for _, f := range live.Fixtures {
+		kickedOff = kickedOff || f.Started
+		allDone = allDone && (f.Finished || f.FinishedProv)
+	}
+	snap.GWLive = kickedOff && !allDone
 
 	type fxState struct{ started, finished bool }
 	// Merge per team across a double gameweek: started once any fixture has
@@ -815,6 +839,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		if err := readJSON(filepath.Join(dir, fmt.Sprintf("entry/%d/gw/%d.json", entryID, gw)), &picks); err != nil {
 			return s
 		}
+		s.HasPicks = len(picks.Picks) > 0
 		sort.Slice(picks.Picks, func(i, j int) bool { return picks.Picks[i].Position < picks.Picks[j].Position })
 		for _, p := range picks.Picks {
 			row := info[p.Element]
@@ -922,7 +947,64 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	snap.Events = loadMatchEvents(dir, gw, info, snap.OwnerByElem)
 
 	// League standings for the rail (all zeros pre-lockdown — still orienting).
+	// details.json only counts H2H matches the league has settled, so once
+	// the gameweek kicks off each unsettled current-GW match is folded in at
+	// its live effective score (auto-subs included) — the table re-ranks as
+	// points come in and stays that way after the last full-time whistle
+	// until the league settles the round.
 	rows := details.Standings
+	result := map[int]string{} // league entry → live H2H result
+	if kickedOff {
+		// Only sides whose picks loaded have a real score; a missing or
+		// unreadable picks file (mid-fetch, failed refresh) must not be
+		// read as 0 points and fold in an invented result.
+		effective := map[int]int{}
+		for _, mu := range snap.Matchups {
+			for _, sd := range []side{mu.A, mu.B} {
+				if sd.HasPicks {
+					effective[sd.EntryID] = sd.Effective
+				}
+			}
+		}
+		byLE := map[int]int{}
+		for i, r := range rows {
+			byLE[r.LeagueEntry] = i
+		}
+		for _, m := range details.Matches {
+			if m.Event != gw || m.Finished {
+				continue
+			}
+			i1, ok1 := byLE[m.LeagueEntry1]
+			i2, ok2 := byLE[m.LeagueEntry2]
+			p1, has1 := effective[entryByLE[m.LeagueEntry1]]
+			p2, has2 := effective[entryByLE[m.LeagueEntry2]]
+			if !ok1 || !ok2 || !has1 || !has2 {
+				continue
+			}
+			snap.Unconfirmed = !snap.GWLive
+			r1, r2 := &rows[i1], &rows[i2]
+			r1.PointsFor += p1
+			r2.PointsFor += p2
+			switch {
+			case p1 > p2:
+				r1.MatchesWon++
+				r1.Total += 3
+				r2.MatchesLost++
+				result[m.LeagueEntry1], result[m.LeagueEntry2] = "W", "L"
+			case p1 < p2:
+				r2.MatchesWon++
+				r2.Total += 3
+				r1.MatchesLost++
+				result[m.LeagueEntry1], result[m.LeagueEntry2] = "L", "W"
+			default:
+				r1.MatchesDrawn++
+				r2.MatchesDrawn++
+				r1.Total++
+				r2.Total++
+				result[m.LeagueEntry1], result[m.LeagueEntry2] = "D", "D"
+			}
+		}
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Total != rows[j].Total {
 			return rows[i].Total > rows[j].Total
@@ -937,6 +1019,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			Total:   s.PointsFor,
 			Mine:    eid == entry,
 			EntryID: eid,
+			Result:  result[s.LeagueEntry],
 		})
 	}
 

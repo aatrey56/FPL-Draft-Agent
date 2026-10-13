@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func write(t *testing.T, path string, v any) {
@@ -792,4 +793,178 @@ func TestSeasonUnknownSides(t *testing.T) {
 			t.Errorf("%s: got (%v, %v), want (%v, %v)", c.name, gotAdd, gotDrop, c.wantAdd, c.wantDropOut)
 		}
 	}
+}
+
+// liveTablesDir extends fixtureDir with settled standings (one GW already
+// played) and a GW1 live file whose fixtures are given by the caller.
+func liveTablesDir(t *testing.T, fixtures []map[string]any, matchesFinished bool) string {
+	t.Helper()
+	dir := fixtureDir(t)
+	write(t, filepath.Join(dir, "league/5/details.json"), map[string]any{
+		"league_entries": []map[string]any{
+			{"id": 71, "entry_id": 501, "entry_name": "Harbor FC"},
+			{"id": 72, "entry_id": 502, "entry_name": "Dock United"},
+			{"id": 73, "entry_id": 503, "entry_name": "Pier Rovers"},
+			{"id": 74, "entry_id": 504, "entry_name": "Quay Town"},
+		},
+		"matches": []map[string]any{
+			{"event": 1, "league_entry_1": 71, "league_entry_2": 72, "finished": matchesFinished},
+			{"event": 1, "league_entry_1": 73, "league_entry_2": 74, "finished": matchesFinished},
+		},
+		// Dock United lead on the settled table; Harbor FC trail.
+		"standings": []map[string]any{
+			{"league_entry": 72, "total": 3, "points_for": 40, "matches_won": 1},
+			{"league_entry": 73, "total": 3, "points_for": 30, "matches_won": 1},
+			{"league_entry": 74, "total": 0, "points_for": 20, "matches_lost": 1},
+			{"league_entry": 71, "total": 0, "points_for": 10, "matches_lost": 1},
+		},
+	})
+	write(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{
+		"elements": map[string]any{
+			"1": map[string]any{"stats": map[string]any{"minutes": 90, "total_points": 8}},
+			"3": map[string]any{"stats": map[string]any{"minutes": 90, "total_points": 2}},
+		},
+		"fixtures": fixtures,
+	})
+	return dir
+}
+
+func standingNames(rows []standingRow) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = fmt.Sprintf("%s %s %d", r.Name, r.Record, r.Total)
+	}
+	return out
+}
+
+func TestStandingsFoldInLiveGameweek(t *testing.T) {
+	dir := liveTablesDir(t, []map[string]any{
+		{"team_h": 1, "team_a": 2, "team_h_score": 1, "team_a_score": 0, "started": true, "minutes": 60},
+	}, false)
+	snap, _, err := load(dir, t.TempDir(), 5, 501, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.GWLive {
+		t.Fatal("a fixture in play must mark the gameweek live")
+	}
+	if snap.Unconfirmed {
+		t.Fatal("mid-GW the highlight already marks the table provisional; no unconfirmed tag")
+	}
+	// Harbor FC win 8-2 live. Pier v Quay has no picks files (a partial
+	// fetch): their scores are unknown, so that match stays unfolded rather
+	// than becoming an invented 0-0 draw.
+	got := strings.Join(standingNames(snap.Standings), " | ")
+	want := "Dock United 1-0-1 42 | Pier Rovers 1-0-0 30 | Harbor FC 1-0-1 18 | Quay Town 0-0-1 20"
+	if got != want {
+		t.Fatalf("live standings\n got %s\nwant %s", got, want)
+	}
+	for i, want := range []string{"L", "", "W", ""} {
+		if r := snap.Standings[i]; r.Result != want {
+			t.Fatalf("%s: live result %q, want %q", r.Name, r.Result, want)
+		}
+	}
+}
+
+func TestStandingsStayFoldedAfterLastWhistle(t *testing.T) {
+	dir := liveTablesDir(t, []map[string]any{
+		{"team_h": 1, "team_a": 2, "team_h_score": 1, "team_a_score": 0, "started": true, "finished_provisional": true},
+	}, false)
+	snap, _, err := load(dir, t.TempDir(), 5, 501, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.GWLive {
+		t.Fatal("every fixture at full time: the highlight must come off")
+	}
+	if !snap.Unconfirmed {
+		t.Fatal("live-folded results the league has not settled must be flagged unconfirmed")
+	}
+	m := newModel(dir, t.TempDir(), 5, 501, 0)
+	m.snap = snap
+	if !strings.Contains(m.header(200), "● unconfirmed") {
+		t.Fatalf("header must tag the data stamp unconfirmed:\n%s", m.header(200))
+	}
+	if snap.Standings[2].Name != "Harbor FC" || snap.Standings[2].Record != "1-0-1" {
+		t.Fatalf("final-whistle table must keep the live result: %v", standingNames(snap.Standings))
+	}
+}
+
+func TestStandingsNotFoldedBeforeKickoffOrOnceSettled(t *testing.T) {
+	for name, tc := range map[string]struct {
+		started, settled bool
+	}{"pre-kickoff": {false, false}, "settled": {true, true}} {
+		dir := liveTablesDir(t, []map[string]any{
+			{"team_h": 1, "team_a": 2, "started": tc.started, "finished": tc.settled},
+		}, tc.settled)
+		snap, _, err := load(dir, t.TempDir(), 5, 501, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snap.GWLive || snap.Unconfirmed {
+			t.Fatalf("%s: gameweek must be neither live nor unconfirmed", name)
+		}
+		if got := snap.Standings[0]; got.Name != "Dock United" || got.Record != "1-0-0" || got.Total != 40 {
+			t.Fatalf("%s: settled table must be used as-is: %v", name, standingNames(snap.Standings))
+		}
+	}
+}
+
+func TestPLTableCountsInPlayFixturesOfCurrentGW(t *testing.T) {
+	dir := t.TempDir()
+	teams := map[int]string{1: "ARS", 2: "COV", 3: "LEE", 4: "HUL"}
+	write(t, filepath.Join(dir, "gw/1/live.json"), map[string]any{"fixtures": []map[string]any{
+		{"team_h": 3, "team_a": 4, "team_h_score": 1, "team_a_score": 0, "started": true, "finished": true},
+		// A past-GW fixture that never finished (postponed mid-game) stays out.
+		{"team_h": 1, "team_a": 2, "team_h_score": 5, "team_a_score": 0, "started": true},
+	}})
+	write(t, filepath.Join(dir, "gw/2/live.json"), map[string]any{"fixtures": []map[string]any{
+		{"team_h": 2, "team_a": 1, "team_h_score": 2, "team_a_score": 0, "started": true, "minutes": 70},
+		// Kicked off but no score yet: nothing to count.
+		{"team_h": 4, "team_a": 3, "started": true},
+	}})
+	rows := loadPLTable(dir, 2, teams)
+	if rows[0].Short != "COV" || rows[0].Points != 3 || rows[0].Played != 1 || rows[0].GD != 2 {
+		t.Fatalf("in-play COV win must lead: %+v", rows)
+	}
+	for _, r := range rows {
+		if r.Short == "ARS" && (r.Played != 1 || r.GD != -2) {
+			t.Fatalf("ARS must count only the live GW2 game: %+v", r)
+		}
+	}
+}
+
+func TestLiveTablesHighlightOnlyWhileGWLive(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	m := newModel("", "", 5, 501, 0)
+	m.snap.Standings = []standingRow{{Name: "Dock United", Record: "1-0-0", EntryID: 502}}
+	m.snap.PLTable = []plRow{{Pos: 1, Short: "ARS", Played: 1, GD: 2, Points: 3}}
+	for _, live := range []bool{true, false} {
+		m.snap.GWLive = live
+		// The styles' opening escape sequences identify the colour in use.
+		blue := strings.Contains(m.railBody(40, false), openSeq(styTmrw))
+		gold := strings.Contains(m.plTableBody(30), openSeq(styGold))
+		if blue != live || gold != live {
+			t.Fatalf("GWLive=%v: baby-blue standings %v, gold PL table %v", live, blue, gold)
+		}
+	}
+}
+
+func TestLiveResultStyle(t *testing.T) {
+	for result, want := range map[string]lipgloss.Style{
+		"W": styLive, "L": styWarn, "D": styDim, "": styTmrw,
+	} {
+		if got := liveResultStyle(result); got.GetForeground() != want.GetForeground() {
+			t.Fatalf("result %q: foreground %v, want %v", result, got.GetForeground(), want.GetForeground())
+		}
+	}
+}
+
+// openSeq is the ANSI prefix a style emits before its text.
+func openSeq(sty lipgloss.Style) string {
+	out := sty.Render("x")
+	return out[:strings.Index(out, "x")]
 }

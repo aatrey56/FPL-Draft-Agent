@@ -436,6 +436,9 @@ func (m *model) railBody(width int, focused bool) string {
 			if s.Mine {
 				marker, sty = "◆", styYou
 			}
+			if m.snap.GWLive {
+				sty = liveResultStyle(s.Result).Bold(s.Mine)
+			}
 			line := sty.Render(fmt.Sprintf("%s%2d %s%s %-5s ", marker, i+1, name, pad, s.Record)) +
 				m.liveScore(s.EntryID)
 			if showProj {
@@ -686,9 +689,25 @@ var clubColor = map[string]lipgloss.Style{
 	"CRY": styYellow, "TOT": styYellow, "AVL": styYellow,
 }
 
+// liveResultStyle colours a draft standings row mid-gameweek by its H2H at
+// the live score: green winning, red losing, grey level. Rows with no live
+// match keep the baby-blue provisional tint.
+func liveResultStyle(result string) lipgloss.Style {
+	switch result {
+	case "W":
+		return styLive
+	case "L":
+		return styWarn
+	case "D":
+		return styDim
+	}
+	return styTmrw
+}
+
 // plTableBody renders the live Premier League table: position, club (in kit
 // colour), played, goal difference, points, with divider lines after 5th
-// (European places) and 17th (the relegation cut).
+// (European places) and 17th (the relegation cut). While the gameweek is
+// live the whole table is gold, marking it provisional.
 func (m *model) plTableBody(width int) string {
 	if len(m.snap.PLTable) == 0 {
 		return ""
@@ -698,14 +717,18 @@ func (m *model) plTableBody(width int) string {
 	b.WriteString(styDim.Render(" #  CLUB   P   GD  PTS") + "\n")
 	for _, r := range m.snap.PLTable {
 		// Only the leader wears its kit colour; the rest stay neutral.
-		clr := styFg
-		if r.Pos == 1 {
+		base := styFg
+		if m.snap.GWLive {
+			base = styGold
+		}
+		clr := base
+		if r.Pos == 1 && !m.snap.GWLive {
 			if c, ok := clubColor[r.Short]; ok {
 				clr = c
 			}
 		}
-		line := fmt.Sprintf("%2d  ", r.Pos) + clr.Render(fmt.Sprintf("%-3s", r.Short)) +
-			styFg.Render(fmt.Sprintf("  %2d  %+3d  %3d", r.Played, r.GD, r.Points))
+		line := base.Render(fmt.Sprintf("%2d  ", r.Pos)) + clr.Render(fmt.Sprintf("%-3s", r.Short)) +
+			base.Render(fmt.Sprintf("  %2d  %+3d  %3d", r.Played, r.GD, r.Points))
 		b.WriteString(ansi.Truncate(line, width, "…") + "\n")
 		switch r.Pos {
 		case 5, 10:
@@ -1077,6 +1100,9 @@ func (m *model) header(width int) string {
 	}
 	clock := on(styFg.Bold(true)).Render(time.Now().In(eastern).Format("3:04:05 PM") + " EST")
 	stamp := on(styDim).Render("data "+m.snap.Loaded.Format("15:04:05")) + on(styLive).Render(" ●")
+	if m.snap.Unconfirmed {
+		stamp += on(styFlag.Italic(true)).Render(" unconfirmed")
+	}
 	if m.status != "" {
 		stamp += on(styDim).Render("  " + m.status)
 	}

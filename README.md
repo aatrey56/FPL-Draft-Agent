@@ -29,7 +29,11 @@ start/sit) → Go MCP server (:8080, 14 tools) → Claude Desktop / Claude Code
 **Game day:** `make tui` opens a live terminal dashboard — your H2H matchup
 (any matchup, ←/→) with per-player in-play points, manager names, and a
 countdown to the next deadline (its Suggestions rail is headed `heuristic xP`
-when my_week fell back from the match model). The autopilot keeps it fresh and sends macOS
+when my_week fell back from the match model). While a gameweek is in play
+both tables update live — the draft league standings fold in each H2H at its
+current score (green winning, red losing, grey level) and the Premier League table counts in-play games
+(gold) — and the colour drops once the last game reaches full time, with the
+header's data stamp reading `unconfirmed` until FPL settles the round. The autopilot keeps it fresh and sends macOS
 notifications when a gameweek finalizes and 24h before every deadline, and a
 [deadline checklist](docs/DEADLINE_AGENT.md) arrives 30–60 min before each
 trades / waivers / lineup-lock deadline — only while you are awake, after a
