@@ -48,6 +48,7 @@ type side struct {
 	Bench     int
 	Played    int
 	Players   []playerRow
+	HasPicks  bool // this GW's picks file was read; false = score unknown, not zero
 }
 
 type matchup struct{ A, B side }
@@ -838,6 +839,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 		if err := readJSON(filepath.Join(dir, fmt.Sprintf("entry/%d/gw/%d.json", entryID, gw)), &picks); err != nil {
 			return s
 		}
+		s.HasPicks = len(picks.Picks) > 0
 		sort.Slice(picks.Picks, func(i, j int) bool { return picks.Picks[i].Position < picks.Picks[j].Position })
 		for _, p := range picks.Picks {
 			row := info[p.Element]
@@ -953,10 +955,16 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	rows := details.Standings
 	result := map[int]string{} // league entry → live H2H result
 	if kickedOff {
+		// Only sides whose picks loaded have a real score; a missing or
+		// unreadable picks file (mid-fetch, failed refresh) must not be
+		// read as 0 points and fold in an invented result.
 		effective := map[int]int{}
 		for _, mu := range snap.Matchups {
-			effective[mu.A.EntryID] = mu.A.Effective
-			effective[mu.B.EntryID] = mu.B.Effective
+			for _, sd := range []side{mu.A, mu.B} {
+				if sd.HasPicks {
+					effective[sd.EntryID] = sd.Effective
+				}
+			}
 		}
 		byLE := map[int]int{}
 		for i, r := range rows {
@@ -968,11 +976,12 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			}
 			i1, ok1 := byLE[m.LeagueEntry1]
 			i2, ok2 := byLE[m.LeagueEntry2]
-			if !ok1 || !ok2 {
+			p1, has1 := effective[entryByLE[m.LeagueEntry1]]
+			p2, has2 := effective[entryByLE[m.LeagueEntry2]]
+			if !ok1 || !ok2 || !has1 || !has2 {
 				continue
 			}
 			snap.Unconfirmed = !snap.GWLive
-			p1, p2 := effective[entryByLE[m.LeagueEntry1]], effective[entryByLE[m.LeagueEntry2]]
 			r1, r2 := &rows[i1], &rows[i2]
 			r1.PointsFor += p1
 			r2.PointsFor += p2

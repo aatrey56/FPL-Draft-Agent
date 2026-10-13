@@ -851,14 +851,15 @@ func TestStandingsFoldInLiveGameweek(t *testing.T) {
 	if snap.Unconfirmed {
 		t.Fatal("mid-GW the highlight already marks the table provisional; no unconfirmed tag")
 	}
-	// Harbor FC win 8-2 live and climb above Quay Town (who draw 0-0 with Pier).
-	// Pier 4pts, Dock 3, Harbor 3 (fewer PF than Dock), Quay 1.
+	// Harbor FC win 8-2 live. Pier v Quay has no picks files (a partial
+	// fetch): their scores are unknown, so that match stays unfolded rather
+	// than becoming an invented 0-0 draw.
 	got := strings.Join(standingNames(snap.Standings), " | ")
-	want := "Pier Rovers 1-1-0 30 | Dock United 1-0-1 42 | Harbor FC 1-0-1 18 | Quay Town 0-1-1 20"
+	want := "Dock United 1-0-1 42 | Pier Rovers 1-0-0 30 | Harbor FC 1-0-1 18 | Quay Town 0-0-1 20"
 	if got != want {
 		t.Fatalf("live standings\n got %s\nwant %s", got, want)
 	}
-	for i, want := range []string{"D", "L", "W", "D"} {
+	for i, want := range []string{"L", "", "W", ""} {
 		if r := snap.Standings[i]; r.Result != want {
 			t.Fatalf("%s: live result %q, want %q", r.Name, r.Result, want)
 		}
