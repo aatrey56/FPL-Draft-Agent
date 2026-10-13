@@ -858,6 +858,11 @@ func TestStandingsFoldInLiveGameweek(t *testing.T) {
 	if got != want {
 		t.Fatalf("live standings\n got %s\nwant %s", got, want)
 	}
+	for i, want := range []string{"D", "L", "W", "D"} {
+		if r := snap.Standings[i]; r.Result != want {
+			t.Fatalf("%s: live result %q, want %q", r.Name, r.Result, want)
+		}
+	}
 }
 
 func TestStandingsStayFoldedAfterLastWhistle(t *testing.T) {
@@ -943,6 +948,16 @@ func TestLiveTablesHighlightOnlyWhileGWLive(t *testing.T) {
 		gold := strings.Contains(m.plTableBody(30), openSeq(styGold))
 		if blue != live || gold != live {
 			t.Fatalf("GWLive=%v: baby-blue standings %v, gold PL table %v", live, blue, gold)
+		}
+	}
+}
+
+func TestLiveResultStyle(t *testing.T) {
+	for result, want := range map[string]lipgloss.Style{
+		"W": styLive, "L": styWarn, "D": styDim, "": styTmrw,
+	} {
+		if got := liveResultStyle(result); got.GetForeground() != want.GetForeground() {
+			t.Fatalf("result %q: foreground %v, want %v", result, got.GetForeground(), want.GetForeground())
 		}
 	}
 }

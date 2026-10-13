@@ -58,6 +58,7 @@ type standingRow struct {
 	Total   int
 	Mine    bool
 	EntryID int
+	Result  string // this GW's H2H at the live score: W/D/L, "" = not folded in
 }
 
 type railItem struct {
@@ -950,6 +951,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	// points come in and stays that way after the last full-time whistle
 	// until the league settles the round.
 	rows := details.Standings
+	result := map[int]string{} // league entry → live H2H result
 	if kickedOff {
 		effective := map[int]int{}
 		for _, mu := range snap.Matchups {
@@ -979,15 +981,18 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 				r1.MatchesWon++
 				r1.Total += 3
 				r2.MatchesLost++
+				result[m.LeagueEntry1], result[m.LeagueEntry2] = "W", "L"
 			case p1 < p2:
 				r2.MatchesWon++
 				r2.Total += 3
 				r1.MatchesLost++
+				result[m.LeagueEntry1], result[m.LeagueEntry2] = "L", "W"
 			default:
 				r1.MatchesDrawn++
 				r2.MatchesDrawn++
 				r1.Total++
 				r2.Total++
+				result[m.LeagueEntry1], result[m.LeagueEntry2] = "D", "D"
 			}
 		}
 	}
@@ -1005,6 +1010,7 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			Total:   s.PointsFor,
 			Mine:    eid == entry,
 			EntryID: eid,
+			Result:  result[s.LeagueEntry],
 		})
 	}
 

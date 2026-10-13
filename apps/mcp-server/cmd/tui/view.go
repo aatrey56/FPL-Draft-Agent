@@ -432,17 +432,12 @@ func (m *model) railBody(width int, focused bool) string {
 		for i, s := range m.snap.Standings {
 			name := ansi.Truncate(s.Name, nameW, "…")
 			pad := strings.Repeat(" ", max(0, nameW-lipgloss.Width(name)))
-			// While the gameweek is live the table is provisional: rows
-			// render baby blue until the last full-time whistle.
 			marker, sty := " ", styFg
-			if m.snap.GWLive {
-				sty = styTmrw
-			}
 			if s.Mine {
 				marker, sty = "◆", styYou
-				if m.snap.GWLive {
-					sty = styTmrw.Bold(true)
-				}
+			}
+			if m.snap.GWLive {
+				sty = liveResultStyle(s.Result).Bold(s.Mine)
 			}
 			line := sty.Render(fmt.Sprintf("%s%2d %s%s %-5s ", marker, i+1, name, pad, s.Record)) +
 				m.liveScore(s.EntryID)
@@ -692,6 +687,21 @@ var clubColor = map[string]lipgloss.Style{
 	"ARS": styWarn, "BRE": styWarn, "LIV": styWarn, "BOU": styWarn, "NFO": styWarn, "MUN": styWarn,
 	"HUL": styYellow, "LEE": styYellow, "NEW": styYellow, "FUL": styYellow, "SUN": styYellow,
 	"CRY": styYellow, "TOT": styYellow, "AVL": styYellow,
+}
+
+// liveResultStyle colours a draft standings row mid-gameweek by its H2H at
+// the live score: green winning, red losing, grey level. Rows with no live
+// match keep the baby-blue provisional tint.
+func liveResultStyle(result string) lipgloss.Style {
+	switch result {
+	case "W":
+		return styLive
+	case "L":
+		return styWarn
+	case "D":
+		return styDim
+	}
+	return styTmrw
 }
 
 // plTableBody renders the live Premier League table: position, club (in kit
