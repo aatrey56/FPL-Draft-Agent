@@ -58,8 +58,6 @@ type standingRow struct {
 	Total   int
 	Mine    bool
 	EntryID int
-	Move    int    // places gained since the settled (last week's) table; negative = dropped
-	Result  string // this GW's H2H at the live score: W/D/L, "" = not folded in
 }
 
 type railItem struct {
@@ -117,8 +115,6 @@ type plRow struct {
 	Pos                int
 	Short              string
 	Played, GD, Points int
-	Move               int    // places gained since last gameweek's table (negative = dropped)
-	Result             string // this GW's game: W/D/L at the current score, "" = not kicked off
 }
 
 type txRow struct {
@@ -292,25 +288,17 @@ func readJSON(path string, v any) error {
 // loadPLTable computes the live Premier League table from finished fixtures
 // across all gameweeks played so far (past GWs are immutable). Current-GW
 // fixtures that are in play count at their current score, so the table moves
-// with every goal. Each row also carries its movement against the table as it
-// stood before this gameweek and its current-GW result.
+// with every goal.
 func loadPLTable(dir string, currentGW int, teamShort map[int]string) []plRow {
-	accum := map[int]*plAcc{}
-	get := func(id int) *plAcc {
+	type acc struct{ W, D, L, GF, GA int }
+	accum := map[int]*acc{}
+	get := func(id int) *acc {
 		if accum[id] == nil {
-			accum[id] = &plAcc{}
+			accum[id] = &acc{}
 		}
 		return accum[id]
 	}
-	result := map[int]string{}
-	var prevPos map[string]int
 	for g := 1; g <= currentGW; g++ {
-		if g == currentGW {
-			prevPos = map[string]int{}
-			for _, r := range rankPL(accum, teamShort) {
-				prevPos[r.Short] = r.Pos
-			}
-		}
 		var lf struct {
 			Fixtures []struct {
 				TeamH        int  `json:"team_h"`
@@ -336,51 +324,26 @@ func loadPLTable(dir string, currentGW int, teamShort map[int]string) []plRow {
 			h.GA += *f.AS
 			a.GF += *f.AS
 			a.GA += *f.HS
-			hr, ar := "D", "D"
 			switch {
 			case *f.HS > *f.AS:
 				h.W++
 				a.L++
-				hr, ar = "W", "L"
 			case *f.HS < *f.AS:
 				a.W++
 				h.L++
-				hr, ar = "L", "W"
 			default:
 				h.D++
 				a.D++
 			}
-			// A double gameweek reports the later fixture in file order.
-			if g == currentGW {
-				result[f.TeamH], result[f.TeamA] = hr, ar
-			}
 		}
 	}
-	rows := rankPL(accum, teamShort)
-	idByShort := map[string]int{}
-	for id, short := range teamShort {
-		idByShort[short] = id
-	}
-	for i := range rows {
-		if prev, ok := prevPos[rows[i].Short]; ok {
-			rows[i].Move = prev - rows[i].Pos
-		}
-		rows[i].Result = result[idByShort[rows[i].Short]]
-	}
-	return rows
-}
-
-// plAcc is one club's running W/D/L and goal tally.
-type plAcc struct{ W, D, L, GF, GA int }
-
-// rankPL orders every club by points, goal difference, then name. Clubs yet
-// to play sit at the bottom on 0 and climb as their games finish.
-func rankPL(accum map[int]*plAcc, teamShort map[int]string) []plRow {
+	// Every club gets a row; the yet-to-play ones sit at the bottom on 0 and
+	// climb as their games finish.
 	rows := make([]plRow, 0, len(teamShort))
 	for id, short := range teamShort {
 		a := accum[id]
 		if a == nil {
-			a = &plAcc{}
+			a = &acc{}
 		}
 		rows = append(rows, plRow{Short: short, Played: a.W + a.D + a.L,
 			GD: a.GF - a.GA, Points: a.W*3 + a.D})
@@ -987,20 +950,6 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 	// points come in and stays that way after the last full-time whistle
 	// until the league settles the round.
 	rows := details.Standings
-	rankStandings := func() {
-		sort.Slice(rows, func(i, j int) bool {
-			if rows[i].Total != rows[j].Total {
-				return rows[i].Total > rows[j].Total
-			}
-			return rows[i].PointsFor > rows[j].PointsFor
-		})
-	}
-	rankStandings()
-	prevPos := map[int]int{}
-	for i, r := range rows {
-		prevPos[r.LeagueEntry] = i + 1
-	}
-	result := map[int]string{}
 	if kickedOff {
 		effective := map[int]int{}
 		for _, mu := range snap.Matchups {
@@ -1030,23 +979,25 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 				r1.MatchesWon++
 				r1.Total += 3
 				r2.MatchesLost++
-				result[m.LeagueEntry1], result[m.LeagueEntry2] = "W", "L"
 			case p1 < p2:
 				r2.MatchesWon++
 				r2.Total += 3
 				r1.MatchesLost++
-				result[m.LeagueEntry1], result[m.LeagueEntry2] = "L", "W"
 			default:
 				r1.MatchesDrawn++
 				r2.MatchesDrawn++
 				r1.Total++
 				r2.Total++
-				result[m.LeagueEntry1], result[m.LeagueEntry2] = "D", "D"
 			}
 		}
 	}
-	rankStandings()
-	for i, s := range rows {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Total != rows[j].Total {
+			return rows[i].Total > rows[j].Total
+		}
+		return rows[i].PointsFor > rows[j].PointsFor
+	})
+	for _, s := range rows {
 		eid := entryByLE[s.LeagueEntry]
 		snap.Standings = append(snap.Standings, standingRow{
 			Name:    nameByEntry[eid],
@@ -1054,8 +1005,6 @@ func load(dir, derived string, league, entry, gwArg int) (snapshot, int, error) 
 			Total:   s.PointsFor,
 			Mine:    eid == entry,
 			EntryID: eid,
-			Move:    prevPos[s.LeagueEntry] - (i + 1),
-			Result:  result[s.LeagueEntry],
 		})
 	}
 

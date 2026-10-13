@@ -858,15 +858,6 @@ func TestStandingsFoldInLiveGameweek(t *testing.T) {
 	if got != want {
 		t.Fatalf("live standings\n got %s\nwant %s", got, want)
 	}
-	// Settled order was Dock, Pier, Quay, Harbor.
-	for i, w := range []struct {
-		move   int
-		result string
-	}{{1, "D"}, {-1, "L"}, {1, "W"}, {-1, "D"}} {
-		if r := snap.Standings[i]; r.Move != w.move || r.Result != w.result {
-			t.Fatalf("%s: move %d result %q, want %d %q", r.Name, r.Move, r.Result, w.move, w.result)
-		}
-	}
 }
 
 func TestStandingsStayFoldedAfterLastWhistle(t *testing.T) {
@@ -907,9 +898,8 @@ func TestStandingsNotFoldedBeforeKickoffOrOnceSettled(t *testing.T) {
 		if snap.GWLive || snap.Unconfirmed {
 			t.Fatalf("%s: gameweek must be neither live nor unconfirmed", name)
 		}
-		if got := snap.Standings[0]; got.Name != "Dock United" || got.Record != "1-0-0" || got.Total != 40 ||
-			got.Move != 0 || got.Result != "" {
-			t.Fatalf("%s: settled table must be used as-is: %+v", name, snap.Standings)
+		if got := snap.Standings[0]; got.Name != "Dock United" || got.Record != "1-0-0" || got.Total != 40 {
+			t.Fatalf("%s: settled table must be used as-is: %v", name, standingNames(snap.Standings))
 		}
 	}
 }
@@ -931,17 +921,9 @@ func TestPLTableCountsInPlayFixturesOfCurrentGW(t *testing.T) {
 	if rows[0].Short != "COV" || rows[0].Points != 3 || rows[0].Played != 1 || rows[0].GD != 2 {
 		t.Fatalf("in-play COV win must lead: %+v", rows)
 	}
-	// Before GW2: LEE, ARS, COV, HUL. Now: COV, LEE, HUL, ARS.
-	want := map[string]struct {
-		move   int
-		result string
-	}{"COV": {2, "W"}, "LEE": {-1, ""}, "HUL": {1, ""}, "ARS": {-2, "L"}}
 	for _, r := range rows {
 		if r.Short == "ARS" && (r.Played != 1 || r.GD != -2) {
 			t.Fatalf("ARS must count only the live GW2 game: %+v", r)
-		}
-		if w := want[r.Short]; r.Move != w.move || r.Result != w.result {
-			t.Fatalf("%s: move %d result %q, want %d %q", r.Short, r.Move, r.Result, w.move, w.result)
 		}
 	}
 }
@@ -952,33 +934,15 @@ func TestLiveTablesHighlightOnlyWhileGWLive(t *testing.T) {
 	defer lipgloss.SetColorProfile(prev)
 
 	m := newModel("", "", 5, 501, 0)
-	m.snap.Standings = []standingRow{{Name: "Dock United", Record: "1-0-0", EntryID: 502, Move: 1, Result: "W"}}
-	m.snap.PLTable = []plRow{{Pos: 1, Short: "ARS", Played: 1, GD: 2, Points: 3, Move: -1, Result: "L"}}
+	m.snap.Standings = []standingRow{{Name: "Dock United", Record: "1-0-0", EntryID: 502}}
+	m.snap.PLTable = []plRow{{Pos: 1, Short: "ARS", Played: 1, GD: 2, Points: 3}}
 	for _, live := range []bool{true, false} {
 		m.snap.GWLive = live
-		// The styles' opening escape sequences identify the colours in use.
-		rail := strings.Contains(m.railBody(40, false), openSeq(liveRowStyle(1, "W")))
-		pl := strings.Contains(m.plTableBody(30), openSeq(liveRowStyle(-1, "L")))
-		if rail != live || pl != live {
-			t.Fatalf("GWLive=%v: standings highlighted %v, PL table highlighted %v", live, rail, pl)
-		}
-	}
-}
-
-func TestLiveRowStyleColours(t *testing.T) {
-	for _, tc := range []struct {
-		move   int
-		result string
-		bg, fg lipgloss.TerminalColor
-	}{
-		{2, "W", upBgC, liveC},
-		{-1, "L", downBgC, alertC},
-		{0, "D", sameBgC, tmrwC},
-		{0, "", sameBgC, fgC}, // not kicked off yet: plain white text
-	} {
-		sty := liveRowStyle(tc.move, tc.result)
-		if sty.GetBackground() != tc.bg || sty.GetForeground() != tc.fg {
-			t.Fatalf("move %d result %q: bg %v fg %v", tc.move, tc.result, sty.GetBackground(), sty.GetForeground())
+		// The styles' opening escape sequences identify the colour in use.
+		blue := strings.Contains(m.railBody(40, false), openSeq(styTmrw))
+		gold := strings.Contains(m.plTableBody(30), openSeq(styGold))
+		if blue != live || gold != live {
+			t.Fatalf("GWLive=%v: baby-blue standings %v, gold PL table %v", live, blue, gold)
 		}
 	}
 }
