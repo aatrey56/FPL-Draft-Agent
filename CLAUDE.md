@@ -74,7 +74,12 @@ working here right now:
   live in `.env` (LEAGUE_ID / ENTRY_ID) and CLI flags only.
 - The legacy FastAPI/OpenAI chat stack and its `apps/web` UI were
   **removed** (Claude over MCP replaced them; see git history). Do not
-  reintroduce an in-app chatbot or LLM client.
+  reintroduce an in-app chatbot or LLM client. The one sanctioned API
+  caller is the batch **research agent** (`backend.ml.research`, see
+  `docs/RESEARCH_AGENT.md`): pre-deadline team news → credibility-gated,
+  sourced `role_overrides.research.json` (ranked below the hand-maintained
+  `role_overrides.json`), behind `ANTHROPIC_API_KEY` and per-run/monthly
+  spend caps. Tests mock its client — never call the API in tests.
 - Build the ML/data foundation as **plain Python → parquet first**; dbt,
   Airflow, and a warehouse are possible later end-state, layered on
   later — do not introduce them unless a task explicitly asks.
@@ -414,6 +419,7 @@ fpl-draft-mcp/
 │       │   └── ml/              # Modelling: ingest → parquet, season projection,
 │       │                        #   match xP model (matchmodel.py), decision artifacts,
 │       │                        #   deadline_agent.py (awake-hours deadline checklists)
+│       │                        #   research.py (Claude API news agent → role overrides)
 │       └── tests/               # pytest suite (no network)
 ├── data/                    # FPL raw + derived data (gitignored)
 │   ├── raw/                 # LEGACY flat layout = the 2025-26 archive (do not overwrite)
@@ -435,6 +441,10 @@ FPL API
 Fetcher (Go, cmd/dev — the only component that hits live APIs:
   │  FPL draft + official PL team sheets via pulselive ~1h pre-kickoff)
   │  raw JSON → data/raw/<season>/   (+ element-status, gw/<n>/squads.json)
+  ▼
+Research (Python, backend/ml/research — optional, pre-deadline; the only
+  │  Claude API caller): triage → web research → gated overrides
+  │  → data/derived/<season>/ml/role_overrides.research.json + research/
   ▼
 Derive (Python, backend/ml/*)
   │  projections, player_history, ownership_events,

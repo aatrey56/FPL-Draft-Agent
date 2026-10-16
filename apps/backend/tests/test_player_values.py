@@ -6,6 +6,7 @@ import pandas as pd
 
 from backend.ml import jsonutil
 from backend.ml import player_values as pv
+from backend.ml import waiver as wv
 
 META = {"scorer": "model", "xp_fallback": False, "xp_fallback_reason": None}
 
@@ -59,3 +60,17 @@ def test_horizon_events_reach_the_document():
     assert doc["horizon_events"] == [37, 38]
     loaded = json.loads(jsonutil.dumps_strict(doc))
     assert loaded["horizon_events"] == [37, 38]
+
+
+def test_cli_reports_research_overrides(weekly_cli_root, tmp_path):
+    ml_dir = weekly_cli_root / "derived/2026-27/ml"
+    (ml_dir / "role_overrides.research.json").write_text(json.dumps({"overrides": [
+        {"player": "FreeFWD", "team": "ARS", "code": 102, "p_start": 0.3, "valid_through_gw": 6,
+         "fact": "research: rotation risk [high]", "source": "research"}]}))
+    out = tmp_path / "player_values.json"
+    assert pv.main(["--season", "2026-27", "--data-root", str(weekly_cli_root),
+                    "--out", str(out), "--scorer", "heuristic"]) == 0
+    doc = json.loads(out.read_text())
+    assert doc["overrides_applied"] == ["research:FreeFWD"]
+    assert set(wv.OVERRIDE_REPORT_KEYS) <= set(doc)
+    assert next(p for p in doc["players"] if p["web_name"] == "FreeFWD")["p_start"] == 0.3

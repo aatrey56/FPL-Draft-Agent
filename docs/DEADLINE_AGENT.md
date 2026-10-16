@@ -79,9 +79,11 @@ skipped* and exits 0, so research and delivery never run twice. State and
 checklist files are written via a uniquely named temp file + rename.
 
 1. `now ≥ research_start` and research not done → run
-   `uv run python -m backend.ml.research run --phase <waivers|lineup|trades> --gw N`
+   `uv run python -m backend.ml.research run --phase <waivers|lineup|trades> --gw N --season S`
+   (plus `--data-root <abs custom root>` with `--data-root`)
    if that module exists (exit 0 ok, exit 3 = no API key → skipped silently,
-   anything else → the checklist says *research failed*), then `make derive`
+   exit 4 = monthly spend cap reached → the checklist says *research skipped:
+   monthly cap reached*, anything else → *research failed*), then `make derive`
    (with `--data-root /custom` it runs `make derive DATA_DIR=<abs custom root>`,
    which redirects every stage — ownership, panel, xP, waiver, my_week,
    player_values, track record — to that tree; without the flag the Makefile

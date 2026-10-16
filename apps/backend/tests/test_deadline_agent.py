@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pandas as pd
 import pytest
 import requests
 
@@ -304,7 +305,7 @@ def test_tick_runs_research_then_derive_then_delivers_once(tmp_path):
     assert len(recorder.commands) == 2 and recorder.notes == []
     research, derive = (c for c, _ in recorder.commands)
     assert research == ["uv", "run", "python", "-m", "backend.ml.research", "run",
-                        "--phase", "lineup", "--gw", "9"]
+                        "--phase", "lineup", "--gw", "9", "--season", "2026-27"]
     assert recorder.commands[0][1] == env.repo / "apps" / "backend"
     assert derive == ["make", "derive", "SEASON=2026-27"]
     assert any("research 2026-27:9:lineup" in line for line in log)
@@ -348,6 +349,26 @@ def test_research_exit_3_is_silent(tmp_path):
     assert state["2026-27:9:lineup"]["research"]["research"] == "skipped"
     assert "research failed" not in recorder.pushes[0][1]
     assert [c[0][0] for c in recorder.commands] == ["uv", "make"]    # derive still ran
+
+
+def test_research_exit_4_says_monthly_cap_reached(tmp_path):
+    env, recorder = make_env(tmp_path, make_world(tmp_path), Recorder(research_code=4))
+    da.tick(env, DELIVER_AT)
+    state = da.load_state(env.state_path)
+    assert state["2026-27:9:lineup"]["research"]["research"] == "capped"
+    checklist = (env.checklist_dir / "2026-27" / "gw9_lineup.md").read_text()
+    for text in (recorder.pushes[0][1], checklist):
+        assert "research skipped: monthly cap reached" in text
+        assert "research failed" not in text
+    assert [c[0][0] for c in recorder.commands] == ["uv", "make"]    # derive still ran
+
+
+def test_outcome_note_names_each_research_outcome():
+    assert da.outcome_note({"research": "ok", "derive": "ok"}) is None
+    assert da.outcome_note({"research": "skipped", "derive": "ok"}) is None
+    assert "monthly cap reached" in da.outcome_note({"research": "capped", "derive": "ok"})
+    both = da.outcome_note({"research": "capped", "derive": "failed"})
+    assert "monthly cap reached" in both and "derive failed" in both
 
 
 def test_research_failure_is_noted_in_checklist(tmp_path):
@@ -617,6 +638,8 @@ def test_tick_passes_a_custom_data_root_to_derive(tmp_path):
     da.tick(env, DELIVER_AT)
     derive = [cmd for cmd, _ in recorder.commands if cmd[:2] == ["make", "derive"]]
     assert derive == [["make", "derive", "SEASON=2026-27", f"DATA_DIR={custom.resolve()}"]]
+    research = [cmd for cmd, _ in recorder.commands if "backend.ml.research" in cmd]
+    assert research[0][-4:] == ["--season", "2026-27", "--data-root", str(custom.resolve())]
 
 
 def test_tick_without_a_data_root_leaves_derive_unchanged(tmp_path):
@@ -1211,3 +1234,20 @@ def test_make_derive_quotes_a_data_root_with_spaces(tmp_path):
         assert "review-data" not in tokens, line
         assert not any(t.startswith("review-data") for t in tokens), line
         assert any(root in t for t in tokens), line
+
+
+def test_research_entries_resolve_by_code_with_strict_validation(tmp_path):
+    """Entries as ``backend.ml.research.override_entry`` writes them resolve to
+    the player's current identity by ``code`` (a stale ``team`` is ignored);
+    a non-integral code resolves to nobody, never a truncated one."""
+    import pandas as pd
+
+    players = pd.DataFrame([{"code": 102, "web_name": "Alpha", "team": "ARS"},
+                            {"code": 103, "web_name": "Bravo", "team": "CHE"}])
+    entries = [{"player": "Alpha", "team": "LIV", "code": 102, "element": 7,
+                "fact": "research: back in training", "source": "research"},
+               {"player": "Bravo", "team": "CHE", "code": 103.9, "fact": "research: x"},
+               {"player": "Quoted", "team": "?", "code": "103", "fact": "research: y"}]
+    (tmp_path / "role_overrides.research.json").write_text(json.dumps({"overrides": entries}))
+    identities = da._entry_identities(tmp_path, players, "role_overrides.research.json")
+    assert identities == {"Alpha": {("Alpha", "ARS")}, "Quoted": {("Bravo", "CHE")}}

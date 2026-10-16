@@ -1,6 +1,7 @@
 SEASON ?= 2026-27
 SCORER ?= model
 HORIZON ?= 3
+PHASE ?= waivers
 # DATA_DIR is the data root as seen from apps/backend (override with an absolute path);
 # `derive` reads and writes only under it.
 DATA_DIR ?= ../../data
@@ -8,7 +9,7 @@ RAW_SEASON := $(DATA_DIR)/raw/$(SEASON)
 DERIVED_SEASON := $(DATA_DIR)/derived/$(SEASON)
 GO_ROOTS := --raw-root ../../data/raw --derived-root ../../data/derived
 
-.PHONY: serve fetch fetch-all derive weekly matchday preflight backtest xp checklist-preview checklist-plan
+.PHONY: serve fetch fetch-all derive weekly matchday preflight backtest xp checklist-preview checklist-plan research research-clear
 
 ## serve: run the MCP server (Ctrl-C to stop; restart after every git pull)
 serve:
@@ -66,6 +67,19 @@ derive:
 
 ## weekly: the whole weekly loop (fetch + derive)
 weekly: fetch derive
+
+## research: pre-deadline team-news research via the Claude API (docs/RESEARCH_AGENT.md).
+## PHASE={waivers,lineup,trades} (default waivers); optional GW=n, DRY_RUN=1 (triage + estimate only).
+## Needs ANTHROPIC_API_KEY in .env: exit 3 = no key (skipped), 4 = monthly cap reached.
+## Writes research/gw<N>_<phase>_<ts>.json and role_overrides.research.json; the next
+## `make derive` (waiver/my_week/player_values) applies it below role_overrides.json.
+research:
+	cd apps/backend && uv run python -m backend.ml.research run --phase $(PHASE) --season $(SEASON) --data-root "$(DATA_DIR)" \
+		$(if $(GW),--gw $(GW)) $(if $(DRY_RUN),--dry-run)
+
+## research-clear: delete role_overrides.research.json (back to hand-maintained overrides only)
+research-clear:
+	cd apps/backend && uv run python -m backend.ml.research clear --season $(SEASON) --data-root "$(DATA_DIR)"
 
 ## backtest: walk-forward evaluation of the match xP model vs the naive baselines
 backtest:

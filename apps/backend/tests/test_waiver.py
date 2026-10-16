@@ -1053,6 +1053,20 @@ def test_override_with_a_non_numeric_code_is_unmatched(tmp_path):
     assert out["role_override"].isna().all()
 
 
+@pytest.mark.parametrize("code", [200.9, True, float("nan"), [200]])
+def test_override_with_a_non_integral_code_is_unmatched_not_truncated(tmp_path, code):
+    """Regression: ``int(200.9)`` used to match code 200; override codes now
+    go through ``_strict_int`` like never_drop entries (research ones too)."""
+    table = _override_table(tmp_path)
+    for origin in ({}, {"override_origin": "research"}):
+        entry = {"player": "SeasonStar", "team": "ARS", "code": code, "p_start": 0.2,
+                 **FRESH, **origin}
+        out, report = wv.apply_role_overrides(table, [entry], target_gw=1)
+        name = "research:SeasonStar" if origin else "SeasonStar"
+        assert report == _report(unmatched=[name])
+        assert out["role_override"].isna().all()
+
+
 def test_fact_only_override_and_unvalued_player_keep_their_xp(tmp_path):
     table = _override_table(tmp_path)
     overrides = [{"player": "SeasonStar", "team": "ARS", "fact": "new manager", **FRESH},
@@ -1803,3 +1817,92 @@ def test_player_table_carries_p_appear_and_an_override_sets_it(tmp_path):
 def test_player_table_p_appear_is_nan_for_an_xp_file_without_it(tmp_path):
     table = _override_table(tmp_path)
     assert pd.isna(_by_name(table).loc["SeasonStar", "p_appear"])
+
+
+# ---------------------------------------------------------------------------
+# role_overrides.research.json (research agent) — lower precedence, tagged
+# ---------------------------------------------------------------------------
+
+def _research(**entry):
+    """A research entry as ``load_research_overrides`` returns it."""
+    return {"player": "SeasonStar", "team": "ARS", "fact": "research: fit again [high]",
+            "override_origin": "research", **entry}
+
+
+def test_manual_override_beats_research_for_the_same_player(tmp_path):
+    table = _override_table(tmp_path)
+    manual = {"player": "SeasonStar", "team": "ARS", "p_start": 0.4, "fact": "rotation", **FRESH}
+    out, report = wv.apply_role_overrides(table, [manual, _research(p_start=0.9, **FRESH)],
+                                          target_gw=1)
+    star = _by_name(out).loc["SeasonStar"]
+    assert star["p_start"] == 0.4 and star["role_override"] == "rotation"
+    assert report == _report(applied=["SeasonStar"], superseded=["research:SeasonStar"])
+
+
+def test_research_override_applies_tagged_when_no_manual_entry(tmp_path):
+    table = _override_table(tmp_path)
+    out, report = wv.apply_role_overrides(table, [_research(p_start=0.9, **FRESH)], target_gw=1)
+    star = _by_name(out).loc["SeasonStar"]
+    assert star["p_start"] == 0.9 and star["xp_next"] == pytest.approx(0.9 * 7.0)
+    assert star["role_override"].startswith("research:")
+    assert report == _report(applied=["research:SeasonStar"])
+
+
+def test_expired_or_stale_research_is_ignored(tmp_path):
+    table = _override_table(tmp_path)
+    entries = [_research(p_start=0.0, return_gw=1), _research(p_start=0.2, valid_through_gw=0)]
+    out, report = wv.apply_role_overrides(table, entries, target_gw=1)
+    assert _by_name(out).loc["SeasonStar", "role_override"] is None
+    assert report == _report(expired=["research:SeasonStar"], stale=["research:SeasonStar"])
+
+
+def test_stale_manual_entry_does_not_shadow_fresh_research(tmp_path):
+    table = _override_table(tmp_path)
+    stale_manual = {"player": "SeasonStar", "team": "ARS", "p_start": 0.1, "valid_through_gw": 0}
+    out, report = wv.apply_role_overrides(table, [stale_manual, _research(p_start=0.8, **FRESH)],
+                                          target_gw=1)
+    assert _by_name(out).loc["SeasonStar", "p_start"] == 0.8
+    assert report == _report(stale=["SeasonStar"], applied=["research:SeasonStar"])
+
+
+def test_load_all_role_overrides_reads_manual_then_tagged_research(tmp_path):
+    (tmp_path / wv.MANUAL_OVERRIDES_FILE).write_text(json.dumps(
+        {"updated": "2026-10-01", "overrides": [{"player": "A", "team": "ARS", "fact": "hand"}]}))
+    (tmp_path / wv.RESEARCH_OVERRIDES_FILE).write_text(json.dumps(
+        {"updated": "2026-10-02", "overrides": [{"player": "B", "team": "ARS", "fact": "knock"},
+                                                {"player": "C", "team": "ARS", "fact": "research: x"}]}))
+    entries = wv.load_all_role_overrides(tmp_path)
+    assert [e["player"] for e in entries] == ["A", "B", "C"]
+    assert "override_origin" not in entries[0] and entries[0]["fact"] == "hand"
+    assert [e["fact"] for e in entries[1:]] == ["research: knock", "research: x"]
+    assert all(e["override_origin"] == "research" for e in entries[1:])
+    assert wv.load_all_role_overrides(tmp_path / "absent") == []
+
+
+def test_override_lifetime_and_matching_helpers_never_raise():
+    assert wv.override_lifetime({"valid_through_gw": "x"}, 1, None) == "invalid"
+    assert wv.override_lifetime({"valid_through_gw": 3}, 2, None) == "live"
+    assert wv.override_matches({"code": "200"}, 200, "Other", "WOL")
+    assert not wv.override_matches({"code": "abc"}, 200, "SeasonStar", "ARS")
+    assert wv.override_matches({"player": "SeasonStar", "team": "ARS"}, None, "SeasonStar", "ARS")
+    assert wv.override_matches({"code": 200.0}, 200, "Other", "WOL")
+    assert not wv.override_matches({"code": 200.9}, 200, "SeasonStar", "ARS")
+    assert not wv.override_matches({"code": True}, 1, "SeasonStar", "ARS")
+    assert not wv.override_matches({"player": ["SeasonStar"], "team": "ARS"}, None,
+                                   "SeasonStar", "ARS")
+    assert wv.override_code({"code": " 200 "}) == 200 and wv.override_code({}) is None
+
+
+def test_cli_tags_research_overrides_in_waiver_plan(weekly_cli_root, weekly_cli_argv, tmp_path):
+    ml_dir = weekly_cli_root / "derived/2026-27/ml"
+    (ml_dir / wv.RESEARCH_OVERRIDES_FILE).write_text(json.dumps({"overrides": [
+        {"player": "FreeFWD", "team": "ARS", "code": 102, "p_start": 0.7, "valid_through_gw": 6,
+         "fact": "research: back in training [med]", "source": "research"}]}))
+    out = tmp_path / "waiver_plan.json"
+    assert wv.main(weekly_cli_argv(out, "heuristic")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["overrides_applied"] == ["research:FreeFWD"] and doc["overrides_superseded"] == []
+    # never_drop reporting sits beside the research override keys.
+    assert all(doc[key] == [] for key in wv.NEVER_DROP_REPORT_KEYS)
+    rec = next(r for r in doc["recommendations"] if r["add"] == "FreeFWD")
+    assert rec["add_role_override"] == "research: back in training [med]"

@@ -494,3 +494,25 @@ def test_my_week_reports_formation_bench_order_and_if_out(tmp_path):
     alt = week["if_out"][0]
     assert alt["automatic"] is True and alt["auto_sub"]["in"] in week["bench_order"]
     assert alt["text"].startswith("If P112 plays 0 minutes, FPL auto-subs")
+
+
+def test_cli_tags_research_overrides_below_manual_ones(weekly_cli_root, weekly_cli_argv, tmp_path):
+    ml_dir = weekly_cli_root / "derived/2026-27/ml"
+    (ml_dir / "role_overrides.research.json").write_text(json.dumps({"overrides": [
+        {"player": "MyFWD", "team": "WOL", "code": 101, "p_start": 0.5, "valid_through_gw": 6,
+         "fact": "research: late fitness test [med]", "source": "research"}]}))
+    out = tmp_path / "my_week.json"
+    assert mw.main(weekly_cli_argv(out, "heuristic")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["overrides_applied"] == ["research:MyFWD"]
+    assert doc["xi"][0]["role_override"] == "research: late fitness test [med]"
+    assert "role override: p_start 0.5 — research: late fitness test [med]" in doc["attention"][0]["warnings"]
+
+    (ml_dir / "role_overrides.json").write_text(json.dumps({"overrides": [
+        {"player": "MyFWD", "team": "WOL", "p_start": 1.0, "valid_through_gw": 6, "fact": "confirmed"}]}))
+    assert mw.main(weekly_cli_argv(out, "heuristic")) == 0
+    doc = json.loads(out.read_text())
+    assert doc["overrides_applied"] == ["MyFWD"] and doc["overrides_superseded"] == ["research:MyFWD"]
+    # never_drop reporting sits beside the research override keys.
+    assert all(doc[key] == [] for key in wv.NEVER_DROP_REPORT_KEYS)
+    assert doc["xi"][0]["role_override"] == "confirmed"

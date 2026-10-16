@@ -7,7 +7,10 @@ user's squad and the free agents — to
 
 * ``xp_next`` / ``xp_source`` — next-GW xP (match model ``xp_gw{N}``, else
   the ``ros/38`` heuristic, else ``none``); same table as waiver_plan
-  (``waiver.build_player_table``) with ``role_overrides.json`` applied.
+  (``waiver.build_player_table``) with ``role_overrides.json`` and, below
+  it, the research agent's ``role_overrides.research.json`` applied; the
+  top-level ``overrides_*`` lists (``waiver.OVERRIDE_REPORT_KEYS``) say which
+  entries were applied — research entries are named ``research:<player>``.
 * ``xp_h3`` / ``xp_h3_source`` — next-3-GW xP (``xp_horizon_gw{N}``'s
   ``xp_h3`` when fresh, else the heuristic).
 * ``ros_adj`` (and raw ``ros_points``) — role-adjusted rest-of-season value.
@@ -115,12 +118,13 @@ def main(argv: list[str] | None = None) -> int:
         bootstrap, seasons, projections_path, gw_xp=gw_xp, horizon_xp=horizon_xp,
         season_panel=wv.load_season_panel(ml_dir / "player_gameweeks.parquet", args.season),
         prior_season=prior_season)
-    players, _ = wv.apply_role_overrides(
-        players, wv.load_role_overrides(ml_dir / "role_overrides.json"), gw,
+    players, override_report = wv.apply_role_overrides(
+        players, wv.load_all_role_overrides(ml_dir), gw,
         wv.event_deadlines(bootstrap), horizon_xp)
 
     meta = {**scorer_meta, **{k: horizon_meta[k] for k in
-                              ("horizon_fallback", "horizon_fallback_reason", "horizon_events")}}
+                              ("horizon_fallback", "horizon_fallback_reason", "horizon_events")},
+            **override_report}
     doc = build_player_values(players, season=args.season, gw=gw,
                               panel_max_gw=_panel_max_gw(gw_xp), meta=meta,
                               generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
