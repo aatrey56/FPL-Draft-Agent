@@ -116,13 +116,9 @@ update:
 
 ## stop / start: pause or resume the autopilot agents without uninstalling
 stop:
-	-launchctl bootout gui/$$(id -u)/com.fplcopilot.server
-	-launchctl bootout gui/$$(id -u)/com.fplcopilot.refresh
-	-launchctl bootout gui/$$(id -u)/com.fplcopilot.deadline
+	bash scripts/autopilot-ctl.sh stop
 start:
-	launchctl bootstrap gui/$$(id -u) $$HOME/Library/LaunchAgents/com.fplcopilot.server.plist
-	launchctl bootstrap gui/$$(id -u) $$HOME/Library/LaunchAgents/com.fplcopilot.refresh.plist
-	launchctl bootstrap gui/$$(id -u) $$HOME/Library/LaunchAgents/com.fplcopilot.deadline.plist
+	bash scripts/autopilot-ctl.sh start
 
 ## checklist-preview: render the next deadline's checklist to stdout, sending nothing
 ## (KIND={trades,waivers,lineup} picks the kind; default: whichever deadline is next)
